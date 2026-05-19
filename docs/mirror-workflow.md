@@ -29,7 +29,6 @@ Existing examples of the passive pattern:
 - `polymarket._history` / `_scrape_portfolio` / `_redeem_all` — bail when not on `/portfolio?tab=…`.
 - `gecko.sync_history` — read `provider_data[pid]['coupon_history_by_url']` populated by the interceptor; never navigates.
 - `kambi.sync_history` — try KSP API only; no auto-nav fallback.
-- `interwetten.sync_history` — bail when not on `/journal/bets`.
 - `strategies/altenar._sync_history` — bail when not on a `betHistory` URL.
 
 Violating this invariant breaks the user's mental model and clobbers whatever page they have open.
@@ -351,7 +350,7 @@ class Workflow:
 
 ## 6. Provider classes
 
-### Soft books (Kambi, Altenar, Gecko V2, ComeOn, Spectate, Interwetten, …)
+### Soft books (Kambi, Altenar, Gecko V2, ComeOn, Spectate, …)
 
 | Trait | Value |
 |---|---|
@@ -443,7 +442,6 @@ User clicks the provider's idle card → `startSkin(pid)` → `POST /mirror/open
 | Kambi | REST or GraphQL | `GET /wallitt/mainbalance` (Unibet) or GraphQL relay (LeoVegas) |
 | Gecko V2 | API wallets | `GET /wallets` — any currency response = logged in |
 | Polymarket | API + DOM | SDK balance call OR DOM scrape "Cash $" text |
-| Interwetten | CSRF-aware AJAX + DOM | `Common.AjaxCall('refreshaccountbalance')` OR `#acc-balance` element |
 | Generic | Strategy-driven | Intel JSON: balance API endpoint or DOM indicator selector |
 
 ### Step 3 — Sync balance → DB + backend
@@ -464,7 +462,6 @@ User clicks the provider's idle card → `startSkin(pid)` → `POST /mirror/open
 | Kambi | `{mainBalance: {amount: X}}` or GraphQL relay |
 | Gecko V2 | `{Balances: {SEK: {Real: {Balance: X}}}}` |
 | Polymarket | CLOB SDK `get_balance()` or DOM "Cash $X.XX" |
-| Interwetten | `refreshaccountbalance` AJAX or `#acc-balance` DOM |
 | Generic | Regex/DOM extraction per intel JSON |
 
 ### Step 4 — Settle pending → record unknown
@@ -513,7 +510,6 @@ HistoryEntry(
 | Kambi | CDN `/coupon/history.json` (intercepts auth token) + KSP fallback |
 | Gecko V2 | API coupon-history after navigating to history page |
 | Polymarket | Data API `/trades` (fuzzy match against DB) + DOM history fallback |
-| Interwetten | DOM journal `/journal/bets` → flex-table parsing |
 | Generic | Strategy override + API/DOM intel-driven extraction |
 
 ### Step 5 — Wait at the run gate (READY_TO_RUN)
@@ -543,7 +539,6 @@ User clicks yellow card → `POST /mirror/play/run/{pid}` → `play_loop.set_run
 | Kambi | Widget API | `KambiWidget.navigateClient('#/event/{id}')` + hash fallback |
 | Gecko V2 | Event param | `?eventId={gecko_event_id}` (f- prefix handling) |
 | Polymarket | Direct slug | `/event/{market_slug}` |
-| Interwetten | Direct URL | `/en/sportsbook/e/{event_id}/{slug}` OR search-by-team fallback |
 | Generic | URL template | Intel JSON template with `{event_id}` substitution |
 
 ### Step 7 — Sync odds → confirm edge
@@ -566,7 +561,6 @@ User clicks yellow card → `POST /mirror/play/run/{pid}` → `play_loop.set_run
 | Kambi | `isolatedBetslip.addOutcomeIds([id])` | DOM `.mod-KambiBC-betslip-outcome__odds` |
 | Gecko V2 | None (manual) | Not implemented |
 | Polymarket | SDK order build OR DOM click + fill | CLOB orderbook API or DOM button text |
-| Interwetten | DOM click outcome by data-betting ID + fill stake | DOM `_find_outcome_element()` → parse odds |
 | Generic | None (guided manual) | Strategy-driven or None |
 
 ### Step 8 — Await user place → intercept → record
@@ -588,7 +582,7 @@ User clicks the provider's "Place Bet" button. The interceptor catches it.
 | Type | Providers | How |
 |------|-----------|-----|
 | **Autonomous API** | Polymarket | `workflow.place_bet()` calls API directly on user confirm |
-| **Two-phase semi-auto** | Pinnacle, Altenar, Kambi, Interwetten | `prep_betslip()` selects outcome + fills stake, user clicks Place on the provider site, interceptor catches the placement XHR |
+| **Two-phase semi-auto** | Pinnacle, Altenar, Kambi | `prep_betslip()` selects outcome + fills stake, user clicks Place on the provider site, interceptor catches the placement XHR |
 | **Manual** | Gecko V2, Generic | User navigates + fills betslip entirely; interceptor catches |
 
 **Interception patterns:**
@@ -600,7 +594,6 @@ User clicks the provider's "Place Bet" button. The interceptor catches it.
 | Kambi | WebSocket | `kambi`, `push.aws` frames | `{couponId, placeBetResult}` |
 | Gecko V2 | HTTP POST | `/coupons` | `{couponId}` |
 | Polymarket | HTTP POST | `clob.polymarket.com/order` | SDK handles (no HTTP interception) |
-| Interwetten | HTTP POST | `placebet` | DOM confirmation (betslip clears) |
 
 After placement → recorded to DB → PendingLoop picks up → runner pops next bet from cluster queue → return to Step 6. Queue empty → `provider_complete`.
 
@@ -932,18 +925,17 @@ Current wiring status as of 2026-04-30. **Legend:** ✅ working, ⚠️ partial/
 | 20 | goldenbull | Kambi | G | ✅ | ⚠️ | ✅ | ✅ | ✅ | ⚠️ | ✅ |
 | 21 | 1x2 | Kambi | G | ✅ | ⚠️ | ✅ | ✅ | ✅ | ⚠️ | ✅ |
 | 22 | betmgm | Kambi | G | ✅ | ⚠️ | ✅ | ✅ | ✅ | ⚠️ | ✅ |
-| 23 | interwetten | Interwetten | G | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 24 | comeon | ComeOn | M | ❌ | ❌ | ❌ | ❌ | — | ❌ | — |
-| 25 | hajper | ComeOn | M | ❌ | ❌ | ❌ | ❌ | — | ❌ | — |
-| 26 | lyllo | ComeOn | M | ❌ | ❌ | ❌ | ❌ | — | ❌ | — |
-| 27 | snabbare | Snabbare | M | ❌ | ❌ | ❌ | ❌ | — | ❌ | — |
-| 28 | 10bet | TenBet | M | ❌ | ❌ | ❌ | ❌ | — | ❌ | — |
-| 29 | mrgreen | Spectate | M | ❌ | ❌ | ❌ | ❌ | — | ❌ | — |
-| 30 | vbet | BetConstruct | M | ❌ | ❌ | ❌ | ❌ | — | ❌ | — |
-| 31 | coolbet | Coolbet | M | ❌ | ❌ | ❌ | ❌ | — | ❌ | — |
-| 32 | tipwin | Tipwin | M | ❌ | ❌ | ❌ | ❌ | — | ❌ | — |
-| 33 | cloudbet | Cloudbet | A | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 34 | kalshi | Kalshi | A | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 23 | comeon | ComeOn | M | ❌ | ❌ | ❌ | ❌ | — | ❌ | — |
+| 24 | hajper | ComeOn | M | ❌ | ❌ | ❌ | ❌ | — | ❌ | — |
+| 25 | lyllo | ComeOn | M | ❌ | ❌ | ❌ | ❌ | — | ❌ | — |
+| 26 | snabbare | Snabbare | M | ❌ | ❌ | ❌ | ❌ | — | ❌ | — |
+| 27 | 10bet | TenBet | M | ❌ | ❌ | ❌ | ❌ | — | ❌ | — |
+| 28 | mrgreen | Spectate | M | ❌ | ❌ | ❌ | ❌ | — | ❌ | — |
+| 29 | vbet | BetConstruct | M | ❌ | ❌ | ❌ | ❌ | — | ❌ | — |
+| 30 | coolbet | Coolbet | M | ❌ | ❌ | ❌ | ❌ | — | ❌ | — |
+| 31 | tipwin | Tipwin | M | ❌ | ❌ | ❌ | ❌ | — | ❌ | — |
+| 32 | cloudbet | Cloudbet | A | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 33 | kalshi | Kalshi | A | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ---
 
@@ -959,7 +951,7 @@ Providers sharing a platform have identical odds. Once a bet is placed on ANY pr
 | `gecko_betsson` | betsson, nordicbet, betsafe, spelklubben |
 | `comeon_group` | comeon, lyllo, hajper, snabbare |
 
-**Standalone (no cluster):** pinnacle, polymarket, kalshi, cloudbet, interwetten, 10bet, vbet, coolbet, tipwin, bethard
+**Standalone (no cluster):** pinnacle, polymarket, kalshi, cloudbet, 10bet, vbet, coolbet, tipwin, bethard
 
 How blocking works:
 1. PlayLoop partitions bets into per-cluster queues.
@@ -996,10 +988,6 @@ GET   api.arcadia.pinnacle.se/0.1/wallet/balance                                
 GET   data-api.polymarket.com/value?user={proxy_wallet}                              # portfolio value
 GET   clob.polymarket.com/book?token_id={id}                                         # order book
 POST  clob.polymarket.com/order                                                       # placement (SDK)
-
-# Interwetten
-POST  interwetten.se/.../placebet                                                     # placement
-GET   interwetten.se/.../refreshaccountbalance                                        # balance (CSRF AJAX)
 ```
 
 ---

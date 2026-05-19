@@ -565,7 +565,7 @@ Configured in `providers.yaml` under `extraction_scheduling`. Each provider runs
 | `sharp` | 1 min | pinnacle | ~130s |
 | `polymarket` | 5 min | polymarket | ~200s |
 | `api_soft` | 2 min | unibet, betinia, betsson, bethard, spelklubben, vbet | ~300s |
-| `browser_soft` | 10 min | 888sport, interwetten, 10bet, tipwin | ~400-1000s |
+| `browser_soft` | 10 min | 888sport, 10bet, tipwin | ~400-1000s |
 | `browser_antibot` | 25 min | comeon, rainbet | ~700-1700s |
 | `signal_international` | 5 min | stake, cloudbet, marathon | ~16-340s |
 

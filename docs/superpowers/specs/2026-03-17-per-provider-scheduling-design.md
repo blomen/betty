@@ -76,7 +76,7 @@ No change to fan-out behavior — it continues to work as today. The scheduler o
 |----------|----------|----------|
 | Sharp (Pinnacle + Polymarket) | 1m | Fixed interval, grouped in one loop |
 | API soft (unibet, betinia, betsson, vbet) | 15m | Per-provider cooldown after completion |
-| Browser soft (888sport, coolbet, interwetten, comeon, 10bet, tipwin) | 60m | Per-provider cooldown after completion, sequential via semaphore(1) |
+| Browser soft (888sport, coolbet, comeon, 10bet, tipwin) | 60m | Per-provider cooldown after completion, sequential via semaphore(1) |
 | Boosts | 60m | Independent fixed interval (no longer triggered by api_soft) |
 | Settlement, cleanup, trading reset | Unchanged | 2m, 6h, 60s respectively |
 
@@ -96,7 +96,7 @@ extraction_scheduling:
 
   browser_soft:
     max_concurrent_browsers: 1
-    providers: [888sport, coolbet, interwetten, comeon, 10bet, tipwin]
+    providers: [888sport, coolbet, comeon, 10bet, tipwin]
     interval_minutes: 60
     grouped: false
 ```

@@ -14,7 +14,6 @@
 
 **Problem:** The `browser_soft` tier runs 5 browser providers in parallel (capped at 3 browser slots). Resource contention causes 4/5 to chronically timeout:
 - **ComeOn**: 0/5 success — football+basketball each burn 360s for 0 events, consuming the 900s provider timeout
-- **Interwetten**: 2/5 success — 700s timeout is borderline
 - **10bet**: 2/5 success — 1200s timeout is borderline
 - **Coolbet**: 4/5 success — occasionally fails under contention
 - **888sport**: 5/5 success — API-based, always fast
@@ -323,8 +322,6 @@ In sequential mode, order matters — fastest providers run first to get data in
       - 888sport
       # Coolbet — Camoufox, reliable (170-470s)
       - coolbet
-      # Interwetten — 16-20 concurrent tabs (500-700s)
-      - interwetten
       # ComeOn Group — Camoufox + SPA scraping (700-900s)
       - comeon
       # 10Bet — DOM scraping, slowest (1000-1200s)

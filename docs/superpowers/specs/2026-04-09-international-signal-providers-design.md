@@ -83,7 +83,7 @@ query SportFixtures($sport: String!, $limit: Int) {
 - **Coverage:** Football-heavy, strong EU coverage, independent odds team
 - **Value:** Long-established independent compiler, not a white-label
 
-**Implementation:** New `MarathonRetriever` extending `Retriever` with `BrowserTransport`. Navigate sport pages, parse odds from DOM selectors. Similar pattern to existing Spectate/Interwetten extractors.
+**Implementation:** New `MarathonRetriever` extending `Retriever` with `BrowserTransport`. Navigate sport pages, parse odds from DOM selectors. Similar pattern to existing Spectate extractors.
 
 #### 5. 1xBet
 - **Type:** Large international sportsbook (Curaçao licensed)

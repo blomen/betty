@@ -20,7 +20,6 @@ Current match rates are ~100% — when a soft provider extracts an event, it alm
 | VBet | VBet API | 561 | 52% | 43% | Both weak |
 | 888sport | Spectate | 467 | **15%** | **14%** | Confirmed platform limit |
 | Betinia | Altenar | 1146 | **33%** | 60% | Enrichment exists but gaps remain |
-| Interwetten | Interwetten | 228 | **0%** | 59% | Pass 2 exists but 0% spreads = likely bug |
 
 ### Pinnacle Coverage Gaps (events with Pinnacle odds but no soft provider odds)
 
@@ -52,13 +51,6 @@ Several providers have surprisingly low spread/total coverage. Investigation rev
 - The remaining 33% spread gap is likely: (a) football events (no spreads available), (b) events exceeding the 200-cap, or (c) sports where enrichment fails silently
 - **Action: Investigate** — query DB for Betinia spread coverage by sport to identify where the gap is. If football is the entire gap, it's a platform limitation. If non-football sports are missing, debug the enrichment code.
 
-**Interwetten — EXISTING PASS 2, LIKELY BUG**
-- `interwetten.py` already implements a two-pass strategy (documented lines 8-22)
-- `SPREAD_LABELS` and `TOTAL_LABELS` constants exist (lines 69-70)
-- Pass 2 navigates to event detail pages and extracts via JS (lines 234-249)
-- Despite this, the metrics show **0% spread coverage** — this is almost certainly a parsing bug or navigation failure in the detail page extraction
-- **Action: Debug** — add logging to Pass 2, check if detail pages are loading, verify JS extraction selectors still match the current DOM.
-
 **VBet — EXISTING PASS 2, PARTIAL FAILURE**
 - `vbet.py` has a dedicated Pass 2 WebSocket request for `OverUnder`, `Handicap`, `AsianHandicap` (lines 433-486)
 - Markets are merged into existing events (lines 477-482)
@@ -85,17 +77,16 @@ FROM odds WHERE provider_id = 'betinia'
 AND updated_at > datetime('now', '-1 day')
 GROUP BY sport ORDER BY events DESC;
 
--- Same for VBet, Interwetten, Betsson
+-- Same for VBet, Betsson
 -- Replace provider_id accordingly
 ```
 
 ### Priority Order (revised)
 
-1. **Interwetten** — 0% spreads despite existing code = almost certainly a bug. Highest ROI fix.
-2. **Betinia** — investigate whether 33% gap is all football (unfixable) or includes other sports (fixable)
-3. **VBet** — investigate which sports are missing, fix extraction bugs
-4. **Betsson** — investigate total gap by sport
-5. **888sport** — no action possible (platform limitation)
+1. **Betinia** — investigate whether 33% gap is all football (unfixable) or includes other sports (fixable)
+2. **VBet** — investigate which sports are missing, fix extraction bugs
+3. **Betsson** — investigate total gap by sport
+4. **888sport** — no action possible (platform limitation)
 
 ### Implementation Approach
 
@@ -274,7 +265,6 @@ Add to `ProviderRunMetrics` (or use existing `notes` JSON field):
 
 | Metric | Current | Target |
 |--------|---------|--------|
-| Interwetten spread coverage | 0% | 50%+ (if platform supports it) |
 | Betinia spread coverage (non-football) | TBD (investigate) | 80%+ |
 | VBet spread coverage | 52% | 70%+ |
 | VBet total coverage | 43% | 60%+ |
@@ -289,7 +279,6 @@ Note: 888sport targets removed (confirmed platform limitation). Betinia football
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Interwetten 0% is a platform limitation, not a bug | No gain from debugging | Quick investigation — check if detail pages even show spreads manually |
 | Deferred table grows large | Slow queries | Auto-expire on start_time + 6hr TTL, indexes on start_time and sport |
 | Debug fixes break existing extraction | Regression | Test each provider independently, verify ML extraction unaffected |
 | Provider DOM/API changes since enrichment was written | Selectors stale | Part of debugging — update selectors as needed |

@@ -1073,7 +1073,7 @@ git commit -m "feat(rainbet): parse sport-listing response into StandardEvent[]"
 
 ## Phase D — Browser orchestration
 
-The orchestration class extends `BrowserRetriever` and uses the existing `BrowserTransport` (which already wraps patchright with stealth, proxy, geolocation, resource blocking, and process cleanup). We layer the CF Turnstile click loop and per-sport network capture on top. Reference patterns: `InterwettenRetriever`, `TipwinRetriever`, `SnabbareRetriever` — all extend `BrowserRetriever` and drive `self.transport.page`.
+The orchestration class extends `BrowserRetriever` and uses the existing `BrowserTransport` (which already wraps patchright with stealth, proxy, geolocation, resource blocking, and process cleanup). We layer the CF Turnstile click loop and per-sport network capture on top. Reference patterns: `TipwinRetriever`, `SnabbareRetriever` — all extend `BrowserRetriever` and drive `self.transport.page`.
 
 ### Task 11: RainbetRetriever skeleton
 
@@ -1333,7 +1333,7 @@ git commit -m "feat(rainbet): implement extract() with Turnstile clear + sptpub 
 **Files:**
 - Modify: `backend/src/factory.py`
 
-`RainbetRetriever` needs a `BrowserTransport` (with `use_proxy=True` because rainbet geo-blocks Germany). This matches the wiring pattern of `tipwin`, `interwetten`, `gecko_v2` etc.
+`RainbetRetriever` needs a `BrowserTransport` (with `use_proxy=True` because rainbet geo-blocks Germany). This matches the wiring pattern of `tipwin`, `gecko_v2` etc.
 
 - [ ] **Step 1: Add the import alongside the other provider imports near the top**
 

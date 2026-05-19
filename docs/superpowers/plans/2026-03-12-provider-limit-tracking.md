@@ -1091,11 +1091,6 @@ curl -X PUT http://localhost:8000/api/limits/1 \
   -H "Content-Type: application/json" \
   -d '{"limit_level":4}'
 
-# Set global limit risk
-curl -X PATCH http://localhost:8000/api/providers/interwetten/limit-risk \
-  -H "Content-Type: application/json" \
-  -d '{"limit_risk":"instant","limit_notes":"Limited from first bet"}'
-
 # Verify providers list includes limit_risk
 curl http://localhost:8000/api/providers | python -m json.tool | grep limit_risk
 ```

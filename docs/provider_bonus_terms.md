@@ -12,7 +12,7 @@
 - [Gecko / OBG](#gecko--obg) — Betsson, Betsafe, NordicBet, Spelklubben, Bethard
 - [ComeOn Group](#comeon-group) — ComeOn, Hajper, Lyllo
 - [Spectate / 888](#spectate--888) — Mr Green, 888sport
-- [Independents](#independents) — 10Bet, Snabbare, Interwetten, Coolbet, Tipwin, VBet
+- [Independents](#independents) — 10Bet, Snabbare, Coolbet, Tipwin, VBet
 
 ---
 
@@ -459,27 +459,6 @@ Site only shows casino welcome bonus (300%, 20× wagering). No separate sport be
 
 ---
 
-### Interwetten
-
-**Source:** interwetten.se/sv/content/promotions/welcome-bonus — **⚠️ BONUS EXPIRED**
-
-Page returns: "Kampanjen missades tyvärr. Tack för ditt intresse för vår kampanj. Tyvärr har denna kampanj redan avslutats."
-
-Footer only mentions Casino bonus (5 000 kr). **No active sport welcome bonus on interwetten.se as of 2026-03-27.**
-
-Banner "BLI EN DEL AV SPELET MED DIN 1.000KR BONUS" is still visible on homepage but links to expired page.
-
-**From config (unverified, bonus may no longer exist):**
-- Sport bonus upp till 1 000 kr
-- Staged unlock: 5 steg × 20% vardera
-- Trigger: Omsätt insättning ×5 vid odds 1.70+
-- Omsättning: Varje steg 1× vid odds 1.70+
-- 14 dagar deadline
-
-**Verdict:** Config ✅ — `type: bonusdeposit, amount: 1000, trigger_multiplier: 5, trigger_odds: 1.70, wagering_multiplier: 1, min_odds: 1.70, deadline_days: 14`. Staged bonus (5 steps × 20%), can use multiple deposits.
-
----
-
 ### Coolbet
 
 **Source:** coolbet.com/sv/valkomstbonus + /erbjudanden/regler/odds-bonus-regler — verbatim
@@ -601,11 +580,5 @@ All providers manually audited and configs verified. Only config change made: **
 | Snabbare | 600 kr | 8× | dep+bonus | 1.80 | 16 | 90d |
 | Tipwin | 1,000 kr | 7× | dep+bonus | 1.80 | 14 | — |
 | VBet | 800 kr | 10× | dep+bonus | 1.80 | 20 | 60d |
-
-**Staged bonus:**
-
-| Provider | Amount | Trigger × | Min Odds | Deadline |
-|----------|--------|-----------|----------|----------|
-| Interwetten | 1,000 kr | 5× deposit (5 steps) | 1.70 | 14d/step |
 
 Note: Betinia/CampoBet/Swiper/QuickCasino also have a 1× deposit trigger at odds 1.50 before wagering begins.

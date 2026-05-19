@@ -26,7 +26,6 @@
 - [ok] `expekt`: deposit 1000 SEK (bonusdeposit)
 - [ok] `goldenbull`: deposit 500 SEK (bonusdeposit)
 - [ok] `hajper`: deposit 500 SEK (freebet)
-- [ok] `interwetten`: deposit 1000 SEK (bonusdeposit)
 - [ok] `leovegas`: deposit 600 SEK (bonusdeposit)
 - [ok] `lodur`: deposit 500 SEK (bonusdeposit)
 - [ok] `lyllo`: deposit 100 SEK (freebet)

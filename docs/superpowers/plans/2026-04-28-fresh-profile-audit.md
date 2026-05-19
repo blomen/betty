@@ -821,7 +821,7 @@ SOFT_CLUSTER_MEMBERS = {
     "gecko_betsson": ["betsson", "nordicbet", "betsafe", "spelklubben"],
     "comeon_group": ["comeon", "lyllo", "hajper", "snabbare"],
 }
-SOFT_STANDALONES = {"interwetten", "vbet", "10bet", "tipwin", "coolbet", "bethard"}
+SOFT_STANDALONES = {"vbet", "10bet", "tipwin", "coolbet", "bethard"}
 
 # Signal-only providers expected to NOT appear on the arb page (no bet placement).
 SIGNAL_ONLY_PROVIDERS = {"stake", "marathon", "consensus"}

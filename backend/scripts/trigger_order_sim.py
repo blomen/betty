@@ -14,11 +14,10 @@ Strategies:
 Run: python scripts/trigger_order_sim.py
 """
 
+import io
 import random
 import sys
-import io
-from dataclasses import dataclass, field
-from typing import List, Tuple
+from dataclasses import dataclass
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
@@ -30,71 +29,70 @@ def fprint(*args, **kwargs):
 
 # ── Edge distributions ──
 SOFT_VALUE_EDGE_DIST = [
-    (2.0,  4.0,  0.35, 3.50),
-    (4.0,  6.0,  0.25, 4.10),
-    (6.0, 10.0,  0.20, 5.50),
+    (2.0, 4.0, 0.35, 3.50),
+    (4.0, 6.0, 0.25, 4.10),
+    (6.0, 10.0, 0.20, 5.50),
     (10.0, 20.0, 0.15, 8.10),
     (20.0, 35.0, 0.05, 11.40),
 ]
 POLYMARKET_EDGE_DIST = [
-    (3.0,  5.0,  0.40, 2.80),
-    (5.0,  8.0,  0.30, 3.40),
-    (8.0, 15.0,  0.20, 4.50),
+    (3.0, 5.0, 0.40, 2.80),
+    (5.0, 8.0, 0.30, 3.40),
+    (8.0, 15.0, 0.20, 4.50),
     (15.0, 30.0, 0.10, 6.00),
 ]
 PINNACLE_REVERSE_EDGE_DIST = [
-    (3.0,  5.0,  0.35, 4.50),
-    (5.0,  8.0,  0.30, 6.00),
-    (8.0, 12.0,  0.25, 8.50),
+    (3.0, 5.0, 0.35, 4.50),
+    (5.0, 8.0, 0.30, 6.00),
+    (8.0, 12.0, 0.25, 8.50),
     (12.0, 20.0, 0.10, 11.00),
 ]
 SPECIALS_EDGE_DIST = [
-    (4.0,  8.0,  0.40, 3.00),
-    (8.0, 15.0,  0.35, 4.00),
+    (4.0, 8.0, 0.40, 3.00),
+    (8.0, 15.0, 0.35, 4.00),
     (15.0, 30.0, 0.20, 5.50),
     (30.0, 50.0, 0.05, 8.00),
 ]
 STREAM_WEIGHTS = [
-    ("soft_value",       0.913, SOFT_VALUE_EDGE_DIST),
-    ("polymarket",       0.071, POLYMARKET_EDGE_DIST),
+    ("soft_value", 0.913, SOFT_VALUE_EDGE_DIST),
+    ("polymarket", 0.071, POLYMARKET_EDGE_DIST),
     ("pinnacle_reverse", 0.014, PINNACLE_REVERSE_EDGE_DIST),
-    ("specials",         0.002, SPECIALS_EDGE_DIST),
+    ("specials", 0.002, SPECIALS_EDGE_DIST),
 ]
 
 FREEBETS = [
-    ("unibet",    1000, 1000),
-    ("betmgm",     500,  500),
-    ("dbet",       500,  500),
-    ("mrgreen",    500,  500),
-    ("hajper",     500,  500),
-    ("betsson",    250,  250),
-    ("betsafe",    100,  100),
-    ("nordicbet",  100,  100),
-    ("lyllo",      100,  100),
+    ("unibet", 1000, 1000),
+    ("betmgm", 500, 500),
+    ("dbet", 500, 500),
+    ("mrgreen", 500, 500),
+    ("hajper", 500, 500),
+    ("betsson", 250, 250),
+    ("betsafe", 100, 100),
+    ("nordicbet", 100, 100),
+    ("lyllo", 100, 100),
 ]
 
 DEPOSIT_BONUSES = [
-    ("888sport",     500,   1, 1.80),
-    ("interwetten", 1000,   5, 1.70),
-    ("leovegas",     600,   6, 1.80),
-    ("betinia",     1000,   6, 1.80),
-    ("swiper",      1000,   6, 1.50),
-    ("lodur",       1000,   6, 1.80),
-    ("coolbet",     1000,   6, 1.50),
-    ("campobet",     500,   6, 1.80),
-    ("quickcasino",  500,   6, 1.80),
-    ("comeon",       500,   6, 1.80),
-    ("tipwin",      1000,   7, 1.80),
-    ("10bet",       1000,   8, 1.80),
-    ("snabbare",     600,   8, 1.80),
-    ("vbet",         800,  10, 1.80),
-    ("speedybet",    500,  12, 1.80),
-    ("x3000",        500,  12, 1.80),
-    ("goldenbull",   500,  12, 1.80),
-    ("1x2",          500,  12, 1.80),
-    ("spelklubben",  500,  15, 1.90),
-    ("bethard",      500,  15, 1.90),
-    ("expekt",      1000,  20, 1.80),
+    ("888sport", 500, 1, 1.80),
+    ("leovegas", 600, 6, 1.80),
+    ("betinia", 1000, 6, 1.80),
+    ("swiper", 1000, 6, 1.50),
+    ("lodur", 1000, 6, 1.80),
+    ("coolbet", 1000, 6, 1.50),
+    ("campobet", 500, 6, 1.80),
+    ("quickcasino", 500, 6, 1.80),
+    ("comeon", 500, 6, 1.80),
+    ("tipwin", 1000, 7, 1.80),
+    ("10bet", 1000, 8, 1.80),
+    ("snabbare", 600, 8, 1.80),
+    ("vbet", 800, 10, 1.80),
+    ("speedybet", 500, 12, 1.80),
+    ("x3000", 500, 12, 1.80),
+    ("goldenbull", 500, 12, 1.80),
+    ("1x2", 500, 12, 1.80),
+    ("spelklubben", 500, 15, 1.90),
+    ("bethard", 500, 15, 1.90),
+    ("expekt", 1000, 20, 1.80),
 ]
 
 MIN_KELLY = 0.25
@@ -167,6 +165,7 @@ def kelly_stake(bankroll, edge_pct, odds):
 
 # ── Trigger strategies ──
 
+
 def order_current():
     """Original order as listed."""
     return list(FREEBETS)
@@ -205,6 +204,7 @@ STRATEGIES = [
 
 
 # ── Simulation ──
+
 
 @dataclass
 class SimResult:
@@ -390,7 +390,7 @@ def main():
     fprint(f"  {NUM_SIMS} sims × {WEEKS} weeks × {BETS_PER_WEEK} bets/week")
     fprint("=" * 120)
 
-    fprint(f"\n  Freebets sorted by trigger size:")
+    fprint("\n  Freebets sorted by trigger size:")
     for p, f, t in sorted(FREEBETS, key=lambda x: x[2]):
         fprint(f"    {p:<12s}  freebet: {f:>5,} kr  trigger: {t:>5,} kr")
 
@@ -401,9 +401,13 @@ def main():
         fprint(f"\n\n{'#' * 120}")
         fprint(f"  STRATEGY: {strat.name}")
         fprint(f"{'#' * 120}")
-        fprint(f"  {'Start':>8s}  {'Median':>10s}  {'P10':>10s}  {'P25':>10s}  {'Ruin%':>6s}  "
-              f"{'FBs':>5s}  {'Bonuses':>8s}  {'Trough P10':>11s}  {'Growth':>7s}")
-        fprint(f"  {'-'*8}  {'-'*10}  {'-'*10}  {'-'*10}  {'-'*6}  {'-'*5}  {'-'*8}  {'-'*11}  {'-'*7}")
+        fprint(
+            f"  {'Start':>8s}  {'Median':>10s}  {'P10':>10s}  {'P25':>10s}  {'Ruin%':>6s}  "
+            f"{'FBs':>5s}  {'Bonuses':>8s}  {'Trough P10':>11s}  {'Growth':>7s}"
+        )
+        fprint(
+            f"  {'-' * 8}  {'-' * 10}  {'-' * 10}  {'-' * 10}  {'-' * 6}  {'-' * 5}  {'-' * 8}  {'-' * 11}  {'-' * 7}"
+        )
 
         strat_results = {}
         for start in starts:
@@ -418,14 +422,21 @@ def main():
 
             med = pct(finals, 50)
             ruin_pct = ruin_n / NUM_SIMS * 100
-            strat_results[start] = {"median": med, "ruin": ruin_pct, "p10": pct(finals, 10),
-                                     "fbs": pct(fbs, 50), "bonuses": pct(bonuses, 50),
-                                     "trough_p10": pct(troughs, 10)}
+            strat_results[start] = {
+                "median": med,
+                "ruin": ruin_pct,
+                "p10": pct(finals, 10),
+                "fbs": pct(fbs, 50),
+                "bonuses": pct(bonuses, 50),
+                "trough_p10": pct(troughs, 10),
+            }
 
-            fprint(f"  {start:>8,}  {med:>10,.0f}  {pct(finals,10):>10,.0f}  {pct(finals,25):>10,.0f}  "
-                  f"{ruin_pct:>5.1f}%  {pct(fbs,50):>4.0f}/{len(FREEBETS)}  "
-                  f"{pct(bonuses,50):>3.0f}/{len(DEPOSIT_BONUSES):>2d}    "
-                  f"{pct(troughs,10):>10,.0f}  {med/start if start > 0 else 0:>6.1f}x")
+            fprint(
+                f"  {start:>8,}  {med:>10,.0f}  {pct(finals, 10):>10,.0f}  {pct(finals, 25):>10,.0f}  "
+                f"{ruin_pct:>5.1f}%  {pct(fbs, 50):>4.0f}/{len(FREEBETS)}  "
+                f"{pct(bonuses, 50):>3.0f}/{len(DEPOSIT_BONUSES):>2d}    "
+                f"{pct(troughs, 10):>10,.0f}  {med / start if start > 0 else 0:>6.1f}x"
+            )
 
         all_results[strat.name] = strat_results
 
@@ -440,7 +451,7 @@ def main():
     for n in names_short:
         hdr += f"{n:>13s}  "
     fprint(hdr)
-    fprint(f"  {'-'*8}  " + "  ".join(['-'*13] * len(STRATEGIES)))
+    fprint(f"  {'-' * 8}  " + "  ".join(["-" * 13] * len(STRATEGIES)))
 
     for start in starts:
         row = f"  {start:>8,}  "
@@ -460,7 +471,7 @@ def main():
     for n in names_short:
         hdr += f"{n:>13s}  "
     fprint(hdr)
-    fprint(f"  {'-'*8}  " + "  ".join(['-'*13] * len(STRATEGIES)))
+    fprint(f"  {'-' * 8}  " + "  ".join(["-" * 13] * len(STRATEGIES)))
 
     for start in starts:
         row = f"  {start:>8,}  "

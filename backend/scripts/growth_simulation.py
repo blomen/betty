@@ -23,11 +23,10 @@ Key questions answered:
 Run: python scripts/growth_simulation.py
 """
 
+import io
 import random
 import sys
-import io
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
 
 # Fix Windows encoding
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
@@ -41,98 +40,97 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 # Stream 1: Soft value (1,862 opps, 91.3% of volume)
 SOFT_VALUE_EDGE_DIST = [
-    (2.0,  4.0,  0.35, 3.50),   # 35%: low edge, moderate odds
-    (4.0,  6.0,  0.25, 4.10),   # 25%: medium edge
-    (6.0, 10.0,  0.20, 5.50),   # 20%: good edge, higher odds
-    (10.0, 20.0, 0.15, 8.10),   # 15%: high edge
+    (2.0, 4.0, 0.35, 3.50),  # 35%: low edge, moderate odds
+    (4.0, 6.0, 0.25, 4.10),  # 25%: medium edge
+    (6.0, 10.0, 0.20, 5.50),  # 20%: good edge, higher odds
+    (10.0, 20.0, 0.15, 8.10),  # 15%: high edge
     (20.0, 35.0, 0.05, 11.40),  # 5%: rare, very high odds
 ]
 
 # Stream 2: Polymarket (144 opps, 7.1% of volume)
 POLYMARKET_EDGE_DIST = [
-    (3.0,  5.0,  0.40, 2.80),   # 40%: tighter odds, lower edge
-    (5.0,  8.0,  0.30, 3.40),   # 30%: medium
-    (8.0, 15.0,  0.20, 4.50),   # 20%: good edge
-    (15.0, 30.0, 0.10, 6.00),   # 10%: high edge, rare
+    (3.0, 5.0, 0.40, 2.80),  # 40%: tighter odds, lower edge
+    (5.0, 8.0, 0.30, 3.40),  # 30%: medium
+    (8.0, 15.0, 0.20, 4.50),  # 20%: good edge
+    (15.0, 30.0, 0.10, 6.00),  # 10%: high edge, rare
 ]
 
 # Stream 3: Pinnacle reverse (29 opps, 1.4% of volume)
 # Longshots only (3.50-15.00 odds), vs soft consensus
 PINNACLE_REVERSE_EDGE_DIST = [
-    (3.0,  5.0,  0.35, 4.50),   # 35%: moderate longshot
-    (5.0,  8.0,  0.30, 6.00),   # 30%: good edge
-    (8.0, 12.0,  0.25, 8.50),   # 25%: high edge longshot
+    (3.0, 5.0, 0.35, 4.50),  # 35%: moderate longshot
+    (5.0, 8.0, 0.30, 6.00),  # 30%: good edge
+    (8.0, 12.0, 0.25, 8.50),  # 25%: high edge longshot
     (12.0, 20.0, 0.10, 11.00),  # 10%: rare, big longshot
 ]
 
 # Stream 4: +EV Specials (4 opps, 0.2% of volume)
 # Boosts that beat Pinnacle fair odds
 SPECIALS_EDGE_DIST = [
-    (4.0,  8.0,  0.40, 3.00),   # 40%: modest boost edge
-    (8.0, 15.0,  0.35, 4.00),   # 35%: good boost
-    (15.0, 30.0, 0.20, 5.50),   # 20%: strong boost
-    (30.0, 50.0, 0.05, 8.00),   # 5%: exceptional boost (rare)
+    (4.0, 8.0, 0.40, 3.00),  # 40%: modest boost edge
+    (8.0, 15.0, 0.35, 4.00),  # 35%: good boost
+    (15.0, 30.0, 0.20, 5.50),  # 20%: strong boost
+    (30.0, 50.0, 0.05, 8.00),  # 5%: exceptional boost (rare)
 ]
 
 # ── Stream Volume Weights (from live data) ──
 # Per scan: ~2,039 total opportunities
 STREAM_WEIGHTS = [
-    ("soft_value",       0.913, SOFT_VALUE_EDGE_DIST),       # 1862/2039
-    ("polymarket",       0.071, POLYMARKET_EDGE_DIST),       # 144/2039
-    ("pinnacle_reverse", 0.014, PINNACLE_REVERSE_EDGE_DIST), # 29/2039
-    ("specials",         0.002, SPECIALS_EDGE_DIST),          # 4/2039
+    ("soft_value", 0.913, SOFT_VALUE_EDGE_DIST),  # 1862/2039
+    ("polymarket", 0.071, POLYMARKET_EDGE_DIST),  # 144/2039
+    ("pinnacle_reverse", 0.014, PINNACLE_REVERSE_EDGE_DIST),  # 29/2039
+    ("specials", 0.002, SPECIALS_EDGE_DIST),  # 4/2039
 ]
 
 # Kelly parameters (from stake_calculator.py)
 MIN_KELLY = 0.25
 MAX_KELLY = 0.75
-SINGLE_BET_CAP_PCT = 0.03      # 3% of bankroll max per bet
-MIN_STAKE = 25.0                # Skip bets below this
+SINGLE_BET_CAP_PCT = 0.03  # 3% of bankroll max per bet
+MIN_STAKE = 25.0  # Skip bets below this
 
 # ── Freebet providers ──
 # (provider, freebet_amount, trigger_bet_amount)
 # Trigger bets are STATIC (flat amount = freebet face value), not risk-managed
 FREEBETS = [
-    ("unibet",    1000, 1000),
-    ("betmgm",     500,  500),
-    ("dbet",       500,  500),
-    ("mrgreen",    500,  500),
-    ("hajper",     500,  500),
-    ("betsson",    250,  250),
-    ("betsafe",    100,  100),
-    ("nordicbet",  100,  100),
-    ("lyllo",      100,  100),
+    ("unibet", 1000, 1000),
+    ("betmgm", 500, 500),
+    ("dbet", 500, 500),
+    ("mrgreen", 500, 500),
+    ("hajper", 500, 500),
+    ("betsson", 250, 250),
+    ("betsafe", 100, 100),
+    ("nordicbet", 100, 100),
+    ("lyllo", 100, 100),
 ]
 
 # ── Deposit bonus providers (sorted by wagering efficiency) ──
 # (provider, bonus_amount, wagering_multiplier, min_odds)
 DEPOSIT_BONUSES = [
-    ("888sport",     500,   1, 1.80),
-    ("interwetten", 1000,   5, 1.70),
-    ("leovegas",     600,   6, 1.80),
-    ("betinia",     1000,   6, 1.80),
-    ("swiper",      1000,   6, 1.50),
-    ("lodur",       1000,   6, 1.80),
-    ("coolbet",     1000,   6, 1.50),
-    ("campobet",     500,   6, 1.80),
-    ("quickcasino",  500,   6, 1.80),
-    ("comeon",       500,   6, 1.80),
-    ("tipwin",      1000,   7, 1.80),
-    ("10bet",       1000,   8, 1.80),
-    ("snabbare",     600,   8, 1.80),
-    ("vbet",         800,  10, 1.80),
-    ("speedybet",    500,  12, 1.80),
-    ("x3000",        500,  12, 1.80),
-    ("goldenbull",   500,  12, 1.80),
-    ("1x2",          500,  12, 1.80),
-    ("spelklubben",  500,  15, 1.90),
-    ("bethard",      500,  15, 1.90),
-    ("expekt",      1000,  20, 1.80),
+    ("888sport", 500, 1, 1.80),
+    ("leovegas", 600, 6, 1.80),
+    ("betinia", 1000, 6, 1.80),
+    ("swiper", 1000, 6, 1.50),
+    ("lodur", 1000, 6, 1.80),
+    ("coolbet", 1000, 6, 1.50),
+    ("campobet", 500, 6, 1.80),
+    ("quickcasino", 500, 6, 1.80),
+    ("comeon", 500, 6, 1.80),
+    ("tipwin", 1000, 7, 1.80),
+    ("10bet", 1000, 8, 1.80),
+    ("snabbare", 600, 8, 1.80),
+    ("vbet", 800, 10, 1.80),
+    ("speedybet", 500, 12, 1.80),
+    ("x3000", 500, 12, 1.80),
+    ("goldenbull", 500, 12, 1.80),
+    ("1x2", 500, 12, 1.80),
+    ("spelklubben", 500, 15, 1.90),
+    ("bethard", 500, 15, 1.90),
+    ("expekt", 1000, 20, 1.80),
 ]
 
-TOTAL_FREEBET_VALUE = sum(f[1] for f in FREEBETS)        # 3,550 kr
+TOTAL_FREEBET_VALUE = sum(f[1] for f in FREEBETS)  # 3,550 kr
 TOTAL_DEPOSIT_BONUS = sum(d[1] for d in DEPOSIT_BONUSES)  # 15,000 kr
-TOTAL_TRIGGER_CAPITAL = sum(f[2] for f in FREEBETS)       # 3,550 kr
+TOTAL_TRIGGER_CAPITAL = sum(f[2] for f in FREEBETS)  # 3,550 kr
 TOTAL_WAGERING_VOLUME = sum(d[1] * d[2] for d in DEPOSIT_BONUSES)
 
 NUM_SIMS = 10000  # Monte Carlo runs per scenario
@@ -142,20 +140,21 @@ NUM_SIMS = 10000  # Monte Carlo runs per scenario
 # DATA STRUCTURES
 # =====================================================================
 
+
 @dataclass
 class SimResult:
     final_bankroll: float = 0.0
     total_profit: float = 0.0
-    bonus_profit: float = 0.0        # Freebet wins + deposit bonus unlocks
-    betting_profit: float = 0.0      # PnL from trigger bets + wagering + value bets
+    bonus_profit: float = 0.0  # Freebet wins + deposit bonus unlocks
+    betting_profit: float = 0.0  # PnL from trigger bets + wagering + value bets
     total_bets: int = 0
     total_staked: float = 0.0
     peak_bankroll: float = 0.0
     min_bankroll: float = 0.0
     ruin: bool = False
-    bonuses_unlocked: int = 0        # How many deposit bonuses were claimed
+    bonuses_unlocked: int = 0  # How many deposit bonuses were claimed
     freebets_claimed: int = 0
-    weekly_bankrolls: List[float] = field(default_factory=list)
+    weekly_bankrolls: list[float] = field(default_factory=list)
     # Per-stream tracking
     soft_bets: int = 0
     poly_bets: int = 0
@@ -167,7 +166,8 @@ class SimResult:
 # CORE BET SIMULATION
 # =====================================================================
 
-def sample_from_stream(edge_dist: list, min_odds: float = 1.10) -> Tuple[float, float]:
+
+def sample_from_stream(edge_dist: list, min_odds: float = 1.10) -> tuple[float, float]:
     """Sample a +EV bet from a specific stream's edge distribution.
     Returns (edge_pct, odds). Resamples until odds >= min_odds."""
     for _ in range(50):
@@ -185,7 +185,7 @@ def sample_from_stream(edge_dist: list, min_odds: float = 1.10) -> Tuple[float, 
     return 4.0, max(min_odds, 2.50)
 
 
-def sample_bet_all_streams(min_odds: float = 1.10) -> Tuple[float, float, str]:
+def sample_bet_all_streams(min_odds: float = 1.10) -> tuple[float, float, str]:
     """Sample a +EV bet from any stream (weighted by volume).
     Returns (edge_pct, odds, stream_name)."""
     r = random.random()
@@ -232,7 +232,8 @@ def kelly_stake(bankroll: float, edge_pct: float, odds: float) -> float:
 # PHASE SIMULATORS
 # =====================================================================
 
-def simulate_freebet_phase(bankroll: float) -> Tuple[float, float, float, int, int, float]:
+
+def simulate_freebet_phase(bankroll: float) -> tuple[float, float, float, int, int, float]:
     """
     Phase 1: Claim all freebets using static trigger bets.
 
@@ -283,7 +284,7 @@ def simulate_deposit_bonus(
     wagering_mult: float,
     min_odds: float,
     bets_per_week: int,
-) -> Tuple[float, float, float, int, float, int]:
+) -> tuple[float, float, float, int, float, int]:
     """
     Unlock a single deposit bonus by wagering through on +EV bets.
 
@@ -334,7 +335,7 @@ def simulate_value_betting(
     bets_per_week: int,
     weeks: int,
     track_weekly: bool = False,
-) -> Tuple[float, float, int, float, List[float], dict]:
+) -> tuple[float, float, int, float, list[float], dict]:
     """
     Pure +EV value betting with Kelly criterion across ALL streams. Snowball phase.
 
@@ -377,6 +378,7 @@ def simulate_value_betting(
 # =====================================================================
 # FULL SIMULATION
 # =====================================================================
+
 
 def run_full_simulation(
     starting_bankroll: float,
@@ -499,13 +501,19 @@ def run_monte_carlo(
     do_deposit_bonuses: bool = True,
     n_sims: int = NUM_SIMS,
     track_weekly: bool = False,
-) -> List[SimResult]:
+) -> list[SimResult]:
     results = []
     for _ in range(n_sims):
-        results.append(run_full_simulation(
-            starting_bankroll, bets_per_week, total_weeks,
-            do_freebets, do_deposit_bonuses, track_weekly,
-        ))
+        results.append(
+            run_full_simulation(
+                starting_bankroll,
+                bets_per_week,
+                total_weeks,
+                do_freebets,
+                do_deposit_bonuses,
+                track_weekly,
+            )
+        )
     return results
 
 
@@ -513,13 +521,14 @@ def run_monte_carlo(
 # STATISTICS
 # =====================================================================
 
-def pct(values: List[float], p: float) -> float:
+
+def pct(values: list[float], p: float) -> float:
     s = sorted(values)
     idx = int(len(s) * p / 100.0)
     return s[min(idx, len(s) - 1)]
 
 
-def print_summary(results: List[SimResult], label: str, starting: float):
+def print_summary(results: list[SimResult], label: str, starting: float):
     n = len(results)
     finals = [r.final_bankroll for r in results]
     profits = [r.total_profit for r in results]
@@ -532,13 +541,13 @@ def print_summary(results: List[SimResult], label: str, starting: float):
     fbs = [r.freebets_claimed for r in results]
     mins = [r.min_bankroll for r in results]
 
-    print(f"\n{'='*78}")
+    print(f"\n{'=' * 78}")
     print(f"  {label}")
-    print(f"{'='*78}")
-    print(f"  {n:,} simulations  |  Starting: {starting:,.0f} kr  |  Ruin: {ruin_n/n*100:.1f}%")
+    print(f"{'=' * 78}")
+    print(f"  {n:,} simulations  |  Starting: {starting:,.0f} kr  |  Ruin: {ruin_n / n * 100:.1f}%")
     print()
     hdr = f"  {'':30s}  {'P10':>9s}  {'P25':>9s}  {'Median':>9s}  {'P75':>9s}  {'P90':>9s}"
-    sep = f"  {'-'*30}  {'-'*9}  {'-'*9}  {'-'*9}  {'-'*9}  {'-'*9}"
+    sep = f"  {'-' * 30}  {'-' * 9}  {'-' * 9}  {'-' * 9}  {'-' * 9}  {'-' * 9}"
     print(hdr)
     print(sep)
 
@@ -565,10 +574,10 @@ def print_summary(results: List[SimResult], label: str, starting: float):
     median_final = pct(finals, 50)
     if starting > 0 and median_final > 0:
         growth = median_final / starting
-        print(f"\n  Median growth: {growth:.2f}x  ({(growth-1)*100:+.0f}%)")
+        print(f"\n  Median growth: {growth:.2f}x  ({(growth - 1) * 100:+.0f}%)")
 
 
-def print_stream_breakdown(results: List[SimResult], label: str):
+def print_stream_breakdown(results: list[SimResult], label: str):
     """Show bet volume breakdown by stream."""
     n = len(results)
     soft = [r.soft_bets for r in results]
@@ -579,7 +588,7 @@ def print_stream_breakdown(results: List[SimResult], label: str):
 
     print(f"\n  Stream Breakdown: {label}")
     print(f"  {'Stream':<20s}  {'Median':>8s}  {'% of Total':>10s}  {'Description':>30s}")
-    print(f"  {'-'*20}  {'-'*8}  {'-'*10}  {'-'*30}")
+    print(f"  {'-' * 20}  {'-' * 8}  {'-' * 10}  {'-' * 30}")
 
     med_total = max(1, pct(total, 50))
     for name, vals, desc in [
@@ -594,14 +603,14 @@ def print_stream_breakdown(results: List[SimResult], label: str):
     print(f"  {'TOTAL':<20s}  {med_total:>8,.0f}  {'100.0':>9s}%")
 
 
-def print_trajectory(results: List[SimResult], label: str, interval: int = 4):
+def print_trajectory(results: list[SimResult], label: str, interval: int = 4):
     tracked = [r for r in results if r.weekly_bankrolls]
     if not tracked:
         return
     max_w = max(len(r.weekly_bankrolls) for r in tracked)
     print(f"\n  Weekly Trajectory: {label}")
     print(f"  {'Week':>6s}  {'P10':>9s}  {'P25':>9s}  {'Median':>9s}  {'P75':>9s}  {'P90':>9s}")
-    print(f"  {'-'*6}  {'-'*9}  {'-'*9}  {'-'*9}  {'-'*9}  {'-'*9}")
+    print(f"  {'-' * 6}  {'-' * 9}  {'-' * 9}  {'-' * 9}  {'-' * 9}  {'-' * 9}")
 
     for w in range(max_w):
         if w == 0 or w % interval == 0 or w == max_w - 1:
@@ -612,12 +621,15 @@ def print_trajectory(results: List[SimResult], label: str, interval: int = 4):
                 elif r.weekly_bankrolls:
                     vals.append(r.weekly_bankrolls[-1])
             if vals:
-                print(f"  {w:>6d}  {pct(vals,10):>9,.0f}  {pct(vals,25):>9,.0f}  {pct(vals,50):>9,.0f}  {pct(vals,75):>9,.0f}  {pct(vals,90):>9,.0f}")
+                print(
+                    f"  {w:>6d}  {pct(vals, 10):>9,.0f}  {pct(vals, 25):>9,.0f}  {pct(vals, 50):>9,.0f}  {pct(vals, 75):>9,.0f}  {pct(vals, 90):>9,.0f}"
+                )
 
 
 # =====================================================================
 # MAIN
 # =====================================================================
+
 
 def main():
     random.seed(42)
@@ -631,17 +643,17 @@ def main():
     # ── Inventory ──
     print(f"""
   BONUS INVENTORY
-  {'='*40}
+  {"=" * 40}
   Freebets:  {len(FREEBETS):>2d} providers  {TOTAL_FREEBET_VALUE:>6,} kr face value
   Deposit:   {len(DEPOSIT_BONUSES):>2d} providers  {TOTAL_DEPOSIT_BONUS:>6,} kr face value
-  TOTAL:     {len(FREEBETS)+len(DEPOSIT_BONUSES):>2d} providers  {TOTAL_FREEBET_VALUE+TOTAL_DEPOSIT_BONUS:>6,} kr
+  TOTAL:     {len(FREEBETS) + len(DEPOSIT_BONUSES):>2d} providers  {TOTAL_FREEBET_VALUE + TOTAL_DEPOSIT_BONUS:>6,} kr
 
   Trigger capital needed:      {TOTAL_TRIGGER_CAPITAL:>6,} kr  (static bets, win/lose from bankroll)
   Deposit capital needed:     {TOTAL_DEPOSIT_BONUS:>6,} kr  (deposited, matched by provider)
   Total wagering volume:     {TOTAL_WAGERING_VOLUME:>7,} kr  (all on +EV bets)
 
   BET STREAMS (all played simultaneously)
-  {'='*40}
+  {"=" * 40}
   1. Soft value bets   ~1,862/scan  avg 8.8% edge  91.3% of volume
   2. Polymarket value     ~144/scan  avg 5.4% edge   7.1% of volume
   3. Pinnacle reverse      ~29/scan  avg 6.4% edge   1.4% of volume
@@ -650,7 +662,7 @@ def main():
   TOTAL:               ~2,039/scan  avg 8.5% edge  (weighted)
 
   FREEBET MODEL (SNR = Stake Not Returned)
-  {'='*40}
+  {"=" * 40}
   Trigger: static bet (100-1000 kr) on +EV selection from bankroll
   Freebet: placed on +EV selection, costs nothing
     Win:  bankroll += freebet * (odds - 1)   [only profit, SNR]
@@ -661,7 +673,7 @@ def main():
                       = freebet * 2.5 * 0.30 = ~75% of face value
 
   WAGERING MODEL (pure +EV, all streams)
-  {'='*40}
+  {"=" * 40}
   All wagering bets are Kelly-sized +EV value bets from ALL streams
   No break-even churning — every bet has positive expected value
   Polymarket + Pinnacle reverse + specials run alongside soft value
@@ -674,8 +686,10 @@ def main():
     print("#" * 78)
     print("  FREEBET EXPECTED VALUES (per provider)")
     print("#" * 78)
-    print(f"\n  {'Provider':<13s} {'FB':>6s} {'Trigger':>8s} {'E[FB profit]':>13s} {'E[Trigger PnL]':>15s} {'E[Total]':>9s}")
-    print(f"  {'-'*13} {'-'*6} {'-'*8} {'-'*13} {'-'*15} {'-'*9}")
+    print(
+        f"\n  {'Provider':<13s} {'FB':>6s} {'Trigger':>8s} {'E[FB profit]':>13s} {'E[Trigger PnL]':>15s} {'E[Total]':>9s}"
+    )
+    print(f"  {'-' * 13} {'-' * 6} {'-' * 8} {'-' * 13} {'-' * 15} {'-' * 9}")
 
     total_efb = 0.0
     total_etrig = 0.0
@@ -686,15 +700,17 @@ def main():
         fair_odds = avg_odds / (1 + avg_edge)
         win_prob = 1.0 / fair_odds
         e_fb = fb * (avg_odds - 1.0) * win_prob  # SNR: profit * win_prob
-        e_trig = trig * avg_edge                   # E[trigger] = stake * edge
+        e_trig = trig * avg_edge  # E[trigger] = stake * edge
         total_efb += e_fb
         total_etrig += e_trig
-        print(f"  {prov:<13s} {fb:>6,} {trig:>8,} {e_fb:>+12,.0f} kr {e_trig:>+14,.0f} kr {e_fb+e_trig:>+8,.0f} kr")
+        print(f"  {prov:<13s} {fb:>6,} {trig:>8,} {e_fb:>+12,.0f} kr {e_trig:>+14,.0f} kr {e_fb + e_trig:>+8,.0f} kr")
 
-    print(f"  {'-'*13} {'-'*6} {'-'*8} {'-'*13} {'-'*15} {'-'*9}")
-    print(f"  {'TOTAL':<13s} {TOTAL_FREEBET_VALUE:>6,} {TOTAL_TRIGGER_CAPITAL:>8,} {total_efb:>+12,.0f} kr {total_etrig:>+14,.0f} kr {total_efb+total_etrig:>+8,.0f} kr")
-    print(f"\n  NOTE: High variance! Freebets at 3.5 odds win ~30% of the time.")
-    print(f"  9 freebets -> expect ~3 wins, ~6 losses. But losses cost 0 (SNR).")
+    print(f"  {'-' * 13} {'-' * 6} {'-' * 8} {'-' * 13} {'-' * 15} {'-' * 9}")
+    print(
+        f"  {'TOTAL':<13s} {TOTAL_FREEBET_VALUE:>6,} {TOTAL_TRIGGER_CAPITAL:>8,} {total_efb:>+12,.0f} kr {total_etrig:>+14,.0f} kr {total_efb + total_etrig:>+8,.0f} kr"
+    )
+    print("\n  NOTE: High variance! Freebets at 3.5 odds win ~30% of the time.")
+    print("  9 freebets -> expect ~3 wins, ~6 losses. But losses cost 0 (SNR).")
 
     # ═══════════════════════════════════════════════════════════════════
     # SCENARIO 1: FREEBETS ONLY — find minimum viable start
@@ -705,8 +721,7 @@ def main():
     print("#" * 78)
 
     for start in [1000, 1500, 2000, 2500, 3000, 3550, 4000, 5000]:
-        results = run_monte_carlo(start, bets_per_week=0, total_weeks=4,
-                                  do_freebets=True, do_deposit_bonuses=False)
+        results = run_monte_carlo(start, bets_per_week=0, total_weeks=4, do_freebets=True, do_deposit_bonuses=False)
         finals = [r.final_bankroll for r in results]
         claimed = [r.freebets_claimed for r in results]
         ruin_n = sum(1 for r in results if r.ruin)
@@ -716,13 +731,15 @@ def main():
         median_final = pct(finals, 50)
         p90_final = pct(finals, 90)
 
-        print(f"  Start {start:>5,} kr  ->  "
-              f"Median: {median_final:>6,.0f} kr  "
-              f"P10: {p10_final:>6,.0f}  "
-              f"P90: {p90_final:>6,.0f}  "
-              f"Claimed all 9: {all_claimed/len(results)*100:>5.1f}%  "
-              f"Median claimed: {median_claimed:.0f}/9  "
-              f"Bust: {ruin_n/len(results)*100:.1f}%")
+        print(
+            f"  Start {start:>5,} kr  ->  "
+            f"Median: {median_final:>6,.0f} kr  "
+            f"P10: {p10_final:>6,.0f}  "
+            f"P90: {p90_final:>6,.0f}  "
+            f"Claimed all 9: {all_claimed / len(results) * 100:>5.1f}%  "
+            f"Median claimed: {median_claimed:.0f}/9  "
+            f"Bust: {ruin_n / len(results) * 100:.1f}%"
+        )
 
     # ═══════════════════════════════════════════════════════════════════
     # SCENARIO 2: SNOWBALL FROM FREEBETS TO DEPOSIT BONUSES
@@ -734,10 +751,10 @@ def main():
 
     for start in [2000, 3000, 3550, 5000]:
         for bpw in [20, 35, 50]:
-            track = (bpw == 35 and start == 3550)
-            results = run_monte_carlo(start, bpw, total_weeks=52,
-                                      do_freebets=True, do_deposit_bonuses=True,
-                                      track_weekly=track)
+            track = bpw == 35 and start == 3550
+            results = run_monte_carlo(
+                start, bpw, total_weeks=52, do_freebets=True, do_deposit_bonuses=True, track_weekly=track
+            )
             print_summary(results, f"SNOWBALL | {start:,} kr start | {bpw} bets/week | 1 year", start)
 
             if track:
@@ -754,10 +771,10 @@ def main():
 
     for start in [10000, 15000, 20000, 25000]:
         for bpw in [20, 35, 50]:
-            track = (bpw == 35 and start == 20000)
-            results = run_monte_carlo(start, bpw, total_weeks=52,
-                                      do_freebets=True, do_deposit_bonuses=True,
-                                      track_weekly=track)
+            track = bpw == 35 and start == 20000
+            results = run_monte_carlo(
+                start, bpw, total_weeks=52, do_freebets=True, do_deposit_bonuses=True, track_weekly=track
+            )
             print_summary(results, f"OPTIMAL | {start:,} kr start | {bpw} bets/week | 1 year", start)
 
             if track:
@@ -774,10 +791,10 @@ def main():
 
     for start in [10000, 20000, 50000]:
         for bpw in [20, 35, 50]:
-            track = (bpw == 35 and start == 20000)
-            results = run_monte_carlo(start, bpw, total_weeks=52,
-                                      do_freebets=False, do_deposit_bonuses=False,
-                                      track_weekly=track)
+            track = bpw == 35 and start == 20000
+            results = run_monte_carlo(
+                start, bpw, total_weeks=52, do_freebets=False, do_deposit_bonuses=False, track_weekly=track
+            )
             print_summary(results, f"PURE VALUE | {start:,} kr | {bpw} bets/week | 1 year", start)
 
             if track:
@@ -792,17 +809,18 @@ def main():
     print("#" * 78)
 
     print(f"\n  {'Start':>8s}  {'Median':>7s}  {'P25':>5s}  {'P10':>5s}  {'All 21':>7s}  {'>=15':>6s}  {'>=10':>6s}")
-    print(f"  {'-'*8}  {'-'*7}  {'-'*5}  {'-'*5}  {'-'*7}  {'-'*6}  {'-'*6}")
+    print(f"  {'-' * 8}  {'-' * 7}  {'-' * 5}  {'-' * 5}  {'-' * 7}  {'-' * 6}  {'-' * 6}")
 
     for start in [2000, 3000, 3550, 5000, 7500, 10000, 15000, 20000]:
-        results = run_monte_carlo(start, bets_per_week=35, total_weeks=52,
-                                  do_freebets=True, do_deposit_bonuses=True)
+        results = run_monte_carlo(start, bets_per_week=35, total_weeks=52, do_freebets=True, do_deposit_bonuses=True)
         unlocked = [r.bonuses_unlocked for r in results]
         n = len(results)
         all21 = sum(1 for u in unlocked if u >= 21) / n * 100
         ge15 = sum(1 for u in unlocked if u >= 15) / n * 100
         ge10 = sum(1 for u in unlocked if u >= 10) / n * 100
-        print(f"  {start:>7,}  {pct(unlocked,50):>6.0f}/21  {pct(unlocked,25):>4.0f}  {pct(unlocked,10):>4.0f}  {all21:>6.1f}%  {ge15:>5.1f}%  {ge10:>5.1f}%")
+        print(
+            f"  {start:>7,}  {pct(unlocked, 50):>6.0f}/21  {pct(unlocked, 25):>4.0f}  {pct(unlocked, 10):>4.0f}  {all21:>6.1f}%  {ge15:>5.1f}%  {ge10:>5.1f}%"
+        )
 
     # ═══════════════════════════════════════════════════════════════════
     # SCENARIO 6: DEPOSIT BONUS EFFICIENCY (pure +EV wagering)
@@ -813,8 +831,10 @@ def main():
     print("#" * 78)
 
     avg_edge = 0.064
-    print(f"\n  {'Provider':<13s} {'Bonus':>6s} {'Mult':>5s} {'Volume':>8s} {'E[wager PnL]':>13s} {'E[total]':>9s} {'EV/deposit':>11s}")
-    print(f"  {'-'*13} {'-'*6} {'-'*5} {'-'*8} {'-'*13} {'-'*9} {'-'*11}")
+    print(
+        f"\n  {'Provider':<13s} {'Bonus':>6s} {'Mult':>5s} {'Volume':>8s} {'E[wager PnL]':>13s} {'E[total]':>9s} {'EV/deposit':>11s}"
+    )
+    print(f"  {'-' * 13} {'-' * 6} {'-' * 5} {'-' * 8} {'-' * 13} {'-' * 9} {'-' * 11}")
 
     total_bonus = 0
     total_ev = 0
@@ -825,11 +845,15 @@ def main():
         ev_per_deposit = total_val / bonus * 100
         total_bonus += bonus
         total_ev += total_val
-        print(f"  {prov:<13s} {bonus:>6,} {mult:>4d}x {volume:>8,} {wager_ev:>+12,.0f} kr {total_val:>+8,.0f} kr {ev_per_deposit:>10.0f}%")
+        print(
+            f"  {prov:<13s} {bonus:>6,} {mult:>4d}x {volume:>8,} {wager_ev:>+12,.0f} kr {total_val:>+8,.0f} kr {ev_per_deposit:>10.0f}%"
+        )
 
-    print(f"  {'-'*13} {'-'*6} {'-'*5} {'-'*8} {'-'*13} {'-'*9} {'-'*11}")
+    print(f"  {'-' * 13} {'-' * 6} {'-' * 5} {'-' * 8} {'-' * 13} {'-' * 9} {'-' * 11}")
     wager_ev_total = TOTAL_WAGERING_VOLUME * avg_edge
-    print(f"  {'TOTAL':<13s} {total_bonus:>6,} {'':>5s} {TOTAL_WAGERING_VOLUME:>8,} {wager_ev_total:>+12,.0f} kr {total_ev:>+8,.0f} kr {total_ev/total_bonus*100:>10.0f}%")
+    print(
+        f"  {'TOTAL':<13s} {total_bonus:>6,} {'':>5s} {TOTAL_WAGERING_VOLUME:>8,} {wager_ev_total:>+12,.0f} kr {total_ev:>+8,.0f} kr {total_ev / total_bonus * 100:>10.0f}%"
+    )
 
     # ═══════════════════════════════════════════════════════════════════
     # SCENARIO 7: ANNUAL GROWTH MATRIX
@@ -841,14 +865,14 @@ def main():
     starts = [3000, 5000, 10000, 20000]
     cadences = [20, 35, 50]
 
-    print(f"\n  WITH BONUSES (Year 1)")
+    print("\n  WITH BONUSES (Year 1)")
     print(f"  {'Start':>8s}", end="")
     for bpw in cadences:
         print(f"  {'%d b/w' % bpw:>12s}", end="")
     print()
-    print(f"  {'-'*8}", end="")
+    print(f"  {'-' * 8}", end="")
     for _ in cadences:
-        print(f"  {'-'*12}", end="")
+        print(f"  {'-' * 12}", end="")
     print()
 
     for start_kr in starts:
@@ -860,14 +884,14 @@ def main():
             print(f"  {median:>7,.0f} ({growth:+.0f}%)", end="")
         print()
 
-    print(f"\n  WITHOUT BONUSES (Year 2+ baseline)")
+    print("\n  WITHOUT BONUSES (Year 2+ baseline)")
     print(f"  {'Start':>8s}", end="")
     for bpw in cadences:
         print(f"  {'%d b/w' % bpw:>12s}", end="")
     print()
-    print(f"  {'-'*8}", end="")
+    print(f"  {'-' * 8}", end="")
     for _ in cadences:
-        print(f"  {'-'*12}", end="")
+        print(f"  {'-' * 12}", end="")
     print()
 
     for start_kr in starts:
@@ -888,7 +912,7 @@ def main():
     print("#" * 78)
 
     # We need a separate simulation function that uses ONLY soft value
-    print(f"\n  All simulations: 20,000 kr start | 35 bets/week | 1 year | no bonuses")
+    print("\n  All simulations: 20,000 kr start | 35 bets/week | 1 year | no bonuses")
     print()
 
     # Full model (all streams) — already computed above, recompute for clean comparison
@@ -897,8 +921,10 @@ def main():
     full_profit = pct([r.total_profit for r in full_res], 50)
 
     print(f"  {'Configuration':<35s}  {'Median Final':>12s}  {'Median Profit':>13s}  {'Growth':>8s}")
-    print(f"  {'-'*35}  {'-'*12}  {'-'*13}  {'-'*8}")
-    print(f"  {'All 4 streams (actual model)':<35s}  {full_median:>11,.0f}  {full_profit:>12,.0f}  {(full_median/20000-1)*100:>+7.0f}%")
+    print(f"  {'-' * 35}  {'-' * 12}  {'-' * 13}  {'-' * 8}")
+    print(
+        f"  {'All 4 streams (actual model)':<35s}  {full_median:>11,.0f}  {full_profit:>12,.0f}  {(full_median / 20000 - 1) * 100:>+7.0f}%"
+    )
 
     # Note: The weighted sampling automatically models all streams together.
     # Removing streams would need a modified sampler. Instead, we note the
@@ -910,14 +936,14 @@ def main():
     med_total = pct([r.total_bets for r in full_res], 50)
 
     print(f"\n  Stream volume at 35 bets/week over 52 weeks ({med_total:,.0f} total bets):")
-    print(f"    Soft value:        {med_soft:>5,.0f} bets  ({med_soft/max(1,med_total)*100:>5.1f}%)")
-    print(f"    Polymarket:        {med_poly:>5,.0f} bets  ({med_poly/max(1,med_total)*100:>5.1f}%)")
-    print(f"    Pinnacle reverse:  {med_rev:>5,.0f} bets  ({med_rev/max(1,med_total)*100:>5.1f}%)")
-    print(f"    +EV Specials:      {med_spec:>5,.0f} bets  ({med_spec/max(1,med_total)*100:>5.1f}%)")
+    print(f"    Soft value:        {med_soft:>5,.0f} bets  ({med_soft / max(1, med_total) * 100:>5.1f}%)")
+    print(f"    Polymarket:        {med_poly:>5,.0f} bets  ({med_poly / max(1, med_total) * 100:>5.1f}%)")
+    print(f"    Pinnacle reverse:  {med_rev:>5,.0f} bets  ({med_rev / max(1, med_total) * 100:>5.1f}%)")
+    print(f"    +EV Specials:      {med_spec:>5,.0f} bets  ({med_spec / max(1, med_total) * 100:>5.1f}%)")
     print()
-    print(f"  Polymarket + Pinnacle reverse + specials = {med_poly+med_rev+med_spec:,.0f} extra bets/year")
-    print(f"  These streams add diversification + higher avg edge (5.4-12%)")
-    print(f"  More uncorrelated bets = smoother equity curve + lower drawdown risk")
+    print(f"  Polymarket + Pinnacle reverse + specials = {med_poly + med_rev + med_spec:,.0f} extra bets/year")
+    print("  These streams add diversification + higher avg edge (5.4-12%)")
+    print("  More uncorrelated bets = smoother equity curve + lower drawdown risk")
 
     # ═══════════════════════════════════════════════════════════════════
     # SUMMARY

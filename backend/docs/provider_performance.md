@@ -58,7 +58,6 @@ Aliases (shared odds): nordicbet=betsson, spelklubben=bethard, campobet/swiper/l
 | Provider | Platform | Events | Odds | ML | Spr | Tot | Time | Status |
 |----------|----------|-------:|-----:|---:|----:|----:|-----:|--------|
 | 888sport | Spectate | 1,077 | 2,399 | 2,169 | 120 | 110 | 56s | OK |
-| interwetten | Proprietary | 437 | 830 | 420 | 158 | 252 | 542s | SLOW |
 | snabbare | Sportradar WS | 328 | 592 | 592 | 0 | 0 | 401s | OK |
 | coolbet | GAN/Camoufox | 243 | 2,616 | 352 | 669 | 1,595 | 305s | OK |
 | tipwin | Tipwin SPA | 107 | 552 | 207 | 207 | 138 | 126s | OK (**FIXED** — was 0) |
@@ -107,12 +106,6 @@ These are **not code bugs** — they are bookmaker/platform constraints that can
 **Fix applied (2026-03-03):** Added `"winner": "1x2"` to MARKET_ABRV_MAP, `"None": "draw"` to TIP_MAP. Added 2-way sport detection: `winner` market without draw outcome → `moneyline` (for tennis/basketball).
 **Note:** 107 events in full run vs 1,609 in test = only football+ice_hockey extracted in orchestrator (known tipwin limitation). Test script runs all sports.
 
-### Interwetten — still slow (542s)
-
-**Status:** MONITOR — league reduction + concurrency increase applied but didn't help enough
-**Fix applied (2026-03-03):** Reduced football leagues 104 → 52, increased concurrency.
-**Result:** 542s (worse than expected). Events dropped 736 → 437. Possible site-side slowdown.
-
 ### Snabbare football — recovered but slow (266s)
 
 **Status:** STABLE — improved from 393s to 266s via prior fixes
@@ -138,11 +131,10 @@ These are **not code bugs** — they are bookmaker/platform constraints that can
 ### API Soft (bottleneck: bethard 180s)
 Gecko V2 providers are the bottleneck due to paginated API. Others are fast (9-22s). No action needed.
 
-### Browser Soft (bottleneck: interwetten 542s, 10bet 527s)
+### Browser Soft (bottleneck: 10bet 527s)
 
 | Provider | Time | Events | Efficiency | Action |
 |----------|-----:|-------:|-----------|--------|
-| interwetten | 542s | 437 | 0.8 ev/s | Still slow despite league reduction |
 | 10bet | 527s | 62 | 0.1 ev/s | Regressed (was 633 events) — site variability |
 | snabbare | 401s | 328 | 0.8 ev/s | Stable, API fallback approach |
 | coolbet | 305s | 243 | 0.8 ev/s | OK |
@@ -173,7 +165,6 @@ Fixes applied:
 - **tipwin.py**: Added `"winner": "1x2"` to MARKET_ABRV_MAP (Tipwin renamed `3way`→`winner`). Added `"None": "draw"` to TIP_MAP (renamed from `X`). Added 2-way sport detection: `winner` without draw → `moneyline` for tennis/basketball. Went from 0 → 1,609 events.
 - **kambi.py**: Added `MAIN_LINE` tag filter for betOfferType 1/6/7 (spread/total). Added EXCLUDE_PATTERNS for team totals ("total goals by", etc.) and prop totals (corners, cards, shots, fouls, offsides). Expected ~90% odds reduction (37k → ~4k).
 - **vbet.py**: Added main line filtering using `order` field from BetConstruct Swarm API. Keeps only the spread/total candidate with lowest order value. Expected ~90% odds reduction (38k → ~3.6k).
-- **interwetten.py**: Reduced football leagues 104 → 52 (removed obscure leagues without Pinnacle coverage). Increased CONCURRENT_LEAGUE_PAGES 12→16, CONCURRENT_DETAIL_PAGES 16→20, MAX_DETAIL_EVENTS 150→200. Removed ATP Challengers, WTA 125, golf, cycling.
 - **constants.py**: Removed `snooker` from ALLOWED_SPORTS (no soft provider supports it).
 
 Platform limitations confirmed (not fixable):
@@ -223,7 +214,6 @@ Summary of major milestones:
 - Kambi event caching saves ~350 HTTP requests/run
 - Coolbet cracked with Camoufox (anti-detect Firefox)
 - ComeOn Group date-based extraction rewrite
-- Interwetten 15x improvement (concurrent tabs)
 - 10bet 10x improvement (headless mode)
 - Snabbare SPA React Router link-clicking fix
 - Per-provider sport_timeout support in orchestrator

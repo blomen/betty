@@ -10,83 +10,81 @@ Uses the "Aggro low-BR" config (best from prior sweep) vs current production.
 Run: python scripts/kelly_full_sweep.py
 """
 
+import io
 import random
 import sys
-import io
-from dataclasses import dataclass, field
-from typing import List, Tuple
+from dataclasses import dataclass
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 # ── Edge distributions (from live data) ──
 SOFT_VALUE_EDGE_DIST = [
-    (2.0,  4.0,  0.35, 3.50),
-    (4.0,  6.0,  0.25, 4.10),
-    (6.0, 10.0,  0.20, 5.50),
+    (2.0, 4.0, 0.35, 3.50),
+    (4.0, 6.0, 0.25, 4.10),
+    (6.0, 10.0, 0.20, 5.50),
     (10.0, 20.0, 0.15, 8.10),
     (20.0, 35.0, 0.05, 11.40),
 ]
 POLYMARKET_EDGE_DIST = [
-    (3.0,  5.0,  0.40, 2.80),
-    (5.0,  8.0,  0.30, 3.40),
-    (8.0, 15.0,  0.20, 4.50),
+    (3.0, 5.0, 0.40, 2.80),
+    (5.0, 8.0, 0.30, 3.40),
+    (8.0, 15.0, 0.20, 4.50),
     (15.0, 30.0, 0.10, 6.00),
 ]
 PINNACLE_REVERSE_EDGE_DIST = [
-    (3.0,  5.0,  0.35, 4.50),
-    (5.0,  8.0,  0.30, 6.00),
-    (8.0, 12.0,  0.25, 8.50),
+    (3.0, 5.0, 0.35, 4.50),
+    (5.0, 8.0, 0.30, 6.00),
+    (8.0, 12.0, 0.25, 8.50),
     (12.0, 20.0, 0.10, 11.00),
 ]
 SPECIALS_EDGE_DIST = [
-    (4.0,  8.0,  0.40, 3.00),
-    (8.0, 15.0,  0.35, 4.00),
+    (4.0, 8.0, 0.40, 3.00),
+    (8.0, 15.0, 0.35, 4.00),
     (15.0, 30.0, 0.20, 5.50),
     (30.0, 50.0, 0.05, 8.00),
 ]
 STREAM_WEIGHTS = [
-    ("soft_value",       0.913, SOFT_VALUE_EDGE_DIST),
-    ("polymarket",       0.071, POLYMARKET_EDGE_DIST),
+    ("soft_value", 0.913, SOFT_VALUE_EDGE_DIST),
+    ("polymarket", 0.071, POLYMARKET_EDGE_DIST),
     ("pinnacle_reverse", 0.014, PINNACLE_REVERSE_EDGE_DIST),
-    ("specials",         0.002, SPECIALS_EDGE_DIST),
+    ("specials", 0.002, SPECIALS_EDGE_DIST),
 ]
 
 # Freebets (provider, freebet_amount, trigger_bet_amount)
 FREEBETS = [
-    ("unibet",    1000, 1000),
-    ("betmgm",     500,  500),
-    ("dbet",       500,  500),
-    ("mrgreen",    500,  500),
-    ("hajper",     500,  500),
-    ("betsson",    250,  250),
-    ("betsafe",    100,  100),
-    ("nordicbet",  100,  100),
-    ("lyllo",      100,  100),
+    ("unibet", 1000, 1000),
+    ("betmgm", 500, 500),
+    ("dbet", 500, 500),
+    ("mrgreen", 500, 500),
+    ("hajper", 500, 500),
+    ("betsson", 250, 250),
+    ("betsafe", 100, 100),
+    ("nordicbet", 100, 100),
+    ("lyllo", 100, 100),
 ]
 
 # Deposit bonuses (provider, bonus_amount, wagering_multiplier, min_odds)
 DEPOSIT_BONUSES = [
-    ("888sport",     500,   1, 1.80),
-    ("interwetten", 1000,   5, 1.70),
-    ("leovegas",     600,   6, 1.80),
-    ("betinia",     1000,   6, 1.80),
-    ("swiper",      1000,   6, 1.50),
-    ("lodur",       1000,   6, 1.80),
-    ("coolbet",     1000,   6, 1.50),
-    ("campobet",     500,   6, 1.80),
-    ("quickcasino",  500,   6, 1.80),
-    ("comeon",       500,   6, 1.80),
-    ("tipwin",      1000,   7, 1.80),
-    ("10bet",       1000,   8, 1.80),
-    ("snabbare",     600,   8, 1.80),
-    ("vbet",         800,  10, 1.80),
-    ("speedybet",    500,  12, 1.80),
-    ("x3000",        500,  12, 1.80),
-    ("goldenbull",   500,  12, 1.80),
-    ("1x2",          500,  12, 1.80),
-    ("spelklubben",  500,  15, 1.90),
-    ("bethard",      500,  15, 1.90),
-    ("expekt",      1000,  20, 1.80),
+    ("888sport", 500, 1, 1.80),
+    ("leovegas", 600, 6, 1.80),
+    ("betinia", 1000, 6, 1.80),
+    ("swiper", 1000, 6, 1.50),
+    ("lodur", 1000, 6, 1.80),
+    ("coolbet", 1000, 6, 1.50),
+    ("campobet", 500, 6, 1.80),
+    ("quickcasino", 500, 6, 1.80),
+    ("comeon", 500, 6, 1.80),
+    ("tipwin", 1000, 7, 1.80),
+    ("10bet", 1000, 8, 1.80),
+    ("snabbare", 600, 8, 1.80),
+    ("vbet", 800, 10, 1.80),
+    ("speedybet", 500, 12, 1.80),
+    ("x3000", 500, 12, 1.80),
+    ("goldenbull", 500, 12, 1.80),
+    ("1x2", 500, 12, 1.80),
+    ("spelklubben", 500, 15, 1.90),
+    ("bethard", 500, 15, 1.90),
+    ("expekt", 1000, 20, 1.80),
 ]
 
 TOTAL_FREEBET_VALUE = sum(f[1] for f in FREEBETS)
@@ -106,7 +104,8 @@ def fprint(*args, **kwargs):
 
 # ── Sampling ──
 
-def sample_bet(min_odds: float = 1.10) -> Tuple[float, float]:
+
+def sample_bet(min_odds: float = 1.10) -> tuple[float, float]:
     """Sample (edge_pct, odds) from all streams, respecting min_odds."""
     for _ in range(50):
         r = random.random()
@@ -121,7 +120,7 @@ def sample_bet(min_odds: float = 1.10) -> Tuple[float, float]:
     return 4.0, max(min_odds, 2.50)
 
 
-def _sample_from(dist) -> Tuple[float, float]:
+def _sample_from(dist) -> tuple[float, float]:
     r = random.random()
     cumulative = 0.0
     for min_e, max_e, weight, avg_odds in dist:
@@ -141,6 +140,7 @@ def simulate_bet(stake: float, edge_pct: float, odds: float) -> float:
 
 # ── Kelly configs ──
 
+
 @dataclass
 class KellyConfig:
     name: str
@@ -156,18 +156,26 @@ class KellyConfig:
 
 CURRENT = KellyConfig(
     name="CURRENT",
-    min_kelly=0.25, max_kelly=0.75,
-    edge_low=2.0, edge_high=6.0,
+    min_kelly=0.25,
+    max_kelly=0.75,
+    edge_low=2.0,
+    edge_high=6.0,
     single_bet_cap=0.03,
-    boost_factor=1.333, boost_threshold=5000, boost_taper=15000,
+    boost_factor=1.333,
+    boost_threshold=5000,
+    boost_taper=15000,
 )
 
 PROPOSED = KellyConfig(
     name="PROPOSED (1.5x boost, 4% cap, taper 10k)",
-    min_kelly=0.25, max_kelly=0.75,
-    edge_low=2.0, edge_high=6.0,
+    min_kelly=0.25,
+    max_kelly=0.75,
+    edge_low=2.0,
+    edge_high=6.0,
     single_bet_cap=0.04,
-    boost_factor=1.5, boost_threshold=5000, boost_taper=10000,
+    boost_factor=1.5,
+    boost_threshold=5000,
+    boost_taper=10000,
 )
 
 
@@ -234,6 +242,7 @@ def calc_stake(bankroll: float, edge_pct: float, odds: float, cfg: KellyConfig) 
 
 # ── Simulation result ──
 
+
 @dataclass
 class SimResult:
     final: float = 0.0
@@ -251,7 +260,8 @@ class SimResult:
 
 # ── Phase simulators ──
 
-def simulate_freebet_phase(bankroll: float, cfg: KellyConfig) -> Tuple[float, float, float, int, int, int]:
+
+def simulate_freebet_phase(bankroll: float, cfg: KellyConfig) -> tuple[float, float, float, int, int, int]:
     """Returns: (bankroll, bonus_profit, betting_profit, bets, freebets_claimed, skipped)"""
     bonus_profit = 0.0
     betting_profit = 0.0
@@ -287,9 +297,12 @@ def simulate_freebet_phase(bankroll: float, cfg: KellyConfig) -> Tuple[float, fl
 
 
 def simulate_deposit_bonus(
-    bankroll: float, bonus_amount: float, wagering_mult: float,
-    min_odds: float, cfg: KellyConfig,
-) -> Tuple[float, float, float, int, float, int]:
+    bankroll: float,
+    bonus_amount: float,
+    wagering_mult: float,
+    min_odds: float,
+    cfg: KellyConfig,
+) -> tuple[float, float, float, int, float, int]:
     """Returns: (bankroll, bonus_profit, betting_profit, bets, wagered, weeks)"""
     wagering_target = bonus_amount * wagering_mult
     effective = bankroll + bonus_amount
@@ -323,7 +336,7 @@ def simulate_deposit_bonus(
     return effective, bonus_amount, betting_pnl, bets, wagered, weeks
 
 
-def simulate_value_phase(bankroll: float, weeks: int, cfg: KellyConfig) -> Tuple[float, float, int, int, float, float]:
+def simulate_value_phase(bankroll: float, weeks: int, cfg: KellyConfig) -> tuple[float, float, int, int, float, float]:
     """Returns: (bankroll, profit, bets, skipped, peak, trough)"""
     profit = 0.0
     bets = 0
@@ -355,6 +368,7 @@ def simulate_value_phase(bankroll: float, weeks: int, cfg: KellyConfig) -> Tuple
 
 # ── Full fresh-account sim ──
 
+
 def run_full_sim(start: float, cfg: KellyConfig, do_freebets: bool = True, do_bonuses: bool = True) -> SimResult:
     bankroll = start
     res = SimResult()
@@ -382,9 +396,7 @@ def run_full_sim(start: float, cfg: KellyConfig, do_freebets: bool = True, do_bo
             if weeks_used >= WEEKS:
                 break
 
-            new_br, bp, betp, bets, _, wks = simulate_deposit_bonus(
-                bankroll, bonus_amt, wager_mult, min_odds, cfg
-            )
+            new_br, bp, betp, bets, _, wks = simulate_deposit_bonus(bankroll, bonus_amt, wager_mult, min_odds, cfg)
             bankroll = new_br
             res.bonus_profit += bp
             res.betting_profit += betp
@@ -417,6 +429,7 @@ def run_full_sim(start: float, cfg: KellyConfig, do_freebets: bool = True, do_bo
 
 # ── Stats ──
 
+
 def pct(vals, p):
     s = sorted(vals)
     idx = int(len(s) * p / 100.0)
@@ -428,6 +441,7 @@ def run_mc(start, cfg, do_fb=True, do_bonus=True):
 
 
 # ── Main ──
+
 
 def main():
     random.seed(42)
@@ -447,14 +461,34 @@ def main():
     fprint("  Isolates Kelly performance at every bankroll level")
     fprint("#" * 110)
 
-    pure_bankrolls = [500, 1000, 1500, 2000, 3000, 5000, 7500, 10000,
-                      15000, 20000, 30000, 50000, 75000, 100000, 150000, 200000]
+    pure_bankrolls = [
+        500,
+        1000,
+        1500,
+        2000,
+        3000,
+        5000,
+        7500,
+        10000,
+        15000,
+        20000,
+        30000,
+        50000,
+        75000,
+        100000,
+        150000,
+        200000,
+    ]
 
     for cfg in configs:
         fprint(f"\n  ── {cfg.name} ──")
-        fprint(f"  {'Bankroll':>10s}  {'Median':>10s}  {'P10':>10s}  {'P25':>10s}  {'P75':>10s}  "
-              f"{'P90':>10s}  {'Growth':>7s}  {'Ruin%':>6s}  {'Play%':>6s}  {'MaxDD':>6s}")
-        fprint(f"  {'-'*10}  {'-'*10}  {'-'*10}  {'-'*10}  {'-'*10}  {'-'*10}  {'-'*7}  {'-'*6}  {'-'*6}  {'-'*6}")
+        fprint(
+            f"  {'Bankroll':>10s}  {'Median':>10s}  {'P10':>10s}  {'P25':>10s}  {'P75':>10s}  "
+            f"{'P90':>10s}  {'Growth':>7s}  {'Ruin%':>6s}  {'Play%':>6s}  {'MaxDD':>6s}"
+        )
+        fprint(
+            f"  {'-' * 10}  {'-' * 10}  {'-' * 10}  {'-' * 10}  {'-' * 10}  {'-' * 10}  {'-' * 7}  {'-' * 6}  {'-' * 6}  {'-' * 6}"
+        )
 
         for bankroll in pure_bankrolls:
             random.seed(42)
@@ -466,29 +500,57 @@ def main():
             dds = [(s.peak - s.trough) / max(1, s.peak) * 100 for s in sims]
 
             med = pct(finals, 50)
-            fprint(f"  {bankroll:>10,}  {med:>10,.0f}  {pct(finals,10):>10,.0f}  {pct(finals,25):>10,.0f}  "
-                  f"{pct(finals,75):>10,.0f}  {pct(finals,90):>10,.0f}  {med/bankroll:>6.2f}x  "
-                  f"{ruin_n/NUM_SIMS*100:>5.1f}%  {pct(plays,50):>5.1f}%  {pct(dds,50):>5.1f}%")
+            fprint(
+                f"  {bankroll:>10,}  {med:>10,.0f}  {pct(finals, 10):>10,.0f}  {pct(finals, 25):>10,.0f}  "
+                f"{pct(finals, 75):>10,.0f}  {pct(finals, 90):>10,.0f}  {med / bankroll:>6.2f}x  "
+                f"{ruin_n / NUM_SIMS * 100:>5.1f}%  {pct(plays, 50):>5.1f}%  {pct(dds, 50):>5.1f}%"
+            )
 
     # ═══════════════════════════════════════════════════════════════════
     # SECTION B: FRESH ACCOUNT — freebets + bonuses + snowball
     # ═══════════════════════════════════════════════════════════════════
     fprint("\n\n" + "#" * 110)
     fprint("  SECTION B: FRESH ACCOUNT (freebets → deposit bonuses → snowball)")
-    fprint(f"  Finding optimal minimum start. Trigger capital: {TOTAL_TRIGGER_CAPITAL:,} kr, "
-          f"Deposit bonuses: {TOTAL_DEPOSIT_BONUS:,} kr")
+    fprint(
+        f"  Finding optimal minimum start. Trigger capital: {TOTAL_TRIGGER_CAPITAL:,} kr, "
+        f"Deposit bonuses: {TOTAL_DEPOSIT_BONUS:,} kr"
+    )
     fprint("#" * 110)
 
-    fresh_bankrolls = [250, 500, 750, 1000, 1250, 1500, 2000, 2500, 3000, 3550,
-                       4000, 5000, 6000, 7500, 10000, 12500, 15000, 20000, 25000, 30000]
+    fresh_bankrolls = [
+        250,
+        500,
+        750,
+        1000,
+        1250,
+        1500,
+        2000,
+        2500,
+        3000,
+        3550,
+        4000,
+        5000,
+        6000,
+        7500,
+        10000,
+        12500,
+        15000,
+        20000,
+        25000,
+        30000,
+    ]
 
     for cfg in configs:
         fprint(f"\n  ── {cfg.name} ──")
-        fprint(f"  {'Start':>10s}  {'Median':>10s}  {'P10':>10s}  {'P25':>10s}  {'P75':>10s}  "
-              f"{'P90':>10s}  {'Growth':>7s}  {'Ruin%':>6s}  {'FBs':>5s}  {'Bonuses':>8s}  "
-              f"{'Trough P10':>11s}")
-        fprint(f"  {'-'*10}  {'-'*10}  {'-'*10}  {'-'*10}  {'-'*10}  {'-'*10}  {'-'*7}  {'-'*6}  "
-              f"{'-'*5}  {'-'*8}  {'-'*11}")
+        fprint(
+            f"  {'Start':>10s}  {'Median':>10s}  {'P10':>10s}  {'P25':>10s}  {'P75':>10s}  "
+            f"{'P90':>10s}  {'Growth':>7s}  {'Ruin%':>6s}  {'FBs':>5s}  {'Bonuses':>8s}  "
+            f"{'Trough P10':>11s}"
+        )
+        fprint(
+            f"  {'-' * 10}  {'-' * 10}  {'-' * 10}  {'-' * 10}  {'-' * 10}  {'-' * 10}  {'-' * 7}  {'-' * 6}  "
+            f"{'-' * 5}  {'-' * 8}  {'-' * 11}"
+        )
 
         for start in fresh_bankrolls:
             random.seed(42)
@@ -502,11 +564,13 @@ def main():
 
             med = pct(finals, 50)
             growth = med / start if start > 0 else 0
-            fprint(f"  {start:>10,}  {med:>10,.0f}  {pct(finals,10):>10,.0f}  {pct(finals,25):>10,.0f}  "
-                  f"{pct(finals,75):>10,.0f}  {pct(finals,90):>10,.0f}  {growth:>6.1f}x  "
-                  f"{ruin_n/NUM_SIMS*100:>5.1f}%  {pct(fbs,50):>4.0f}/{len(FREEBETS)}  "
-                  f"{pct(bonuses,50):>3.0f}/{len(DEPOSIT_BONUSES):>2d}    "
-                  f"{pct(troughs,10):>10,.0f}")
+            fprint(
+                f"  {start:>10,}  {med:>10,.0f}  {pct(finals, 10):>10,.0f}  {pct(finals, 25):>10,.0f}  "
+                f"{pct(finals, 75):>10,.0f}  {pct(finals, 90):>10,.0f}  {growth:>6.1f}x  "
+                f"{ruin_n / NUM_SIMS * 100:>5.1f}%  {pct(fbs, 50):>4.0f}/{len(FREEBETS)}  "
+                f"{pct(bonuses, 50):>3.0f}/{len(DEPOSIT_BONUSES):>2d}    "
+                f"{pct(troughs, 10):>10,.0f}"
+            )
 
     # ═══════════════════════════════════════════════════════════════════
     # SECTION C: ROI per kr deposited (efficiency of starting capital)
@@ -518,9 +582,11 @@ def main():
 
     cfg = PROPOSED  # Use best config
     fprint(f"\n  Using: {cfg.name}")
-    fprint(f"  {'Start':>10s}  {'Median Final':>13s}  {'Median Profit':>14s}  {'ROI':>7s}  "
-          f"{'Profit/kr':>10s}  {'Ruin%':>6s}  {'Bonuses':>8s}  {'Rating':>8s}")
-    fprint(f"  {'-'*10}  {'-'*13}  {'-'*14}  {'-'*7}  {'-'*10}  {'-'*6}  {'-'*8}  {'-'*8}")
+    fprint(
+        f"  {'Start':>10s}  {'Median Final':>13s}  {'Median Profit':>14s}  {'ROI':>7s}  "
+        f"{'Profit/kr':>10s}  {'Ruin%':>6s}  {'Bonuses':>8s}  {'Rating':>8s}"
+    )
+    fprint(f"  {'-' * 10}  {'-' * 13}  {'-' * 14}  {'-' * 7}  {'-' * 10}  {'-' * 6}  {'-' * 8}  {'-' * 8}")
 
     best_roi = 0
     best_start = 0
@@ -555,9 +621,11 @@ def main():
             best_profit_per_kr = profit_per_kr
             best_pp_start = start
 
-        fprint(f"  {start:>10,}  {med_final:>13,.0f}  {med_profit:>14,.0f}  {roi:>6.0f}%  "
-              f"{profit_per_kr:>9.2f}x  {ruin_pct:>5.1f}%  {med_bonuses:>3.0f}/{len(DEPOSIT_BONUSES):>2d}    "
-              f"{stars:<8s}")
+        fprint(
+            f"  {start:>10,}  {med_final:>13,.0f}  {med_profit:>14,.0f}  {roi:>6.0f}%  "
+            f"{profit_per_kr:>9.2f}x  {ruin_pct:>5.1f}%  {med_bonuses:>3.0f}/{len(DEPOSIT_BONUSES):>2d}    "
+            f"{stars:<8s}"
+        )
 
     fprint(f"\n  Best ROI: {best_start:,} kr start → {best_roi:.0f}% ROI")
     fprint(f"  Best profit/kr: {best_pp_start:,} kr start → {best_profit_per_kr:.2f}x return per kr deposited")
@@ -571,9 +639,11 @@ def main():
 
     key_starts = [1000, 2000, 3550, 5000, 10000, 20000, 50000]
 
-    fprint(f"\n  {'Start':>10s}  │ {'CURRENT Median':>15s} {'P10':>10s} {'Ruin':>6s}  │ "
-          f"{'PROPOSED Median':>16s} {'P10':>10s} {'Ruin':>6s}  │ {'Δ Median':>9s}")
-    fprint(f"  {'-'*10}  │ {'-'*15} {'-'*10} {'-'*6}  │ {'-'*16} {'-'*10} {'-'*6}  │ {'-'*9}")
+    fprint(
+        f"\n  {'Start':>10s}  │ {'CURRENT Median':>15s} {'P10':>10s} {'Ruin':>6s}  │ "
+        f"{'PROPOSED Median':>16s} {'P10':>10s} {'Ruin':>6s}  │ {'Δ Median':>9s}"
+    )
+    fprint(f"  {'-' * 10}  │ {'-' * 15} {'-' * 10} {'-' * 6}  │ {'-' * 16} {'-' * 10} {'-' * 6}  │ {'-' * 9}")
 
     for start in key_starts:
         random.seed(42)
@@ -589,8 +659,10 @@ def main():
         rp = sum(1 for s in sims_p if s.ruin) / NUM_SIMS * 100
         delta = (mp / max(1, mc) - 1) * 100
 
-        fprint(f"  {start:>10,}  │ {mc:>15,.0f} {pct(fc,10):>10,.0f} {rc:>5.1f}%  │ "
-              f"{mp:>16,.0f} {pct(fp,10):>10,.0f} {rp:>5.1f}%  │ {delta:>+8.1f}%")
+        fprint(
+            f"  {start:>10,}  │ {mc:>15,.0f} {pct(fc, 10):>10,.0f} {rc:>5.1f}%  │ "
+            f"{mp:>16,.0f} {pct(fp, 10):>10,.0f} {rp:>5.1f}%  │ {delta:>+8.1f}%"
+        )
 
     # ═══════════════════════════════════════════════════════════════════
     # SECTION E: Minimum viable bankroll analysis
@@ -600,14 +672,15 @@ def main():
     fprint("  Fine-grained sweep from 100-2000 kr to find the floor")
     fprint("#" * 110)
 
-    micro_starts = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000,
-                    1100, 1200, 1300, 1400, 1500, 1750, 2000]
+    micro_starts = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400, 1500, 1750, 2000]
 
     cfg = PROPOSED
     fprint(f"\n  Using: {cfg.name}")
-    fprint(f"  {'Start':>8s}  {'Median':>10s}  {'P10':>10s}  {'Ruin%':>6s}  {'FBs':>5s}  "
-          f"{'Bonuses':>8s}  {'Play%':>6s}  {'Verdict':>20s}")
-    fprint(f"  {'-'*8}  {'-'*10}  {'-'*10}  {'-'*6}  {'-'*5}  {'-'*8}  {'-'*6}  {'-'*20}")
+    fprint(
+        f"  {'Start':>8s}  {'Median':>10s}  {'P10':>10s}  {'Ruin%':>6s}  {'FBs':>5s}  "
+        f"{'Bonuses':>8s}  {'Play%':>6s}  {'Verdict':>20s}"
+    )
+    fprint(f"  {'-' * 8}  {'-' * 10}  {'-' * 10}  {'-' * 6}  {'-' * 5}  {'-' * 8}  {'-' * 6}  {'-' * 20}")
 
     for start in micro_starts:
         random.seed(42)
@@ -646,9 +719,11 @@ def main():
             else:
                 verdict = "Viable"
 
-        fprint(f"  {start:>8,}  {med:>10,.0f}  {pct(finals,10):>10,.0f}  {ruin_pct:>5.1f}%  "
-              f"{med_fbs:>4.0f}/{len(FREEBETS)}  {med_bonuses:>3.0f}/{len(DEPOSIT_BONUSES):>2d}    "
-              f"{play:>5.1f}%  {verdict:>20s}")
+        fprint(
+            f"  {start:>8,}  {med:>10,.0f}  {pct(finals, 10):>10,.0f}  {ruin_pct:>5.1f}%  "
+            f"{med_fbs:>4.0f}/{len(FREEBETS)}  {med_bonuses:>3.0f}/{len(DEPOSIT_BONUSES):>2d}    "
+            f"{play:>5.1f}%  {verdict:>20s}"
+        )
 
 
 if __name__ == "__main__":

@@ -60,7 +60,7 @@ No VNC/Xvfb needed — entire server runs headless.
 
 3. **asyncpg driver** — true async PostgreSQL driver, combined with uvloop for non-blocking DB queries. Current sync SQLite blocks the event loop on every query.
 
-4. **Headless Playwright** — browser providers (Spectate, ComeOn, Coolbet, Tipwin, 10bet, Interwetten) run headless on Linux with ~30% less RAM per instance vs Windows headed mode.
+4. **Headless Playwright** — browser providers (Spectate, ComeOn, Coolbet, Tipwin, 10bet) run headless on Linux with ~30% less RAM per instance vs Windows headed mode.
 
 5. **No noVNC/Xvfb** — extraction doesn't require authenticated sessions. Removes entire remote-desktop complexity.
 

@@ -25,7 +25,6 @@ arnold/mirror/
     ├── kambi.py                     ← MODIFY: implement read_slip_odds, update_slip_stake
     ├── gecko.py                     ← MODIFY: same
     ├── altenar.py                   ← MODIFY: same
-    ├── interwetten.py               ← MODIFY: same
     ├── generic.py                   ← MODIFY: implement via Strategy hooks (covers Spectate/Comeon/Coolbet/Tipwin)
     ├── kalshi.py                    ← MODIFY: same
     └── (Pinnacle/Polymarket/Cloudbet route via generic.py — extend their intel JSONs)
@@ -970,34 +969,6 @@ git commit -m "feat(workflows/altenar): implement read_slip_odds + update_slip_s
 
 Pierces STB-SPORTSBOOK shadow DOM to read live slip odds and re-write
 stake. Covers Betinia, Campobet, QuickCasino, Swiper, Lodur, Dbet."
-```
-
----
-
-### Task 7: Interwetten `read_slip_odds` + `update_slip_stake`
-
-**Files:**
-- Modify: `arnold/mirror/workflows/interwetten.py`
-- Test: `arnold/tests/workflows/test_interwetten_slip.py` (new)
-
-- [ ] **Step 1: Discovery — inspect Interwetten betslip**
-
-```bash
-curl -X POST http://localhost:8000/mirror/browser/eval/interwetten \
-  -H "Content-Type: application/json" \
-  -d '{"js": "(() => { const slip = document.querySelector(\".bet-slip\") || document.querySelector(\"[class*=betslip]\"); return slip ? {html: slip.outerHTML.slice(0, 4000)} : {error: \"no slip\"}; })()"}'
-```
-
-- [ ] **Step 2: Write failing test**
-
-Create `arnold/tests/workflows/test_interwetten_slip.py` mirroring Task 4 step 2 with `InterwettenWorkflow`, `interwetten`/`interwetten.se`.
-
-- [ ] **Step 3: Run + fail + implement + run + commit**
-
-Same flow as Tasks 4–6. Final commit message:
-
-```
-feat(workflows/interwetten): implement read_slip_odds + update_slip_stake
 ```
 
 ---

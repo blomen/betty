@@ -4,9 +4,9 @@
 
 **Goal:** Increase opportunity yield by debugging underperforming spread/total enrichment in existing providers and adding deferred matching to recover timing-gap events.
 
-**Architecture:** Two independent workstreams. Part B debugs/fixes existing Pass 2 enrichment code in Interwetten, Altenar, VBet, and Betsson — these providers already have spread/total extraction but show gaps in metrics. Part C adds a `deferred_events` buffer table so soft provider events that arrive before Pinnacle are stored and retried after each Pinnacle extraction.
+**Architecture:** Two independent workstreams. Part B debugs/fixes existing Pass 2 enrichment code in Altenar, VBet, and Betsson — these providers already have spread/total extraction but show gaps in metrics. Part C adds a `deferred_events` buffer table so soft provider events that arrive before Pinnacle are stored and retried after each Pinnacle extraction.
 
-**Tech Stack:** Python 3.10+ / SQLAlchemy / FastAPI / Playwright (Interwetten) / WebSocket (VBet)
+**Tech Stack:** Python 3.10+ / SQLAlchemy / FastAPI / WebSocket (VBet)
 
 **Spec:** `docs/superpowers/specs/2026-03-23-market-depth-deferred-matching-design.md`
 
@@ -20,7 +20,6 @@
 | `backend/src/pipeline/storage.py` | Modify | Add `_store_deferred_event()`, modify require_match skip to defer |
 | `backend/src/pipeline/orchestrator.py` | Modify | Add `resolve_deferred_events()` method on `ExtractionPipeline`, call after sharp caches warm |
 | `backend/src/pipeline/metrics.py` | Modify | Add deferred tracking fields |
-| `backend/src/providers/interwetten.py` | Modify | Debug/fix Pass 2 spread extraction |
 | `backend/src/providers/altenar.py` | Modify | Investigate spread gap by sport |
 | `backend/src/providers/vbet.py` | Modify | Investigate spread/total gap by sport |
 | `backend/tests/test_deferred_matching.py` | Create | Tests for deferred event lifecycle |
@@ -32,7 +31,6 @@
 **Purpose:** Before fixing code, determine which gaps are platform limitations vs bugs.
 
 **Files:**
-- Read: `backend/src/providers/interwetten.py:232-248` (Pass 2 trigger)
 - Read: `backend/src/providers/altenar.py:498-500` (football exclusion)
 - Read: `backend/src/providers/vbet.py:432-486` (Pass 2 WS)
 
@@ -56,10 +54,6 @@ Expected: Football will show 0 spreads (platform limitation). Other sports shoul
 
 Same query with `provider_id = 'vbet'`. Compare spread/total counts across sports. Identify which sports return 0%.
 
-- [ ] **Step 3: Query Interwetten spread/total by sport**
-
-Same query with `provider_id = 'interwetten'`. With 0% spread overall, determine if all sports are affected or just some.
-
 - [ ] **Step 4: Query Betsson total coverage by sport**
 
 Same query with `provider_id = 'betsson'`. The 64% total gap may be sport-specific.
@@ -73,69 +67,6 @@ Record which gaps are platform limitations (no action) vs bugs (fix in subsequen
 ```bash
 git add docs/superpowers/specs/2026-03-23-market-depth-deferred-matching-design.md
 git commit -m "docs: add per-sport spread/total diagnostic findings"
-```
-
----
-
-## Task 2: Fix Interwetten Pass 2 Spread Extraction
-
-**Purpose:** Interwetten shows 0% spread despite having Pass 2 code with SPREAD_LABELS. This is almost certainly a bug.
-
-**Files:**
-- Modify: `backend/src/providers/interwetten.py:232-248` (Pass 2 trigger)
-- Modify: `backend/src/providers/interwetten.py:408-480` (_enrich_with_detail_markets)
-
-- [ ] **Step 1: Add DEBUG logging to Pass 2 trigger**
-
-At `interwetten.py:232`, add logging to understand if Pass 2 even runs:
-
-```python
-# Before the Pass 2 block (~line 232)
-logger.info(f"[interwetten] Pass 2 check: events={len(all_events)}, hrefs={len(event_hrefs)}, sport={sport}, in_detail_sports={sport in self.DETAIL_SPORTS}, elapsed={elapsed:.1f}s, timeout={sport_timeout:.1f}s")
-```
-
-- [ ] **Step 2: Add DEBUG logging inside _enrich_with_detail_markets**
-
-At `interwetten.py:408+`, add logging for each detail page navigation:
-
-```python
-# Inside the detail enrichment loop, after navigating to event page
-logger.info(f"[interwetten] Detail page for '{event.name}': loaded, checking for spread/total labels")
-
-# After parsing spread/total from detail page
-logger.info(f"[interwetten] Detail page for '{event.name}': found {len(spread_markets)} spread, {len(total_markets)} total markets")
-```
-
-- [ ] **Step 3: Run extraction for Interwetten and analyze logs**
-
-```bash
-cd backend
-python -m src.app extract interwetten 2>&1 | grep -i "interwetten.*pass 2\|interwetten.*detail"
-```
-
-Expected: Either Pass 2 never triggers (condition bug), or detail pages load but selectors don't match (DOM change).
-
-- [ ] **Step 4: Fix the root cause**
-
-Based on log output, fix the specific issue:
-- If Pass 2 doesn't trigger: fix the condition (check `DETAIL_SPORTS`, timeout calculation, `event_hrefs` population)
-- If detail pages load but no spread found: update JS selectors to match current Interwetten DOM
-- If detail navigation fails: fix the navigation/wait logic
-
-- [ ] **Step 5: Verify fix with extraction run**
-
-```bash
-cd backend
-python -m src.app extract interwetten
-```
-
-Check extraction report shows non-zero spread_count.
-
-- [ ] **Step 6: Commit fix**
-
-```bash
-git add backend/src/providers/interwetten.py
-git commit -m "fix(interwetten): repair Pass 2 spread/total extraction"
 ```
 
 ---

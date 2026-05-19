@@ -850,7 +850,6 @@ def _load_platform_map() -> dict[str, type[ProviderWorkflow]]:
     from .altenar import AltenarWorkflow
     from .gecko import GeckoWorkflow
     from .generic import GenericWorkflow
-    from .interwetten import InterwettenWorkflow
     from .kalshi import KalshiWorkflow
     from .kambi import KambiWorkflow
     from .pinnacle import PinnacleMirrorWorkflow
@@ -872,7 +871,6 @@ def _load_platform_map() -> dict[str, type[ProviderWorkflow]]:
     from .altenar import AltenarWorkflow
     from .gecko import GeckoWorkflow
     from .generic import GenericWorkflow
-    from .interwetten import InterwettenWorkflow
     from .kalshi import KalshiWorkflow
     from .kambi import KambiWorkflow
 
@@ -885,7 +883,6 @@ def _load_platform_map() -> dict[str, type[ProviderWorkflow]]:
         "snabbare": GenericWorkflow,
         "custom": GenericWorkflow,
         "betconstruct": GenericWorkflow,
-        "interwetten": InterwettenWorkflow,
         "coolbet": GenericWorkflow,
         "tipwin": GenericWorkflow,
         "kalshi": KalshiWorkflow,

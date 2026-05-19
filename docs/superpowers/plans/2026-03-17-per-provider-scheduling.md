@@ -59,7 +59,7 @@ extraction_scheduling:
 
   browser_soft:
     max_concurrent_browsers: 1
-    providers: [888sport, coolbet, interwetten, comeon, 10bet, tipwin]
+    providers: [888sport, coolbet, comeon, 10bet, tipwin]
     interval_minutes: 60
     grouped: false
 ```

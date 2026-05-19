@@ -38,7 +38,6 @@ Providers sharing the same odds engine get one vote (highest odds from the group
 | `tipwin` | tipwin | Standalone |
 | `coolbet` | coolbet | Standalone |
 | `10bet` | 10bet | Standalone |
-| `interwetten` | interwetten | Standalone |
 | `marathon` | marathon | International signal |
 | `cloudbet` | cloudbet | International signal+play |
 

@@ -651,7 +651,7 @@ Expected: SSH tunnel opens, local FastAPI starts on port 8000, browser opens to 
 - [ ] **Step 5.2: Verify normal-mode rendering**
 
 In the browser, click into the **Arbitrage** sub-tab. Confirm:
-- Funded clusters (e.g. `ALTENAR_MAIN` with `BETINIA`/`QUICKCASINO`, `GECKO_BETSSON` with `SPELKLUBBEN`, `INTERWETTEN`) still render with their balance buttons, pending counts, and arb tables.
+- Funded clusters (e.g. `ALTENAR_MAIN` with `BETINIA`/`QUICKCASINO`, `GECKO_BETSSON` with `SPELKLUBBEN`) still render with their balance buttons, pending counts, and arb tables.
 - Cluster header tail reads `{n} arbs · siblings share odds` (the no-amber-pill version).
 - No amber italic provider pills appear in any cluster header.
 

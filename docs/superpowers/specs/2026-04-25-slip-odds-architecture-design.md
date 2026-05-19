@@ -212,7 +212,7 @@ Logging is gated by env var `SLIP_ODDS_LOGGING=true` so it can be turned off if 
 - `arnold/mirror/provider_runner.py` — wire SlipOddsStream into value-bet flow
 - `arnold/mirror/slip_odds_stream.py` — new file
 - `arnold/mirror/workflows/base.py` — add `read_slip_odds`, `update_slip_stake` to base contract
-- `arnold/mirror/workflows/{kambi,gecko_v2,altenar,spectate,comeon,interwetten,...}.py` — implement `read_slip_odds` per workflow
+- `arnold/mirror/workflows/{kambi,gecko_v2,altenar,spectate,comeon,...}.py` — implement `read_slip_odds` per workflow
 - `arnold/mirror/workflows/{pinnacle,polymarket,cloudbet,kalshi}.py` — implement `read_slip_odds` per workflow
 - `arnold/mirror/router.py` — register new SSE event types if any new endpoints needed (most reuse existing routes)
 - `backend/src/db/models.py` — `slip_odds_ticks` table + `_run_pg_migrations` entry (optional, gated by env)

@@ -8,7 +8,7 @@ When bookmakers limit a betting account (reduced stakes, market restrictions, ac
 
 Two layers of limit tracking:
 
-1. **Global provider limit risk** — fields on the `Provider` model indicating how aggressively a provider is known to limit (e.g., interwetten = "instant", altenar brands = "high"). Informs betting strategy across all profiles.
+1. **Global provider limit risk** — fields on the `Provider` model indicating how aggressively a provider is known to limit (e.g., altenar brands = "high"). Informs betting strategy across all profiles.
 2. **Per-profile limit records** — a new `profile_provider_limits` table recording actual limits imposed on specific accounts, with an auto-snapshotted summary of betting stats at detection time. Manual entry via the Stats page UI.
 
 ## Data Model
@@ -27,7 +27,7 @@ class LimitRisk(str, Enum):
     LOW = "low"           # Rarely limits (e.g., Pinnacle)
     MEDIUM = "medium"     # Limits after sustained winning
     HIGH = "high"         # Limits quickly (e.g., Altenar brands)
-    INSTANT = "instant"   # Known to limit from start (e.g., Interwetten)
+    INSTANT = "instant"   # Known to limit from start
 ```
 
 Default: `low`. Set once globally — applies to all profiles. Editable via the Stats page provider table or a settings endpoint.
@@ -155,7 +155,6 @@ A new table section on the Stats page showing per-provider betting stats for the
 | Provider | Risk | Bets | Stake | Profit | ROI% | Avg CLV | Status |
 |----------|------|------|-------|--------|------|---------|--------|
 | unibet   | low  | 47   | 12.5k | +1.8k | 14.6% | 3.2% | [Mark Limited] |
-| interwetten | instant | 5 | 1.2k | +80 | 6.7% | 1.1% | Limited (3/5) |
 | betsson  | medium | 23 | 8.2k | +420  | 5.1% | 1.8% | [Mark Limited] |
 
 - Styled with `tabStats` (cyan) accent, `sq` compact table class
