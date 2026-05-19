@@ -18,6 +18,7 @@ arrives as a team name (not "Yes"/"No").
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 POLY_API = "https://data-api.polymarket.com/positions"
 POLY_TRADES_API = "https://data-api.polymarket.com/trades"
+POLY_ACTIVITY_API = "https://data-api.polymarket.com/activity"
 POLY_GAMMA_MARKETS = "https://gamma-api.polymarket.com/markets"
 POLY_FEE_RATE = 0.02
 DEFAULT_SIZE_THRESHOLD = 0.1
@@ -324,6 +326,32 @@ async def fetch_recent_trades(wallet: str, limit: int = 500) -> list[dict]:
     return payload or []
 
 
+async def fetch_redeem_activity(wallet: str, limit: int = 200) -> list[dict]:
+    """Fetch REDEEM activity entries for the wallet — authoritative settlement source.
+
+    Each REDEEM has:
+      - conditionId: market identifier
+      - size: shares redeemed
+      - usdcSize: USDC received (>0 for winning side, 0 for losing side)
+      - timestamp: when the redeem fired
+
+    Far more reliable than `/trades`:
+      - WIN auto-redeem: usdcSize = size × $1 (winning token at face value)
+      - LOSS auto-redeem: usdcSize = 0 (worthless token, burned to clean wallet)
+      - No race with /positions snapshots — redeem events are append-only
+    """
+    url = f"{POLY_ACTIVITY_API}?user={wallet}&limit={limit}&type=REDEEM"
+    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
+        try:
+            r = await client.get(url)
+            r.raise_for_status()
+            payload = r.json()
+        except Exception as e:
+            logger.warning(f"[polymarket_api] activity fetch failed: {type(e).__name__}: {e}")
+            return []
+    return payload or []
+
+
 async def fetch_market_resolution(condition_id: str) -> dict | None:
     """Fetch market record from gamma-api by conditionId.
 
@@ -393,16 +421,19 @@ async def settle(
 ) -> dict:
     """Settle DB pending polymarket bets using API evidence only.
 
-    Two sources of truth, in order:
-      1. /trades — SELL at ≥0.95 = auto-redeem WON; ≤0.05 = LOST; mid-price
-         in between = manual cashout, payout = price × size.
-      2. gamma-api /markets — for bets whose losing token never auto-redeems
-         (the common case on polymarket), query market resolution. closed=true
-         with our side's outcomePrice = 0 → confirmed LOST.
+    Three sources of truth, in order of authority:
+      1. /activity?type=REDEEM — primary. One entry per redeemed side; usdcSize
+         is the exact USDC received (>0 = WON, 0 = LOST). No race with
+         /positions snapshots, no inference needed.
+      2. /trades SELL — secondary. Picks up manual cashouts (mid-price SELLs
+         that never trigger a redeem) and lagging auto-redeems.
+      3. gamma-api /markets — tertiary. For bets whose losing token never gets
+         redeemed at all. Requires the full 66-char conditionId.
 
-    NO fall-through inference: a missing position + missing trade + market
-    not yet resolved leaves the bet pending. False LOST classifications
-    corrupt analytics worse than slow settlement.
+    NO fall-through inference: missing REDEEM + missing SELL + market not
+    closed leaves the bet pending. False LOST classifications corrupt
+    analytics and cause re-insert death-spirals (see commit history for the
+    triple-placement bug on bets 595/601/602/603).
 
     Returns {won, lost, errors} count summary.
     """
@@ -414,6 +445,17 @@ async def settle(
 
     trades = await fetch_recent_trades(wallet)
     positions = await fetch_open_positions(wallet)
+    redeems = await fetch_redeem_activity(wallet)
+
+    # Index REDEEM activity by 60-char cid prefix — the authoritative settlement
+    # signal. Each market gets ONE redeem per side; usdcSize tells us win/loss
+    # and exact payout in one shot. Prefer this over /trades whenever present.
+    redeems_by_cid: dict[str, list[dict]] = {}
+    for a in redeems:
+        k = _cid_key(a.get("conditionId"))
+        if not k:
+            continue
+        redeems_by_cid.setdefault(k, []).append(a)
 
     # Index by normalized 60-char cid prefix so a truncated bet.cid (older
     # DB row) matches a full 66-char trade/position cid.
@@ -428,8 +470,15 @@ async def settle(
     # The title index lets us recover a conditionId for bets recorded via DOM
     # intercept (no provider_bet_id captured at placement time). Without this,
     # every such bet stays "pending" forever even though /trades has its resolution.
+    #
+    # resolved_by_cid: positions where the market has settled (redeemable=True)
+    # but the losing/un-redeemed token still sits in the wallet. This is the
+    # authoritative settle signal for esports / small-tournament markets that
+    # gamma-api /markets does NOT index — redeemable + curPrice come straight
+    # from the /positions payload we already fetch. {cid: curPrice}
     open_cids: set[str] = set()
     cid_by_title: dict[str, str] = {}
+    resolved_by_cid: dict[str, float] = {}
     for pos in positions:
         full_cid = (pos.provider_bet_id or "").strip()
         k = _cid_key(full_cid)
@@ -438,6 +487,10 @@ async def settle(
             title = (pos.event_name or "").lower().strip()
             if title:
                 cid_by_title[title] = full_cid  # store FULL cid for backfill
+            raw = pos.raw if isinstance(pos.raw, dict) else {}
+            if raw.get("redeemable") is True:
+                with contextlib.suppress(ValueError, TypeError):
+                    resolved_by_cid[k] = float(raw.get("curPrice") or 0)
 
     # Won/redeemed positions drop out of the open-positions list (size→0 after
     # SELL at ~0.999), so a bet that already resolved would have no title→cid
@@ -488,38 +541,82 @@ async def settle(
         # Polymarket native: shares = stake_usdc / avg_price_cents_decimal
         avg_price = round(1.0 / odds, 4) if odds > 0 else 0
         shares = round(stake / avg_price, 2) if avg_price > 0 else 0
+        cid_redeems = redeems_by_cid.get(_cid_key(cid)) or []
         cid_trades = trades_by_cid.get(_cid_key(cid)) or []
-
-        # SELL trades on our cid. Each user has at most one position per market,
-        # so any SELL on our cid is OUR exit (auto-redeem at ~$1, manual cashout
-        # mid-price, or worthless-resolution dump).
-        sells = [t for t in cid_trades if t.get("side") == "SELL"]
-        won_trade = next((t for t in sells if float(t.get("price") or 0) >= REDEEM_WON_THRESHOLD), None)
-        lost_trade = next((t for t in sells if float(t.get("price") or 0) <= REDEEM_LOST_THRESHOLD), None)
-        cashout_trade = next(
-            (t for t in sells if REDEEM_LOST_THRESHOLD < float(t.get("price") or 0) < REDEEM_WON_THRESHOLD),
-            None,
-        )
 
         result = None
         payout = 0.0
-        if won_trade:
-            # Gross USDC received = size × price (price ≈ 0.999 for auto-redeem)
-            result = "won"
-            payout = round(float(won_trade.get("size") or 0) * float(won_trade.get("price") or 1.0), 2)
-        elif lost_trade:
-            result = "lost"
-            payout = round(float(lost_trade.get("size") or 0) * float(lost_trade.get("price") or 0), 2)
-        elif cashout_trade:
-            # Manual mid-market exit — record actual proceeds. Classify
-            # by P/L vs stake (won = recovered more than we put in).
-            proceeds = round(
-                float(cashout_trade.get("size") or 0) * float(cashout_trade.get("price") or 0),
-                2,
+
+        # PRIMARY signal: /activity REDEEM events. Authoritative — no race
+        # window with /positions, no inference, no truncated-cid gamma-api
+        # lookups. usdcSize is the actual USDC received from auto-redemption.
+        # Pick the entry with the largest usdcSize so a $0 placeholder doesn't
+        # mask a real payout (markets sometimes emit both sides of redeem).
+        my_redeem = max(cid_redeems, key=lambda a: float(a.get("usdcSize") or 0), default=None)
+        if my_redeem is not None:
+            usdc_size = float(my_redeem.get("usdcSize") or 0)
+            # Classify by net P/L vs stake — not by "received > 0". Polymarket
+            # auto-resolves retirements/voids at outcomePrices=[0.5, 0.5],
+            # which redeems BOTH sides at half-credit. That's a net loss for
+            # our side even though usdcSize > 0. Calling it "won" inflates
+            # the win count and underreports the haircut.
+            payout = round(usdc_size, 2)
+            result = "won" if usdc_size > stake else "lost"
+
+        # SECONDARY signal: resolved open position. When a market settles, the
+        # losing token stays in the wallet un-redeemed (no SELL, no REDEEM
+        # activity) but the /positions payload flips redeemable=True with
+        # curPrice pinned to the resolved value (~0 lost, ~1 won). This is the
+        # ONLY automatic signal for esports / ITF-tennis markets — gamma-api
+        # /markets does not index them. Without it those bets pend forever
+        # (bets 608/610/612 were stuck this way).
+        if result is None and _cid_key(cid) in resolved_by_cid:
+            cur_price = resolved_by_cid[_cid_key(cid)]
+            if cur_price <= REDEEM_LOST_THRESHOLD:
+                result = "lost"
+                payout = 0.0
+            elif cur_price >= REDEEM_WON_THRESHOLD:
+                # Won but not yet redeemed — record at face value (shares × $1).
+                # A later REDEEM activity pass will refine to the exact usdcSize.
+                result = "won"
+                payout = round(shares * 1.0, 2)
+            # Mid-price resolved (retirement/void split) → leave pending; the
+            # REDEEM activity entry will carry the exact half-credit payout.
+
+        # TERTIARY signal: SELL trades. Only used when no REDEEM exists yet —
+        # covers manual cashouts (mid-price SELLs that never trigger a redeem)
+        # and any auto-redeems where the activity feed is lagging behind trades.
+        if result is None:
+            sells = [t for t in cid_trades if t.get("side") == "SELL"]
+            won_trade = next((t for t in sells if float(t.get("price") or 0) >= REDEEM_WON_THRESHOLD), None)
+            lost_trade = next((t for t in sells if float(t.get("price") or 0) <= REDEEM_LOST_THRESHOLD), None)
+            cashout_trade = next(
+                (t for t in sells if REDEEM_LOST_THRESHOLD < float(t.get("price") or 0) < REDEEM_WON_THRESHOLD),
+                None,
             )
-            result = "won" if proceeds > stake else "lost"
-            payout = proceeds
-        else:
+            if won_trade:
+                result = "won"
+                payout = round(float(won_trade.get("size") or 0) * float(won_trade.get("price") or 1.0), 2)
+            elif lost_trade:
+                result = "lost"
+                payout = round(float(lost_trade.get("size") or 0) * float(lost_trade.get("price") or 0), 2)
+            elif cashout_trade:
+                # Manual mid-market exit — record actual proceeds. Classify
+                # by P/L vs stake (won = recovered more than we put in).
+                proceeds = round(
+                    float(cashout_trade.get("size") or 0) * float(cashout_trade.get("price") or 0),
+                    2,
+                )
+                result = "won" if proceeds > stake else "lost"
+                payout = proceeds
+
+        # QUATERNARY fallback: gamma-api market resolution. Last resort when
+        # REDEEM, resolved-position, and SELL signals all miss. Requires the
+        # FULL 66-char cid; legacy 60-char DB cids fail silently. Note: gamma's
+        # /markets endpoint does NOT index esports / small-tournament markets,
+        # so this branch mostly catches mainstream sports — the resolved-
+        # position signal above is what covers the rest.
+        if result is None:
             # No SELL trade. Don't infer LOST from a missing position — that's
             # the bug that mis-settled bets 561/562/563 (auto-redeem fired
             # between our /trades and /positions snapshots). Instead, ask
