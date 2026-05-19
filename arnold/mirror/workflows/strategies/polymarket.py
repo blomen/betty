@@ -14,6 +14,8 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
+import httpx
+
 from ..base import HistoryEntry
 from . import Strategy
 
@@ -1265,11 +1267,41 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None):
     )
 
 
-async def _check_live_price(page: Page, bet, intel: dict | None = None):
-    """Read the current ¢ price for the target outcome and compute (live_odds, live_edge).
+_CLOB_PRICE_URL = "https://clob.polymarket.com/price"
+# Mirrors PolymarketRetriever.POLY_FEE_RATE — Polymarket charges ~2% on net
+# winnings. Live odds must apply the same haircut as extraction-time odds, or
+# the edge column would jump every time the live check overrides the row.
+_POLY_FEE_RATE = 0.02
 
-    Reuses _LOCATE_TARGET_JS so cent reading is market-aware (correctly reads
-    spread / total cents instead of always landing on the moneyline price).
+
+async def _fetch_clob_ask(token_id: str) -> float | None:
+    """Best ask — the executable buy price — for a Polymarket outcome token.
+
+    CLOB's /price `side` is the resting ORDER side, not the taker's intent:
+    side=sell returns the lowest sell offer, i.e. what a buyer actually pays.
+    side=buy returns the best bid. Verified empirically against Gamma bestAsk.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=4.0)) as client:
+            resp = await client.get(_CLOB_PRICE_URL, params={"token_id": token_id, "side": "sell"})
+            resp.raise_for_status()
+            price = float((resp.json() or {}).get("price") or 0.0)
+    except (httpx.HTTPError, ValueError, TypeError) as e:
+        logger.debug("polymarket CLOB /price failed for token %s…: %r", token_id[:12], e)
+        return None
+    return price if 0.0 < price < 1.0 else None
+
+
+async def _check_live_price(page: Page, bet, intel: dict | None = None):
+    """Compute (live_odds, live_edge) from the Polymarket CLOB order book.
+
+    Reads the outcome's best ask straight from the CLOB API via the token_id
+    captured at extraction — no DOM scrape, no Gamma `outcomePrices` (which is
+    the mid/last-traded probability, not the price a buyer executes at). The
+    token_id pins the exact market+outcome+line, so spread/total ladders need
+    no disambiguation. Returns (None, None) when the token is unknown or the
+    API is unreachable, leaving the caller on the extraction-time odds (also
+    CLOB + fee based).
     """
 
     def _g(attr: str) -> str:
@@ -1289,105 +1321,18 @@ async def _check_live_price(page: Page, bet, intel: dict | None = None):
     if not fair_odds:
         return None, None
 
-    outcome = _g("outcome").lower()
-    market = _g("market").lower()
-    home = (_g("display_home") or _g("poly_home")).strip().lower()
-    away = (_g("display_away") or _g("poly_away")).strip().lower()
-    point_val = bet.get("point") if isinstance(bet, dict) else getattr(bet, "point", None)
-
-    if outcome in ("home", "1"):
-        target = home
-    elif outcome in ("away", "2"):
-        target = away
-    elif outcome == "over":
-        target = "over"
-    elif outcome == "under":
-        target = "under"
-    else:
-        target = outcome
-
-    try:
-        info = await page.evaluate(
-            _LOCATE_TARGET_JS,
-            {"targetName": target, "market": market, "point": point_val, "outcome": outcome},
-        )
-    except Exception as e:
-        print(f"[polymarket check_live_price] evaluate raised: {e!r}", flush=True)
+    token_id = _g("token_id")
+    if not token_id:
         return None, None
 
-    if not info:
-        # DOM scrape failed — Polymarket's /sports/ layout renders cents via
-        # CSS pseudo-elements (not text nodes). Fall back to the public
-        # Gamma API. Same-origin fetch via page.evaluate avoids CORS.
-        event_slug = _g("event_slug")
-        if not event_slug:
-            return None, None
-        try:
-            api_data = await page.evaluate(
-                r"""async (slug) => {
-                    try {
-                        const r = await fetch('https://gamma-api.polymarket.com/events?slug=' + encodeURIComponent(slug));
-                        if (!r.ok) return { error: 'http_' + r.status };
-                        return await r.json();
-                    } catch (e) { return { error: String(e) }; }
-                }""",
-                event_slug,
-            )
-        except Exception:
-            return None, None
-        if not isinstance(api_data, list) or not api_data:
-            return None, None
-        ev = api_data[0]
-        markets = ev.get("markets") or []
-        if not markets:
-            return None, None
-        import json as _json
-
-        # Pick the market whose outcomes list contains the bet's target team.
-        # In single-market 2-way events (Dodgers v Angels moneyline), there's
-        # one market with outcomes=[home_team, away_team]. Some events have
-        # multiple markets (alt lines etc.) — find the matching one.
-        target_name = (away if outcome in ("away", "2") else home if outcome in ("home", "1") else "").strip()
-        if not target_name:
-            return None, None
-        chosen_idx = None
-        chosen_prices: list[float] | None = None
-        for m in markets:
-            try:
-                outs = _json.loads(m.get("outcomes") or "[]")
-                prices = _json.loads(m.get("outcomePrices") or "[]")
-            except Exception:
-                continue
-            if len(outs) != len(prices):
-                continue
-            # Match by case-insensitive equality first, then substring.
-            for i, name in enumerate(outs):
-                nlow = (name or "").lower()
-                if nlow == target_name or target_name in nlow or nlow in target_name:
-                    chosen_idx = i
-                    chosen_prices = [float(p) for p in prices]
-                    break
-            if chosen_idx is not None:
-                break
-        if chosen_idx is None or chosen_prices is None:
-            return None, None
-        prob = chosen_prices[chosen_idx]
-        if prob <= 0 or prob >= 1:
-            return None, None
-        live_odds = round(1.0 / prob, 3)
-        live_edge = round((live_odds / float(fair_odds) - 1.0) * 100.0, 2)
-        return live_odds, live_edge
-    cents = info.get("cents")
-    if not cents or cents <= 0 or cents >= 100:
-        print(
-            f"[polymarket check_live_price] info had bad cents={cents!r} target={target!r} info={info}",
-            flush=True,
-        )
+    ask = await _fetch_clob_ask(token_id)
+    if ask is None:
         return None, None
 
-    live_odds = round(100.0 / cents, 3)
-    live_edge = (live_odds / float(fair_odds) - 1.0) * 100.0
-    return live_odds, round(live_edge, 2)
+    raw_odds = 1.0 / ask
+    live_odds = round(1.0 + (raw_odds - 1.0) * (1.0 - _POLY_FEE_RATE), 3)
+    live_edge = round((live_odds / float(fair_odds) - 1.0) * 100.0, 2)
+    return live_odds, live_edge
 
 
 async def restore_amount_if_cleared(page: Page, stake: float) -> bool:
