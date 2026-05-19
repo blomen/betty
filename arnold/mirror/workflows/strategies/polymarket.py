@@ -116,23 +116,32 @@ async def _check_login(page: Page, intel: dict | None) -> bool:
 
 
 async def _sync_balance(page: Page, intel: dict | None) -> float:
-    """Scrape the Cash USDC amount from nav — avoids Portfolio total on combined rows."""
+    """Scrape the Portfolio total (cash + open position market value) from nav.
+
+    Portfolio is the right basis for stake sizing — Kelly scales against the
+    total value at risk + cash, not just sitting cash. Falls back to Cash if
+    the Portfolio label isn't found (e.g. UI variant on smaller viewports).
+    """
     try:
         amount = await page.evaluate(
             r"""() => {
-                for (const el of document.querySelectorAll('nav *, header *')) {
-                    const t = (el.textContent || '').trim();
-                    if (t.startsWith('Cash') && t.includes('$') && t.length < 30) {
-                        const m = t.match(/\$(\d[\d,.]*)/);
-                        if (m) return parseFloat(m[1].replace(/,/g, ''));
+                const els = Array.from(document.querySelectorAll('nav *, header *'));
+                const findByLabel = (label) => {
+                    for (const el of els) {
+                        const t = (el.textContent || '').trim();
+                        if (t.startsWith(label) && t.includes('$') && t.length < 40) {
+                            const m = t.match(/\$(\d[\d,.]*)/);
+                            if (m) return parseFloat(m[1].replace(/,/g, ''));
+                        }
                     }
-                }
-                return null;
+                    return null;
+                };
+                return findByLabel('Portfolio') ?? findByLabel('Cash');
             }"""
         )
         if amount is None:
             return -1.0
-        logger.info(f"[polymarket] DOM balance: ${float(amount):.2f}")
+        logger.info(f"[polymarket] DOM portfolio balance: ${float(amount):.2f}")
         return float(amount)
     except Exception as e:
         logger.warning(f"[polymarket] sync_balance failed: {e}")

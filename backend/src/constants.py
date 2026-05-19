@@ -47,6 +47,15 @@ KALSHI_FEE_RATE = 0.07
 # exempt them — see scanner.MIN_VALID_PROB_SUM and _has_odds_discrepancy.
 PREDICTION_MARKETS = frozenset({"polymarket", "kalshi"})
 
+# Unlimited / unwitnessed providers — sharp + prediction-market exchanges that
+# don't impose stake caps or limit users. These are the books where the bankroll
+# actually lives for sizing purposes; soft balances are temporary holding pens
+# that get arbed out to the unlimited pool, so they don't count toward the
+# Kelly stake basis. Stake-calc paths (opportunity_service, batch_builder,
+# bankroll_service.get_stake_calculator, polymarket route) read from
+# profile_repo.get_stake_bankroll() which filters to this set.
+UNLIMITED_PROVIDERS = frozenset({"pinnacle", "cloudbet", "kalshi", "polymarket"})
+
 # Providers that store the extended market set (enrichment + map markets).
 # Pinnacle: sharp baseline for all markets.
 # Polymarket + Kalshi: prediction-market microstructure for value comparison.

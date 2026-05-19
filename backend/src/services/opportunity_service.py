@@ -148,7 +148,7 @@ class OpportunityService:
         # Initialize stake calculator for value/arb/reverse/reverse_value bets using profile risk settings
         if type in ("value", "arb", "reverse", "reverse_value") and rows and profile:
             try:
-                bankroll = self.profile_repo.get_total_bankroll(profile.id)
+                bankroll = self.profile_repo.get_stake_bankroll(profile.id)
                 stake_calculator = StakeCalculator(
                     bankroll=bankroll,
                     max_kelly=OPTIMAL_MAX_KELLY,
@@ -333,7 +333,7 @@ class OpportunityService:
 
         # Get bankroll and profile settings for Kelly calculation
         profile = self.profile_repo.get_active()
-        total_bankroll = self.profile_repo.get_total_bankroll(profile.id)
+        total_bankroll = self.profile_repo.get_stake_bankroll(profile.id)
         providers = self.db.query(Provider).filter(Provider.is_enabled).all()
         anchor_balance = next(
             (self.profile_repo.get_balance(profile.id, p.id) for p in providers if p.id == anchor_provider), 0

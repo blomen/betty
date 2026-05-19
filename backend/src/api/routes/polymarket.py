@@ -61,7 +61,7 @@ def get_polymarket_value(
         try:
             if not profile:
                 profile = profile_repo.get_active()
-            total_bankroll = profile_repo.get_total_bankroll(profile.id)
+            total_bankroll = profile_repo.get_stake_bankroll(profile.id)
             stake_calculator = StakeCalculator(
                 bankroll=total_bankroll,
                 max_kelly=OPTIMAL_MAX_KELLY,

@@ -217,7 +217,7 @@ class BatchBuilder:
         """
         self._priority_provider = priority_provider
         profile = self.profile_repo.get_active()
-        total_bankroll = self.profile_repo.get_total_bankroll(profile_id)
+        total_bankroll = self.profile_repo.get_stake_bankroll(profile_id)
 
         # Per-provider Kelly: each provider/cluster's stake is sized to its
         # OWN balance, not the combined bankroll. Prevents over-leveraging.

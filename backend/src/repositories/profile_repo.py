@@ -14,8 +14,9 @@ from ..db.models import (
 
 BONUS_WAGERING_DAYS = 60  # Days to complete wagering before bonus expires
 
-# TTL cache for total bankroll (avoids re-querying all balances + exchange rates per request)
+# TTL cache for bankroll lookups (avoids re-querying all balances + exchange rates per request)
 _bankroll_cache: dict[int, tuple[float, float]] = {}  # profile_id -> (expires_at, value)
+_stake_bankroll_cache: dict[int, tuple[float, float]] = {}  # unlimited-only basis
 _BANKROLL_CACHE_TTL = 30.0  # seconds
 
 
@@ -85,8 +86,9 @@ class ProfileRepo:
             return amount
 
     def get_total_bankroll(self, profile_id: int) -> float:
-        """Get total bankroll for a profile in SEK (converts non-SEK balances).
+        """Get total bankroll across ALL providers, in SEK (display/UI basis).
 
+        Includes soft books — for stake sizing use get_stake_bankroll() instead.
         Cached for 30s to avoid re-querying all balances + exchange rates on
         every opportunity listing request.
         """
@@ -100,6 +102,35 @@ class ProfileRepo:
         records = self.db.query(ProfileProviderBalance).filter(ProfileProviderBalance.profile_id == profile_id).all()
         total = sum(r.balance * get_exchange_rate(r.provider_id) for r in records)
         _bankroll_cache[profile_id] = (now + _BANKROLL_CACHE_TTL, total)
+        return total
+
+    def get_stake_bankroll(self, profile_id: int) -> float:
+        """Get bankroll for stake-sizing purposes — unlimited providers only, in SEK.
+
+        Soft books are temporary holding pens that get arbed into the unlimited
+        pool. They don't count toward Kelly stake basis (per user preference).
+        Use this method for any path that feeds StakeCalculator; use
+        get_total_bankroll() for displays / allocator / wagering pace stats.
+        Cached for 30s independently of get_total_bankroll.
+        """
+        now = time.time()
+        cached = _stake_bankroll_cache.get(profile_id)
+        if cached and now < cached[0]:
+            return cached[1]
+
+        from ..config import get_exchange_rate
+        from ..constants import UNLIMITED_PROVIDERS
+
+        records = (
+            self.db.query(ProfileProviderBalance)
+            .filter(
+                ProfileProviderBalance.profile_id == profile_id,
+                ProfileProviderBalance.provider_id.in_(UNLIMITED_PROVIDERS),
+            )
+            .all()
+        )
+        total = sum(r.balance * get_exchange_rate(r.provider_id) for r in records)
+        _stake_bankroll_cache[profile_id] = (now + _BANKROLL_CACHE_TTL, total)
         return total
 
     def get_all_balances(self, profile_id: int) -> dict[str, float]:

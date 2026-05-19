@@ -277,7 +277,7 @@ class BankrollService:
     def get_stake_calculator(self, profile_id: int) -> StakeCalculator:
         """Get or create a StakeCalculator for a profile, using MC-optimal constants."""
         profile = self.db.query(Profile).filter(Profile.id == profile_id).first()
-        bankroll = self.profile_repo.get_total_bankroll(profile_id)
+        bankroll = self.profile_repo.get_stake_bankroll(profile_id)
 
         # Kelly + cap from MC sim-optimal constants; only min_edge from profile
         min_edge = (profile.min_edge_pct / 100.0) if profile else 0.01
