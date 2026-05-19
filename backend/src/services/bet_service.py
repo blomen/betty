@@ -150,22 +150,59 @@ class BetService:
         now = datetime.now(timezone.utc)
         risk_score = self._get_risk_score(provider_id)
 
-        # Compute fair odds at placement from current Pinnacle odds (or use passed value for boosts)
+        # Compute fair odds at placement from current Pinnacle odds (or use passed value for boosts).
+        # For total/spread markets, Pinnacle stores multiple lines (over 8.5, 9.5, 10.5, ...).
+        # Without filtering by `point` the de-vig pulls a random line's odds into pin_market and
+        # produces fantasy edge numbers (e.g. bet 613/614 Twins/Astros over showed +341% / +34.84%
+        # because our over-X.5 was compared against the over-8.5 fair price). Filter by point so
+        # the comparison is against the actual line we bet.
         if fair_odds_at_placement is None and event_id and market and outcome:
-            pin_rows = (
-                self.db.query(Odds)
-                .filter(
-                    Odds.event_id == event_id,
-                    Odds.provider_id == "pinnacle",
-                    Odds.market == market,
-                )
-                .all()
+            pin_query = self.db.query(Odds).filter(
+                Odds.event_id == event_id,
+                Odds.provider_id == "pinnacle",
+                Odds.market == market,
             )
+            if market in ("total", "spread"):
+                if point is not None:
+                    pin_query = pin_query.filter(Odds.point == point)
+                else:
+                    pin_query = pin_query.filter(Odds.point.is_(None))
+            pin_rows = pin_query.all()
             pin_market = {row.outcome: row.odds for row in pin_rows}
             if len(pin_market) >= 2 and outcome in pin_market:
                 fair = get_fair_odds_for_outcome(outcome, pin_market, method="multiplicative")
                 if fair and fair > 1.0:
                     fair_odds_at_placement = round(fair, 4)
+
+        # Edge gate: reject bets with edge < MIN_EDGE_PCT unless they're part of an arb
+        # pair (arb legs can individually be -EV as long as the pair locks profit),
+        # already placed externally (mirror sync recording manual placements), or recorded
+        # retroactively from provider history (mirror reactive sync catches up on bets the
+        # user already placed — rejecting them would silently lose records).
+        # Catches the Rockies/Rangers -5% bet that slipped through play_loop's local gate.
+        MIN_EDGE_PCT = 0.5
+        # bet_types that bypass the edge gate. Keep in sync with the recorders:
+        #   - arb_anchor / arb_counter / arb : arb_runner.py + play_loop.py arb flow
+        #   - mirror                          : provider history reactive sync (pinnacle, cloudbet)
+        #   - boost                           : odds boost bets (LLM fair odds, not Pinnacle)
+        ARB_BET_TYPES = ("arb_anchor", "arb_counter", "arb", "mirror", "boost")
+        if (
+            fair_odds_at_placement
+            and fair_odds_at_placement > 1.0
+            and odds > 0
+            and not external_placement
+            and bet_type not in ARB_BET_TYPES
+            and not is_bonus
+        ):
+            edge_pct = (odds / fair_odds_at_placement - 1) * 100
+            if edge_pct < MIN_EDGE_PCT:
+                return {
+                    "error": (
+                        f"Bet rejected: edge {edge_pct:.2f}% < {MIN_EDGE_PCT}% floor "
+                        f"(odds {odds:.4f} vs fair {fair_odds_at_placement:.4f}). "
+                        f"Set bet_type='arb_anchor'/'arb_counter' or external_placement=True to override."
+                    )
+                }
 
         # For Polymarket bets, save the event_slug from odds.provider_meta
         # so we can look up the Gamma event for settlement even after odds are cleaned up
