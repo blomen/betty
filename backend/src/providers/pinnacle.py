@@ -400,11 +400,12 @@ class PinnacleRetriever(Retriever):
         """
         Parse markets from Pinnacle API response.
 
-        Core markets (moneyline/spread/total): period 0, main lines only.
+        Core markets (moneyline/spread/total): period 0, mainline + alternate
+        handicaps. Alternates are kept so soft providers laddering at non-mainline
+        points (kalshi, cloudbet, polymarket) have a sharp comparison baseline.
         Period 6 (regulation time): ice hockey 1x2, plus spread/total when
         period 0 doesn't have them (minor leagues).
-        Esports map markets (period 1-5): moneyline/total per map, used for
-        map-level value scanning against Polymarket.
+        Esports map markets (period 1-5): moneyline/total per map (mainline only).
         """
         parsed = []
         is_esports = sport == "esports"
@@ -443,10 +444,6 @@ class PinnacleRetriever(Retriever):
             # ── Period 0 (full game / OT-included) ──
             if period == 0:
                 if market_type in self._CORE_TYPES:
-                    # Skip alternate lines (only main lines for spread/total)
-                    if market_type in ("spread", "total") and market.get("isAlternate", False):
-                        continue
-
                     if market_type == "moneyline":
                         parsed.extend(self._parse_moneyline(prices, market_meta))
                     elif market_type == "spread":
@@ -470,9 +467,6 @@ class PinnacleRetriever(Retriever):
             # overwriting OT-included odds with regulation-time odds.
             elif period == 6:
                 if market_type in self._CORE_TYPES:
-                    if market_type in ("spread", "total") and market.get("isAlternate", False):
-                        continue
-
                     if market_type == "moneyline":
                         # Always extract — has draw, so auto-classifies as 1x2
                         parsed.extend(self._parse_moneyline(prices, market_meta))
