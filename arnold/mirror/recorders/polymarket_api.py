@@ -229,11 +229,43 @@ async def sync(
 
         event_id, outcome = match_event_and_outcome(pos, events)
         if not event_id or not outcome:
+            # NO arnold-event match — but this is a REAL on-chain position, so
+            # it MUST still be recorded. Matching fails routinely: apostrophe /
+            # punctuation gaps ("Anyone's Legend" vs "anyones legend"), and
+            # un-extracted low-tier markets (ITF Doboj, minor esports). Gating
+            # the insert on a match silently dropped every such bet — the user
+            # placed real money and it never reached pending. Record with a
+            # null event_id + the position title as boost_event (same fallback
+            # soft-book unknown-bet recording uses); settle() keys on cid, not
+            # event_id, so settlement still works.
             result.skipped_unmatched += 1
             logger.info(
                 f"[polymarket_api] unmatched position: {pos.event_name[:60]} / "
-                f"outcome={pos.outcome_name} — skipping insert (no event match)"
+                f"outcome={pos.outcome_name} — recording with null event_id"
             )
+            payload = {
+                "provider_id": "polymarket",
+                "event_id": "",
+                "market": "moneyline",
+                "outcome": "",
+                "odds": pos.odds,
+                "stake": pos.stake,
+                "external_placement": True,
+                "boost_event": pos.event_name,
+                "provider_bet_id": pos.provider_bet_id or None,
+                "bet_type": "arb_counter",
+            }
+            try:
+                resp = await api_post(payload)
+                if resp.status_code in (200, 201):
+                    result.inserted += 1
+                else:
+                    msg = f"{resp.status_code}: {(resp.text or '')[:200]}"
+                    result.errors.append(f"{pos.event_name[:40]}: {msg}")
+                    logger.warning(f"[polymarket_api] unmatched insert failed {pos.event_name[:40]}: {msg}")
+            except Exception as e:
+                result.errors.append(f"{pos.event_name[:40]}: {type(e).__name__}: {e}")
+                logger.warning(f"[polymarket_api] unmatched insert exception {pos.event_name[:40]}: {e}")
             continue
 
         # Dedup by (event_id, outcome) — same market same side. Backfill the
