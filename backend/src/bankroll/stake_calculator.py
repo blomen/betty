@@ -1,39 +1,51 @@
 """
-Stake Calculator - Dynamic Kelly with Safety Rails
-===================================================
+Stake Calculator — Tier-Aware Dynamic Kelly
+============================================
 
-All parameters derived from Monte Carlo simulations (3,000 runs, 52 weeks).
-No profile settings needed — stakes are fully automated.
+All parameters derived from Monte Carlo against live value-bet edge data
+(dynamic_stake_sim.py, 500 runs/combo, 2026-05-17). Stakes are fully
+automated; no profile settings needed.
 
 Total bankroll approach:
 - All provider balances are fungible
 - Stakes sized from total bankroll
 - Bonuses just add EV + wagering constraints
 
-Key safety features:
-1. Dynamic Kelly scaling by edge and bankroll
-2. Single bet cap (2% of bankroll)
-3. Minimum stake guard (scales with bankroll: 5-25 kr)
+Schedule (per current bankroll, resolved at each calculate_stake call):
 
-Monte Carlo optimal parameters (0% ruin, ~271% median growth at 7.5k):
-- max_kelly: 0.75 (3/4 Kelly ceiling at high bankrolls)
-- min_kelly: 0.25 (quarter Kelly floor for low-edge bets)
-- single_bet_cap: 2% of bankroll (flat, all levels)
-- min_expected_profit: 0.75 kr
-- Dynamic boost at low bankrolls: kelly * 1.5 below 5k, taper to 5k-10k
+  bankroll          cap%   max_kelly
+  <    250          10%    0.50
+    250 -    500     5%    0.75
+    500 -  1,000     8%    0.75
+  1,000 -  2,500    15%    1.00  ← growth sweet spot
+  2,500 -  5,000    15%    0.75
+  5,000 - 10,000    10%    0.75
+ 10,000 - 20,000     8%    0.75
+ ≥ 20,000           10%    0.75
+
+Other safety rails:
+- Min Kelly floor of 0.25 for low-edge bets (≤2%)
+- Min stake floor of 20-25 kr (dynamic_min_stake)
+- Min expected profit scaling with bankroll (dynamic_min_expected_profit)
 """
 
 from dataclasses import dataclass
 
-# ── Sim-optimal constants (from Monte Carlo: 3k runs, 52 weeks, 0% ruin) ──
-OPTIMAL_MAX_KELLY = 0.75  # 3/4 Kelly ceiling (converges here at high bankroll)
+# ── Sim-optimal constants ──
+# Default Kelly ceiling and single-bet cap. Both are now SENTINELS for the
+# tier-based dynamic schedule — callers that pass these constants get the
+# dynamic schedule resolved against current bankroll. Callers that need a
+# specific override (e.g. arb runner) can pass any non-default value.
+#
+# Schedule derived from dynamic_stake_sim.py (2026-05-17): MC sweep across
+# $100-$20k bankroll tiers against the calibrated live value-bet edge
+# distribution (poly + kalshi + pinnacle, 138 candidates). The previous
+# flat 5% cap + 0.75 Kelly + 1.5× low-bankroll boost is now replaced by a
+# tier-aware schedule that runs more aggressively in the $1k-$5k growth
+# sweet spot and pulls back at the extremes.
+OPTIMAL_MAX_KELLY = 0.75  # legacy default; replaced by dynamic_max_kelly() at runtime
 OPTIMAL_MIN_KELLY = 0.25  # Quarter Kelly floor for low-edge bets (≤2%)
-# Single-bet cap as % of bankroll. Bumped 2% → 5% (2026-05-17) based on
-# gas-aware MC sim across $100-$20k bankroll tiers: 5% cap dominates 2% at
-# higher bankrolls (binds more high-edge bets at full Kelly) while making
-# zero difference at small bankrolls (where min-stake floor binds first).
-# Bust risk at 5% is identical to 2% under realistic + pessimistic edge.
-OPTIMAL_SINGLE_BET_CAP = 0.05
+OPTIMAL_SINGLE_BET_CAP = 0.05  # legacy default; replaced by dynamic_cap_pct() at runtime
 
 # Default minimum stake (skip bets below this) — global default in SEK.
 # Provider-specific overrides live in PROVIDER_STAKE_PROFILES below.
@@ -174,20 +186,50 @@ def dynamic_min_expected_profit(bankroll: float) -> float:
 BONUS_MIN_ODDS = 1.80
 
 
-# ── Dynamic Kelly scaling by bankroll ──
-# At low bankrolls, boost Kelly so stakes clear min_stake thresholds.
-# Converges to OPTIMAL_MAX_KELLY as bankroll grows.
+# ── Dynamic cap + Kelly schedule by bankroll tier ──
+# Derived from dynamic_stake_sim.py (MC sweep, 500 runs/combo, calibrated
+# value-bet edges from live polymarket+kalshi+pinnacle data, 2026-05-17).
+# Tier breakpoints are in the bankroll's native currency.
 #
-# MC-optimal parameters (5k sims, 52 weeks, 0% ruin, all bankroll levels):
-#   <= 5k:  max_kelly * 1.5 ≈ 1.125 Kelly — +16-21% median growth vs 1.333
-#   5k-10k: linear taper back to max_kelly (faster convergence)
-#   >= 10k: max_kelly unchanged (0.75)
-#
-# Previous: 1.333 boost, 5k-15k taper. New values shift the crossover
-# point down — at 10k the boost is already negligible anyway.
-DYNAMIC_KELLY_LOW_THRESHOLD = 5000.0
-DYNAMIC_KELLY_HIGH_THRESHOLD = 10000.0
-DYNAMIC_KELLY_BOOST = 1.5  # Multiply profile kelly by this at low bankroll
+# Caps are non-monotonic on purpose. The $1k-$5k sweet spot tolerates
+# 15% single-bet exposure because min-stake friction is past AND bankroll
+# is large enough to absorb Kelly variance. Sub-$500 and $10k+ pull back.
+
+
+def dynamic_cap_pct(bankroll: float) -> float:
+    """Single-bet cap as % of bankroll, by tier (from dynamic_stake_sim)."""
+    if bankroll < 250:
+        return 0.10
+    if bankroll < 500:
+        return 0.05
+    if bankroll < 1000:
+        return 0.08
+    if bankroll < 2500:
+        return 0.15
+    if bankroll < 5000:
+        return 0.15
+    if bankroll < 10000:
+        return 0.10
+    if bankroll < 20000:
+        return 0.08
+    return 0.10
+
+
+def dynamic_max_kelly(bankroll: float) -> float:
+    """Kelly ceiling by bankroll tier (from dynamic_stake_sim).
+
+    Sub-$250 runs quarter Kelly — small bankrolls can't absorb full Kelly
+    variance. $1k-$2.5k runs full Kelly (1.0) — clearest growth sweet spot
+    where bankroll is big enough but stakes are still meaningful. Larger
+    tiers settle on 3/4 Kelly.
+    """
+    if bankroll < 250:
+        return 0.50
+    if bankroll < 1000:
+        return 0.75
+    if bankroll < 2500:
+        return 1.00
+    return 0.75
 
 
 @dataclass
@@ -216,34 +258,20 @@ class StakeResult:
 
 
 def effective_max_kelly(profile_max_kelly: float, bankroll: float) -> float:
-    """
-    Scale max_kelly up when bankroll is small so Kelly stakes clear min_stake.
+    """Resolve the max-Kelly ceiling to use for this bet.
 
-    At low bankrolls, raw Kelly stakes are often 10-20 kr — below the 25 kr
-    minimum. Instead of skipping these +EV bets, we temporarily increase the
-    Kelly multiplier so stakes naturally reach playable sizes.
+    If the caller passes the legacy default (OPTIMAL_MAX_KELLY = 0.75), use
+    the tier-based dynamic_max_kelly schedule. If the caller passes any other
+    value, honor it as an explicit override.
 
-    This converges smoothly to the profile setting as bankroll grows:
-      <= 5k:   max_kelly * 1.5 (e.g. 0.75 -> 1.125)
-      5k-10k:  linear taper back to profile max_kelly
-      >= 10k:  profile max_kelly unchanged
-
-    Simulation results (5k sims, 52 weeks, 35 bets/week, all bankroll levels):
-      Old (1.333, taper 15k): 2k start → 4.44x, 5k → 4.21x
-      New (1.5,   taper 10k): 2k start → 5.13x, 5k → 4.41x  (+16%, +5%)
-      Above 10k: identical performance (boost fully tapered)
+    The dynamic schedule already encodes bankroll-tier scaling — no separate
+    low-bankroll boost layer needed (the old 1.5× boost is gone).
     """
     if bankroll <= 0:
         return profile_max_kelly
-
-    if bankroll <= DYNAMIC_KELLY_LOW_THRESHOLD:
-        return profile_max_kelly * DYNAMIC_KELLY_BOOST
-    elif bankroll < DYNAMIC_KELLY_HIGH_THRESHOLD:
-        t = (bankroll - DYNAMIC_KELLY_LOW_THRESHOLD) / (DYNAMIC_KELLY_HIGH_THRESHOLD - DYNAMIC_KELLY_LOW_THRESHOLD)
-        boosted = profile_max_kelly * DYNAMIC_KELLY_BOOST
-        return boosted - t * (boosted - profile_max_kelly)
-    else:
-        return profile_max_kelly
+    if profile_max_kelly == OPTIMAL_MAX_KELLY:
+        return dynamic_max_kelly(bankroll)
+    return profile_max_kelly
 
 
 def get_kelly_fraction(
@@ -371,7 +399,7 @@ def calculate_stake(
 
     edge_used = edge_raw
 
-    # Apply dynamic Kelly boost at low bankrolls (converges to profile setting above 15k)
+    # Resolve max-Kelly via the tier schedule (or honor explicit override)
     scaled_max_kelly = effective_max_kelly(max_kelly, bankroll_total)
 
     # Get dynamic Kelly fraction (capped by scaled max_kelly, clamped if low confidence)
@@ -384,8 +412,12 @@ def calculate_stake(
     # Calculate raw Kelly stake
     raw_stake = bankroll_total * kelly * edge_used / (odds - 1)
 
-    # Flat 2% single bet cap at all bankroll levels
-    single_bet_cap = bankroll_total * single_bet_cap_pct
+    # Resolve cap. Legacy default (OPTIMAL_SINGLE_BET_CAP) → tier schedule.
+    # Explicit overrides (e.g. arb runner) are honored as-is.
+    cap_pct_resolved = (
+        dynamic_cap_pct(bankroll_total) if single_bet_cap_pct == OPTIMAL_SINGLE_BET_CAP else single_bet_cap_pct
+    )
+    single_bet_cap = bankroll_total * cap_pct_resolved
     stake = min(raw_stake, single_bet_cap)
     was_capped_single = raw_stake > single_bet_cap
 
