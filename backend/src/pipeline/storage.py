@@ -716,10 +716,9 @@ def _resolve_event_id(
     # When an exact-date candidate clears thresholds, prefer it over any
     # ±1-day candidate even if the adjacent one scores marginally higher.
     # Without this, the matcher collapses consecutive-day same-team games
-    # (MLB series, Wimbledon multi-day rounds) onto the wrong event:
-    # Interwetten's May-20 Yankees-Blue Jays odds were being attached to
-    # the canonical May-19 event because both clear team-score thresholds
-    # at 100/100, and the ±1-day timezone-tolerance window admitted both.
+    # (MLB series, Wimbledon multi-day rounds) onto the wrong event — both
+    # clear team-score thresholds at 100/100 and the ±1-day timezone-tolerance
+    # window admits both.
     best_is_exact_date = False
 
     near_miss_score = 0

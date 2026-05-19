@@ -22,7 +22,6 @@ def _load_platform_map() -> dict[str, type[ProviderWorkflow]]:
     from .altenar import AltenarWorkflow
     from .gecko import GeckoWorkflow
     from .generic import GenericWorkflow
-    from .interwetten import InterwettenWorkflow
     from .kambi import KambiWorkflow
 
     return {
@@ -34,7 +33,6 @@ def _load_platform_map() -> dict[str, type[ProviderWorkflow]]:
         "snabbare": GenericWorkflow,
         "custom": GenericWorkflow,
         "betconstruct": GenericWorkflow,
-        "interwetten": InterwettenWorkflow,
         "coolbet": GenericWorkflow,
         "tipwin": GenericWorkflow,
     }
@@ -51,7 +49,6 @@ _RETRIEVER_TO_PLATFORM = {
     "snabbare": "snabbare",
     "custom": "custom",
     "betconstruct": "betconstruct",
-    "interwetten": "interwetten",
     "coolbet": "coolbet",
     "tipwin": "tipwin",
     "kalshi": "kalshi",
@@ -108,7 +105,6 @@ _FALLBACK_DOMAINS: dict[str, str] = {
     "nordicbet": "nordicbet.com",
     "betsafe": "betsafe.com",
     "hajper": "hajper.com",
-    "interwetten": "interwetten.se",
     "coolbet": "coolbet.com",
     "vbet": "vbet.com",
     "10bet": "10bet.com",

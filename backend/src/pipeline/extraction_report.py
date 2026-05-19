@@ -475,7 +475,6 @@ class ExtractionReport:
             "comeon": ["comeon", "hajper", "lyllo"],
             "vbet": ["vbet"],
             "tipwin": ["tipwin"],
-            "iwetten": ["interwetten"],
             "10bet": ["10bet"],
             "coolbet": ["coolbet"],
             "snabbare": ["snabbare"],

@@ -343,7 +343,6 @@ async def run_soft_extraction(
         "snabbare": ["snabbare"],
         "vbet": ["vbet"],
         "10bet": ["10bet"],
-        "interwetten": ["interwetten"],
         "coolbet": ["coolbet"],
         "tipwin": ["tipwin"],
     }
@@ -357,7 +356,6 @@ async def run_soft_extraction(
         + tier_providers["comeon"]
         + tier_providers["snabbare"]
         + tier_providers["10bet"]
-        + tier_providers["interwetten"]
         + tier_providers["coolbet"]
         + tier_providers["tipwin"]
     )
@@ -377,7 +375,7 @@ async def run_soft_extraction(
         raise HTTPException(
             400,
             f"Unknown tier: {tier}. Use: all, api, browser, kambi, altenar, "
-            f"gecko, spectate, comeon, snabbare, vbet, 10bet, interwetten, "
+            f"gecko, spectate, comeon, snabbare, vbet, 10bet, "
             f"coolbet, tipwin, or comma-separated providers",
         )
 

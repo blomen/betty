@@ -13,7 +13,6 @@ from .providers.altenar import AltenarRetriever
 from .providers.cloudbet import CloudbetRetriever
 from .providers.coolbet import CoolbetRetriever
 from .providers.gecko_v2 import GeckoV2Retriever
-from .providers.interwetten import InterwettenRetriever
 from .providers.kalshi import KalshiRetriever
 from .providers.kambi import KambiRetriever
 from .providers.marathon import MarathonRetriever
@@ -182,13 +181,6 @@ class ExtractorFactory:
         elif retriever_type == "betconstruct":
             # BetConstruct/Swarm WebSocket - direct API (no browser needed)
             retriever = VbetRetriever(config)
-        elif retriever_type == "interwetten":
-            # Interwetten SSR - browser-based DOM parsing (headless works fine)
-            # Swedish ISP proxy needed — Cloudflare blocks datacenter IPs
-            from .core import BrowserTransport
-
-            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker, use_proxy=True)
-            retriever = InterwettenRetriever(config, transport=transport)
         elif retriever_type == "coolbet":
             # Coolbet - proprietary GAN Sports platform, Imperva-protected
             # Uses Camoufox (anti-detect Firefox) to bypass Imperva automatically.

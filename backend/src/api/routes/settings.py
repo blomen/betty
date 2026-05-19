@@ -26,7 +26,6 @@ PLATFORM_NAMES = {
     "custom": "ComeOn Group",
     "snabbare": "Snabbare",
     "tenbet": "10Bet",
-    "interwetten": "Interwetten",
     "coolbet": "Coolbet",
     "tipwin": "Tipwin",
 }
@@ -42,7 +41,6 @@ PLATFORM_ORDER = [
     "custom",
     "snabbare",
     "tenbet",
-    "interwetten",
     "coolbet",
 ]
 

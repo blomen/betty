@@ -911,7 +911,6 @@ class ExtractionPipeline:
                         "custom",
                         "tipwin",
                         "snabbare",
-                        "interwetten",
                         "coolbet",
                         "tenbet",
                         "betconstruct",
@@ -987,7 +986,7 @@ class ExtractionPipeline:
                                 # DOM scrapers with time budgets: smallest sports first
                                 # so more sports complete before the budget cuts off.
                                 # API/WS providers: largest sports first (most value first).
-                                DOM_SCRAPERS = ("custom", "tipwin", "interwetten", "coolbet", "tenbet")
+                                DOM_SCRAPERS = ("custom", "tipwin", "coolbet", "tenbet")
                                 prov_retriever = getattr(provider_cfg, "retriever_type", "")
                                 is_dom_scraper = prov_retriever in DOM_SCRAPERS
                                 provider_sports.sort(
@@ -1747,7 +1746,6 @@ class ExtractionPipeline:
             "custom",
             "tipwin",
             "snabbare",
-            "interwetten",
             "coolbet",
             "tenbet",
         )

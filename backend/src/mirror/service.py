@@ -2227,7 +2227,6 @@ class MirrorService:
             "10bet": "10bet",
             "mrgreen": "mrgreen",
             "vbet": "vbet",
-            "interwetten": "interwetten",
             "coolbet": "coolbet",
             "tipwin": "tipwin",
             # Sharp

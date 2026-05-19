@@ -95,7 +95,6 @@ PLATFORM_MAP: dict[str, str] = {
     "snabbare": "comeon",
     # Standalone platforms (each is its own independent source)
     "vbet": "vbet",
-    "interwetten": "interwetten",
     "10bet": "10bet",
     "tipwin": "tipwin",
     "coolbet": "coolbet",

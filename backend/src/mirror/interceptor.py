@@ -114,7 +114,6 @@ class BetInterceptor:
         "mrgreen.se": "mrgreen",
         "betmgm.se": "betmgm",
         "vbet.se": "vbet",
-        "interwetten.se": "interwetten",
         "coolbet.com": "coolbet",
         "tipwin.se": "tipwin",
         "pinnacle.com": "pinnacle",

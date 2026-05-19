@@ -4,7 +4,7 @@
 #
 # Proxy: PROXY_URL env var (Bahnhof VPS, AS8473 Swedish ISP) is used by ALL providers:
 #   - Pinnacle, Altenar (aiohttp via aiohttp-socks ProxyConnector)
-#   - Kambi, Gecko V2, Interwetten, 10bet, Spectate (Playwright BrowserTransport)
+#   - Kambi, Gecko V2, 10bet, Spectate (Playwright BrowserTransport)
 #   - Coolbet, ComeOn (Camoufox anti-detect browser)
 #   - VBet (WebSocket via PySocks SOCKS5)
 #   - Tipwin uses RESIDENTIAL_PROXY_URL (dedicated tunnel to same Bahnhof VPS, port 1081)
@@ -18,7 +18,7 @@ orchestrator:
   # Concurrency limits
   max_concurrent_providers: 8          # Reduced from 16 — 8 threads, no point oversaturating
   max_concurrent_sports_per_provider: 3 # Reduced from 4 — less parallel memory pressure
-  max_browser_instances: 5             # Bumped from 4 — interwetten was starving (0 runs in 7d), 20GB/48GB headroom
+  max_browser_instances: 5
 
   # Provider groups for type-aware scheduling
   # Groups providers by shared backend/resource to prevent rate limits and contention
@@ -53,11 +53,6 @@ orchestrator:
       retriever_types: [pinnacle, altenar, betconstruct]
       max_concurrent: 8                # All REST APIs fire simultaneously
       shared_resource: none
-
-    - name: interwetten_browser
-      retriever_types: [interwetten]
-      max_concurrent: 2                # Bare metal: can handle 2 concurrent tabs
-      shared_resource: browser
 
     - name: sbtech_browser
       retriever_types: [snabbare, tenbet]
@@ -701,36 +696,6 @@ providers:
       trigger_mode: cumulative
 
   # --------------------------------------------------------------------------
-  # Interwetten (Browser DOM — dynamic league discovery + concurrent tabs)
-  # --------------------------------------------------------------------------
-
-  interwetten:
-    id: interwetten
-    name: Interwetten
-    domain: interwetten.se
-    retriever_type: interwetten
-    site_url: https://www.interwetten.se
-    sport_timeout: 600                 # Football no longer needs detail pages; tennis+handball detail fits in ~600s
-    supported_sports:
-      # Re-expanded 2026-04-28 after live nav probe confirmed (sport_id, slug)
-      # pairs. Earlier removals were because of stale slug values, not wrong ids.
-      - football
-      - tennis
-      - basketball
-      - ice_hockey
-      - baseball
-      - handball
-      - volleyball
-      - boxing
-      - mma
-    bonus:
-      type: bonusdeposit
-      amount: 1000
-      trigger_multiplier: 5       # Trigger: wager deposit×5 at 1.70+ to unlock bonus (5 stages × 20%)
-      trigger_odds: 1.70
-      trigger_mode: cumulative
-
-  # --------------------------------------------------------------------------
   # Coolbet (proprietary GAN Sports platform — browser-based API interception)
   # --------------------------------------------------------------------------
 
@@ -978,19 +943,11 @@ extraction_scheduling:
     max_concurrent_browsers: 2           # Reduced from 4 — memory constrained
     providers:
       - 888sport
-      - interwetten
       # 10bet moved to browser_slow tier 2026-04-28 — see below. Football is
       # fully dead (1200s timeout per attempt, 3-attempt ladder still fails).
       # Aggregate 4h yield: 0.03 ev/s, 1 run, 53 events. Burning a browser
       # slot every 30m for nothing. Demoted to its own slow tier.
       - tipwin
-    # Bumped 30 → 45 (2026-04-29): interwetten was running 41+ min cycles even
-    # with the league cap — handball/volleyball/ice_hockey hitting 600s per-
-    # sport budget timeouts. 30m cadence kept queueing fresh runs while old
-    # cycles were still going. Combined with MAX_LEAGUES tighten 30→15 in
-    # interwetten.py, 45m gives the slowest provider in the tier room to
-    # finish before the next start. 888sport + tipwin run faster but stay
-    # in the same tier for simplicity; their freshness staying < 45m is fine.
     interval_minutes: 45
     grouped: false
 
@@ -1076,8 +1033,6 @@ active:
   - 10bet  # DOM scraping via ta-* selectors (Playtech/Mojito SPA)
   # BetConstruct (1) - WebSocket API, no browser needed
   - vbet
-  # Interwetten (1) - browser-based, headed mode
-  - interwetten
   # Coolbet (1) - Camoufox anti-detect Firefox bypasses Imperva
   - coolbet
   # Tipwin (1) — API interception, re-enabled after page.route() fix (1530 events)
@@ -1257,18 +1212,6 @@ boosts:
     shared_with: []
     enabled: false
     note: "get_boosted_selections consistently returns 0 — vbet.se does not currently offer odds boosts. Re-enable if they add boost features."
-
-  # ═══════════════════════════════════════════════════════
-  # INTERWETTEN — DISABLED: no boosts on site (2026-03-06 audit)
-  # Scraper was producing false positives from regular combo markets.
-  # ═══════════════════════════════════════════════════════
-  interwetten:
-    type: interwetten
-    url: "https://www.interwetten.se"
-    primary_provider: interwetten
-    shared_with: []
-    enabled: false
-    note: "No boosts found on site. Scraper matched regular combo markets as false positives."
 
   # ═══════════════════════════════════════════════════════
   # COMEON GROUP — RSocket WS, sport/85-odds-boost
