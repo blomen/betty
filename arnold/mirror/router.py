@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -633,13 +634,126 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         async def fetch_db_pending() -> list[dict]:
             return await pending_loop._fetch_pending_for_provider(provider_id) or []
 
+        async def fetch_known_ids() -> list[str] | None:
+            """All provider_bet_id values ever recorded for this provider
+            (any result) — the dedup source for the position recorders.
+            Returns None on failure so the recorder fails closed instead of
+            re-inserting every open position against an unknown dedup state."""
+            try:
+                r = await tunnel_client().get(
+                    "/api/bets/recorded-ids",
+                    params={"provider_id": provider_id},
+                    timeout=30.0,
+                )
+                r.raise_for_status()
+                return r.json().get("provider_bet_ids", []) or []
+            except Exception as exc:
+                print(f"[sync-positions] fetch_known_ids raised: {exc!r}", flush=True)
+                return None
+
+        settle_summary: dict | None = None
+
+        async def api_settle(bet_id: int, res: str, payout: float):
+            return await tunnel_client().put(
+                f"/api/bets/{bet_id}", json={"result": res, "payout": payout}, timeout=10.0
+            )
+
+        async def api_patch(bet_id: int, payload: dict):
+            return await tunnel_client().patch(f"/api/bets/{bet_id}", json=payload, timeout=10.0)
+
         if provider_id == "polymarket":
-            wallet = "0x71fca29E6B31a93d262D2972C9b361Af371D426d"  # TODO: pull from profile
-            result = await polymarket_api.sync(wallet, api_post, fetch_events, fetch_db_pending)
+            # Polymarket proxy-wallet address — keyed by data-api /positions +
+            # /trades. Override via POLYMARKET_WALLET env; fallback is the
+            # default account so the recorder works without extra config.
+            wallet = os.environ.get("POLYMARKET_WALLET", "").strip() or "0x71fca29E6B31a93d262D2972C9b361Af371D426d"
+            result = await polymarket_api.sync(
+                wallet, api_post, fetch_events, fetch_db_pending, api_patch=api_patch, fetch_known_ids=fetch_known_ids
+            )
+            try:
+                settle_summary = await polymarket_api.settle(wallet, api_settle, fetch_db_pending)
+            except Exception as exc:
+                print(f"[sync-positions] polymarket settle raised: {exc!r}", flush=True)
+                settle_summary = {"won": 0, "lost": 0, "errors": [repr(exc)]}
         elif provider_id == "kalshi":
             from .recorders import kalshi_api
 
-            result = await kalshi_api.sync(api_post, fetch_events, fetch_db_pending)
+            result = await kalshi_api.sync(api_post, fetch_events, fetch_db_pending, fetch_known_ids=fetch_known_ids)
+            try:
+                settle_summary = await kalshi_api.settle(api_settle, fetch_db_pending)
+            except Exception as exc:
+                print(f"[sync-positions] kalshi settle raised: {exc!r}", flush=True)
+                settle_summary = {"won": 0, "lost": 0, "errors": [repr(exc)]}
+        elif provider_id in ("pinnacle", "cloudbet"):
+            # Pinnacle + Cloudbet have authenticated REST APIs but their session
+            # cookies live in the Playwright browser context. We reuse the
+            # strategy's sync_history (which calls page.evaluate(fetch) → the
+            # browser sends cookies automatically) WITHOUT navigating the tab.
+            # That way the auto-poller doesn't disrupt anything the user is
+            # actively doing on the provider's site.
+            from .reconcile import reconcile_and_publish
+
+            result = type("R", (), {})()
+            result.provider_id = provider_id
+            result.fetched = 0
+            result.inserted = 0
+            result.skipped_dup = 0
+            result.skipped_unmatched = 0
+            result.errors = []
+
+            if not browser.running or not browser.context:
+                settle_summary = {
+                    "won": 0,
+                    "lost": 0,
+                    "errors": ["browser not running — cookie-based providers need an active context"],
+                }
+            else:
+                workflow = get_workflow(provider_id)
+                page = await workflow.find_tab(browser.context)
+                if page is None:
+                    settle_summary = {
+                        "won": 0,
+                        "lost": 0,
+                        "errors": [f"no open tab for {provider_id} — open the provider once to authenticate"],
+                    }
+                else:
+                    try:
+                        raw_history = await workflow.sync_history(page) or []
+                        history_dicts = [
+                            {
+                                "odds": e.odds,
+                                "stake": e.stake,
+                                "status": e.status,
+                                "payout": e.payout,
+                                "provider_bet_id": e.provider_bet_id,
+                                "event_name": e.event_name,
+                            }
+                            for e in raw_history
+                        ]
+                        result.fetched = len(history_dicts)
+
+                        db_pending = await pending_loop._fetch_pending_for_provider(provider_id)
+                        if db_pending is not None:
+                            synced = await reconcile_and_publish(
+                                pending_loop._proxy_url,
+                                _AUTH_HEADER,
+                                _AUTH_VALUE,
+                                provider_id,
+                                db_pending,
+                                history_dicts,
+                                broadcaster,
+                                page=page,
+                                workflow=workflow,
+                            )
+                            pre_count = len(db_pending)
+                            await pending_loop._record_unknown_open_bets(provider_id, history_dicts, db_pending)
+                            post = await pending_loop._fetch_pending_for_provider(provider_id)
+                            if post is not None:
+                                result.inserted = max(0, len(post) - pre_count)
+                            # reconcile_and_publish returns settled count via SSE deltas
+                            settle_summary = {"won": 0, "lost": 0, "reconciled": synced, "errors": []}
+                    except Exception as exc:
+                        print(f"[sync-positions] {provider_id} sync raised: {exc!r}", flush=True)
+                        settle_summary = {"won": 0, "lost": 0, "errors": [repr(exc)]}
         else:
             raise HTTPException(400, f"sync-positions not supported for {provider_id}")
 
@@ -649,6 +763,7 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             "inserted": result.inserted,
             "skipped_dup": result.skipped_dup,
             "skipped_unmatched": result.skipped_unmatched,
+            "settle": settle_summary,
             "errors": result.errors[:10],
         }
 
@@ -1493,6 +1608,40 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         pid = (body or {}).get("provider_id")
         play_loop.skip(provider_id=pid)
         return play_loop.get_status()
+
+    @router.post("/play/record-placed")
+    async def play_record_placed(body: dict[str, Any]):
+        """Record a bet placed manually in the user's real Chrome (for
+        providers whose login the mirror can't complete).
+
+        Requires that the user FIRST clicked the arb/value-bet row to set
+        the picked-opp context via `/mirror/arb/navigate-opp`. Then they
+        place the bet in real Chrome, come back, and POST here with
+        {provider_id, stake, odds, provider_bet_id?}.
+        """
+        pid = body.get("provider_id")
+        stake = body.get("stake")
+        odds = body.get("odds")
+        if not pid or stake is None or odds is None:
+            raise HTTPException(400, "provider_id, stake, odds required")
+        try:
+            stake_f = float(stake)
+            odds_f = float(odds)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "stake and odds must be numeric")
+        if stake_f <= 0 or odds_f <= 1.0:
+            raise HTTPException(400, "stake must be >0, odds must be >1.0")
+        try:
+            return await play_loop.record_user_placed_bet(
+                provider_id=pid,
+                stake=stake_f,
+                odds=odds_f,
+                provider_bet_id=body.get("provider_bet_id"),
+            )
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+        except Exception as e:
+            raise HTTPException(500, f"record failed: {type(e).__name__}: {e}")
 
     @router.post("/play/run/{provider_id}")
     async def play_run(provider_id: str):
