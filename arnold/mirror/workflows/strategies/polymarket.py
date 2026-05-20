@@ -14,8 +14,7 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
-import httpx
-
+from ...poly_clob import ask_to_odds, fetch_clob_ask
 from ..base import HistoryEntry
 from . import Strategy
 
@@ -1267,41 +1266,16 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None):
     )
 
 
-_CLOB_PRICE_URL = "https://clob.polymarket.com/price"
-# Mirrors PolymarketRetriever.POLY_FEE_RATE — Polymarket charges ~2% on net
-# winnings. Live odds must apply the same haircut as extraction-time odds, or
-# the edge column would jump every time the live check overrides the row.
-_POLY_FEE_RATE = 0.02
-
-
-async def _fetch_clob_ask(token_id: str) -> float | None:
-    """Best ask — the executable buy price — for a Polymarket outcome token.
-
-    CLOB's /price `side` is the resting ORDER side, not the taker's intent:
-    side=sell returns the lowest sell offer, i.e. what a buyer actually pays.
-    side=buy returns the best bid. Verified empirically against Gamma bestAsk.
-    """
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=4.0)) as client:
-            resp = await client.get(_CLOB_PRICE_URL, params={"token_id": token_id, "side": "sell"})
-            resp.raise_for_status()
-            price = float((resp.json() or {}).get("price") or 0.0)
-    except (httpx.HTTPError, ValueError, TypeError) as e:
-        logger.debug("polymarket CLOB /price failed for token %s…: %r", token_id[:12], e)
-        return None
-    return price if 0.0 < price < 1.0 else None
-
-
 async def _check_live_price(page: Page, bet, intel: dict | None = None):
     """Compute (live_odds, live_edge) from the Polymarket CLOB order book.
 
-    Reads the outcome's best ask straight from the CLOB API via the token_id
-    captured at extraction — no DOM scrape, no Gamma `outcomePrices` (which is
-    the mid/last-traded probability, not the price a buyer executes at). The
-    token_id pins the exact market+outcome+line, so spread/total ladders need
-    no disambiguation. Returns (None, None) when the token is unknown or the
-    API is unreachable, leaving the caller on the extraction-time odds (also
-    CLOB + fee based).
+    Reads the outcome's best ask via the token_id captured at extraction —
+    no DOM scrape, no Gamma `outcomePrices` (the mid/last-traded probability,
+    not the price a buyer executes at). The token_id pins the exact
+    market+outcome+line, so spread/total ladders need no disambiguation.
+    Pricing math is shared with the 30s poller — see `mirror/poly_clob.py`.
+    Returns (None, None) when the token is unknown or the API is unreachable,
+    leaving the caller on the extraction-time odds (also CLOB + fee based).
     """
 
     def _g(attr: str) -> str:
@@ -1325,12 +1299,11 @@ async def _check_live_price(page: Page, bet, intel: dict | None = None):
     if not token_id:
         return None, None
 
-    ask = await _fetch_clob_ask(token_id)
+    ask = await fetch_clob_ask(token_id)
     if ask is None:
         return None, None
 
-    raw_odds = 1.0 / ask
-    live_odds = round(1.0 + (raw_odds - 1.0) * (1.0 - _POLY_FEE_RATE), 3)
+    live_odds = ask_to_odds(ask)
     live_edge = round((live_odds / float(fair_odds) - 1.0) * 100.0, 2)
     return live_odds, live_edge
 
