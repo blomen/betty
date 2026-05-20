@@ -136,7 +136,7 @@ def build_observation(state: dict) -> np.ndarray:
         recent_trades=state.get("recent_trades", []),
     )
 
-    # 3. Dow Theory + session + PDH/PDL (64)
+    # 3. Dow Theory + session + PDH/PDL + d/w/m VP (73)
     swing_structure = state.get("swing_structure")
     seg_structure = extract_structure_features(
         price,
@@ -145,6 +145,7 @@ def build_observation(state: dict) -> np.ndarray:
         session_levels,
         session_context,
         swing_structure=swing_structure,
+        precomputed=state.get("precomputed"),
     )
 
     # 4. TPO per-session (38)

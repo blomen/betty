@@ -456,16 +456,23 @@ def compute_precomputed_levels(
     Returns
     -------
     Dict with keys:
-      naked_pocs, poc_daily, poc_weekly, poc_monthly, poc_macro,
+      naked_pocs, poc_daily, daily_vah, daily_val,
+      poc_weekly, weekly_vah, weekly_val,
+      poc_monthly, monthly_vah, monthly_val, poc_macro,
       globex_high, globex_low, overnight_high, overnight_low, single_print_zones
     """
     # All prior sessions (before current_date), sorted ascending
     prior_dates = sorted(d for d in summaries if d < current_date)
 
-    # --- poc_daily: previous session's POC ---
+    # --- poc_daily + VAH/VAL: previous session's POC/VAH/VAL ---
     poc_daily: float | None = None
+    daily_vah: float | None = None
+    daily_val: float | None = None
     if prior_dates:
-        poc_daily = summaries[prior_dates[-1]].poc
+        prev = summaries[prior_dates[-1]]
+        poc_daily = prev.poc
+        daily_vah = prev.vah
+        daily_val = prev.val
 
     # --- poc_weekly + VAH/VAL: composite from last 5 prior sessions (require >= 3) ---
     poc_weekly: float | None = None
@@ -533,6 +540,8 @@ def compute_precomputed_levels(
     return {
         "naked_pocs": naked_pocs,
         "poc_daily": poc_daily,
+        "daily_vah": daily_vah,
+        "daily_val": daily_val,
         "poc_weekly": poc_weekly,
         "poc_monthly": poc_monthly,
         "poc_macro": poc_macro,

@@ -1,21 +1,44 @@
-"""Playwright browser lifecycle — launch, manage tabs, intercept traffic."""
+"""Playwright browser lifecycle — launch, manage tabs, intercept traffic.
+
+Default is patchright (chromium-1217 bundle). Vanilla playwright's
+chromium-1200 bundle was observed to crash on launch with this profile
+(2026-05-18, STATUS_BREAKPOINT exit code, no useful stderr) — even a fresh
+`playwright install chromium` reinstall produced the same crash. Chromium
+1217 from patchright's bundle handles the same profile fine, so we default
+there for stability.
+
+Set env `ARNOLD_USE_VANILLA_PLAYWRIGHT=1` to force vanilla (useful for
+testing whether the chromium-1200 issue has been resolved).
+"""
 
 import asyncio
 import json
 import logging
+import os
 from collections.abc import Callable
 from pathlib import Path  # noqa: F401
 from typing import Any
 
-from playwright.async_api import (
-    Browser,
-    BrowserContext,
-    Page,
-    Playwright,
-    Response,
-    WebSocket,
-    async_playwright,
-)
+if os.getenv("ARNOLD_USE_VANILLA_PLAYWRIGHT") == "1":
+    from playwright.async_api import (
+        Browser,
+        BrowserContext,
+        Page,
+        Playwright,
+        Response,
+        WebSocket,
+        async_playwright,
+    )
+else:
+    from patchright.async_api import (  # type: ignore[import-not-found]
+        Browser,
+        BrowserContext,
+        Page,
+        Playwright,
+        Response,
+        WebSocket,
+        async_playwright,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +70,7 @@ _HISTORY_KEYWORDS = (
     "widgetbethistory",
     "coupon-history",
     "data-api.polymarket.com/trades",  # Polymarket trade history
+    "data-api.polymarket.com/positions",  # Polymarket open positions — fired by /portfolio?tab=positions
     "arcadia.pinnacle.se/0.1/bets",  # Pinnacle bet list (?status=settled|unsettled)
     "sports-betting/v4/bets/positions",  # Cloudbet positions (ACCEPTED + COMPLETED)
     "event_positions",  # Kalshi: /v1/users/<UUID>/event_positions?position_status=...
@@ -129,7 +153,6 @@ _DOMAIN_TO_PROVIDER: dict[str, str] = {
     "bethard.com": "bethard",
     "bethardplayground.net": "bethard",
     "pinnacle.se": "pinnacle",
-    "interwetten.se": "interwetten",
     "coolbet.com": "coolbet",
     "vbet.com": "vbet",
     "10bet.com": "10bet",
@@ -167,6 +190,18 @@ _API_DOMAINS = {
 
 
 _USER_DATA_DIR = Path(__file__).parent.parent / "data" / "browser_profile"
+
+
+# Module-level singleton — assigned in MirrorBrowser.start(). Workflows (which
+# only receive a `page`, not the browser) can `from .browser import
+# get_active_browser` to reach `MirrorBrowser.provider_data`. Used by Gecko V2
+# sync_history to read the interceptor-cached coupon-history body.
+_ACTIVE_BROWSER: "MirrorBrowser | None" = None
+
+
+def get_active_browser() -> "MirrorBrowser | None":
+    """Return the currently-running MirrorBrowser, or None if not started."""
+    return _ACTIVE_BROWSER
 
 
 class MirrorBrowser:
@@ -215,6 +250,13 @@ class MirrorBrowser:
         # tab acquisition; the goto itself can still run concurrently after
         # the page is securely allocated.
         self._open_tab_lock: asyncio.Lock | None = None
+        # Serialize start() so two concurrent callers (e.g. /mirror/start
+        # endpoint + TV-overlay auto-open task) don't both pass the
+        # `if self._running` guard, both run _kill_orphaned_chromium, and
+        # silently kill each other's just-launched Chromium process. The
+        # symptom is an infinite "[browser] Using profile" → TargetClosedError
+        # → re-launch loop where Chromium never stabilizes.
+        self._start_lock: asyncio.Lock | None = None
 
     def _spawn(self, coro, name: str | None = None) -> asyncio.Task:
         """Create a background task and keep a strong reference to it.
@@ -261,9 +303,23 @@ class MirrorBrowser:
         return self._context
 
     async def start(self) -> BrowserContext:
+        # Thin lock wrapper. The actual launch is in `_start_impl`. Two
+        # concurrent callers (e.g. /mirror/start endpoint + TV-overlay
+        # auto-open task at boot) both used to pass an `if self._running`
+        # guard and both run `_kill_orphaned_chromium`, silently killing
+        # each other's just-launched Chromium → infinite re-launch loop
+        # with no stable browser. The lock serializes; the re-check inside
+        # short-circuits the second caller.
         if self._running:
             return self._context
+        if self._start_lock is None:
+            self._start_lock = asyncio.Lock()
+        async with self._start_lock:
+            if self._running:
+                return self._context
+            return await self._start_impl()
 
+    async def _start_impl(self) -> BrowserContext:
         # Kill any orphaned Chromium holding the profile lock
         await self._kill_orphaned_chromium()
 
@@ -368,7 +424,12 @@ class MirrorBrowser:
             headless=False,
             locale="en-GB",
             timezone_id="Europe/Stockholm",
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            # No user_agent override: Playwright's bundled Chromium reports
+            # its real version (currently 140) via both UA string and
+            # Sec-CH-UA client hints. A hardcoded UA from an older Chrome
+            # version mismatches Sec-CH-UA (which is derived from the actual
+            # binary, not the override) — anti-fraud middleware on BankID-style
+            # auth flows reads both and rejects the session when they disagree.
             no_viewport=True,
             args=[
                 "--disable-blink-features=AutomationControlled",
@@ -379,6 +440,11 @@ class MirrorBrowser:
             ],
             ignore_default_args=["--enable-automation"],
         )
+        # Module-level singleton so workflows (which only receive `page`) can
+        # reach MirrorBrowser.provider_data. Used by Gecko V2 sync_history to
+        # read the interceptor-cached coupon-history body.
+        global _ACTIVE_BROWSER
+        _ACTIVE_BROWSER = self
 
         # Network-level ghost-tab blocker. Set up FIRST — before any other
         # async work — so route handlers are registered with Chromium before
@@ -539,6 +605,28 @@ class MirrorBrowser:
                 await route.continue_()
             except Exception:
                 pass
+
+    def _trust_page_and_its_popups(self, page: Page) -> None:
+        """Add `page` to _explicit_pages AND wire `popup` events so any window
+        Cloudbet/etc. opens for SSO/OAuth/BankID inherits the same trust.
+
+        Without this, the stray-tab watchdog kills OAuth popups the moment
+        they navigate off the host site to accounts.google.com / appleid.apple.com /
+        gateway.zignsec.com / etc., because the popup's URL isn't in the static
+        allowlist and the popup itself was never opened via open_tab. The
+        user sees "popup for SSO login has been closed before finalizing the
+        operation" (Cloudbet) or a silent BankID failure.
+
+        Recursive: a popup spawned by a popup is also trusted, so multi-hop
+        OAuth flows (e.g. Google → site → callback popup) survive.
+        """
+        self._explicit_pages.add(page)
+        page.once("close", lambda _p=page: self._explicit_pages.discard(_p))
+        # When this page opens a popup (window.open / target=_blank / SSO),
+        # the new Page is delivered synchronously here BEFORE its first
+        # framenavigated fires — so adding it to _explicit_pages now is in
+        # time to bypass _guard_stray_tab's close check.
+        page.on("popup", lambda popup: self._trust_page_and_its_popups(popup))
 
     def _guard_stray_tab(self, page: Page) -> None:
         """Close `page` the moment it navigates to a non-allowlisted URL.
@@ -787,8 +875,7 @@ class MirrorBrowser:
             page = await self._context.new_page()
             # Mark explicit BEFORE the goto fires so the route filter and
             # framenavigated guard both see this page as user-opened.
-            self._explicit_pages.add(page)
-            page.once("close", lambda _p=page: self._explicit_pages.discard(_p))
+            self._trust_page_and_its_popups(page)
             # Attach interceptor BEFORE navigating so we catch all responses.
             self._attach_page(page)
             print(f"[browser] Opening tab: {url}", flush=True)
@@ -918,7 +1005,7 @@ class MirrorBrowser:
     # ------------------------------------------------------------------
 
     def _attach_page(self, page: Page):
-        """Attach response + WebSocket listeners to a page."""
+        """Attach response + WebSocket + frame-nav listeners to a page."""
         print(f"[browser] ATTACHING interceptor to page: {page.url[:80]}", flush=True)
 
         async def handle_response(resp):
@@ -926,6 +1013,60 @@ class MirrorBrowser:
 
         page.on("response", lambda resp: asyncio.ensure_future(handle_response(resp)))
         page.on("websocket", lambda ws: self._on_websocket(ws, page))
+        page.on("framenavigated", lambda frame: self._on_frame_navigated(frame, page))
+
+    def _on_frame_navigated(self, frame, page: Page) -> None:
+        """Detect the user manually browsing to a matchup page and emit a
+        provider-specific nav event so the frontend can auto-pick the
+        matching arb. Parses the URL only — no API calls — so it's cheap
+        enough to run on every frame nav.
+        """
+        # Only main-frame navigations on the page itself (not iframes /
+        # tracking pixels).
+        try:
+            if frame != page.main_frame:
+                return
+        except Exception:
+            return
+        url = frame.url or ""
+        if not url:
+            return
+        provider_id = self._detect_provider(url)
+        if not provider_id:
+            return
+
+        # Pinnacle: canonical URL pattern is
+        #   /<lang>/<sport>/<league>/<home>-vs-<away>/<matchup_id>/
+        # Where <lang> is sv|en. The bare /<lang>/matchup/<id>/ URL doesn't
+        # render content so it's not interesting here.
+        if provider_id == "pinnacle":
+            import re
+
+            m = re.search(
+                r"/(?:sv|en)/(?P<sport>[a-z0-9-]+)/(?P<league>[a-z0-9-]+)/(?P<teams>[a-z0-9-]+-vs-[a-z0-9-]+)/(?P<matchup_id>\d+)/?",
+                url,
+            )
+            if not m:
+                return
+            teams = m.group("teams")
+            try:
+                home_slug, away_slug = teams.split("-vs-", 1)
+            except ValueError:
+                return
+            payload = {
+                "provider_id": provider_id,
+                "matchup_id": m.group("matchup_id"),
+                "sport_slug": m.group("sport"),
+                "league_slug": m.group("league"),
+                "home_slug": home_slug,
+                "away_slug": away_slug,
+                "url": url,
+            }
+            if self._on_event:
+                try:
+                    self._on_event("provider_manual_nav", payload)
+                except Exception as e:
+                    logger.debug(f"[browser] provider_manual_nav publish failed: {e!r}")
 
     async def _safe_on_response(self, response: Response):
         """Wrapper to catch all errors in response handler."""
@@ -1058,6 +1199,26 @@ class MirrorBrowser:
             try:
                 body = await response.text()
                 logger.info(f"[browser] {provider_id} history: {url[:80]} ({len(body)}b)")
+                # Cache the parsed body on provider_data so workflow.sync_history
+                # can read it without making its own API call. Several Gecko V2
+                # providers hijack window.fetch (Spelklubben's GTM tracker.js
+                # poisons it cross-origin) — the page itself can fetch
+                # coupon-history but our re-issued call gets blocked. Riding the
+                # page's own response is the only path that actually works.
+                #
+                # Key by URL query so Open + Settled views (separate calls) are
+                # both kept — sync_history needs BOTH (DB-pending bets often
+                # match settled entries on the provider, that's reconciliation).
+                # `coupon_history_raw` is also written for back-compat with
+                # readers that only want "the latest".
+                try:
+                    parsed = json.loads(body) if body else None
+                except Exception:
+                    parsed = None
+                if parsed is not None:
+                    self.provider_data.setdefault(provider_id, {})["coupon_history_raw"] = parsed
+                    by_url = self.provider_data[provider_id].setdefault("coupon_history_by_url", {})
+                    by_url[url] = parsed
                 if self._on_event:
                     self._on_event(
                         "history_intercepted",
@@ -1094,6 +1255,28 @@ class MirrorBrowser:
                         )
             except Exception:
                 pass
+            return
+
+        # Altenar GetOddsStates — periodic price-drift push for events visible
+        # in the widget. Body shape: {oddStates: [{id, price, oddStatus, ...}]}
+        # We use it to update the per-odd cache so check_live_price returns
+        # fresh prices without waiting for a full GetEventDetails refresh.
+        if "getoddsstates" in url_lower:
+            try:
+                body_text = await response.text()
+                body_parsed = json.loads(body_text)
+                preview = str(body_parsed)[:200]
+                print(f"[OddsStates] {provider_id} body[:200]={preview}", flush=True)
+                if body_parsed and self._on_event:
+                    self._on_event(
+                        "odds_states_intercepted",
+                        {
+                            "provider_id": provider_id,
+                            "body": body_parsed,
+                        },
+                    )
+            except Exception as e:
+                print(f"[OddsStates] {provider_id} parse failed: {e!r}", flush=True)
             return
 
         # Bet placement

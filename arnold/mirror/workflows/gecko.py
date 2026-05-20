@@ -122,48 +122,52 @@ class GeckoWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def sync_history(self, page: Page) -> list[HistoryEntry]:
-        """Fetch bet history by navigating to the bet history pages.
+        """Fetch bet history by visiting the spelhistorik views and reading the
+        coupon-history response the page's iframe makes itself.
 
-        Gecko V2 sites require visiting the history page to load coupon data.
-        We visit both Open and Settled views, which triggers coupon-history
-        API calls that the interceptor captures. We also try fetching the
-        API directly as a fallback.
+        Why we can't just re-issue the API call from Python: several Gecko V2
+        tenants (Spelklubben on `cloud-api.spelklubben.se`) ship a GTM
+        tracker.js that monkey-patches `window.fetch` and rejects our
+        page.evaluate-issued requests. `page.context.request` also gets a
+        401/400 because the auth token lives only in localStorage and is
+        injected as a header at request time by the in-page JS. So the
+        only call that succeeds is the one the page makes itself — and
+        the browser interceptor stashes the response body on
+        `provider_data[pid]["coupon_history_raw"]`. We navigate both
+        views to ensure both Open + Settled bodies have been intercepted
+        recently, then read them back.
         """
-        init_path = _INIT_PATHS.get(self.provider_id, "/sv/odds")
-        base_url = f"https://www.{self.domain}{init_path}"
         all_entries: list[HistoryEntry] = []
 
-        # Navigate to Open bets page, then Settled
-        for view in ("Open", "Settled"):
-            history_url = f"{base_url}/spelhistorik?betHistoryView={view}"
-            try:
-                await page.goto(history_url, wait_until="domcontentloaded", timeout=15000)
-                await asyncio.sleep(3)  # Wait for iframe to load coupon data
-            except Exception as e:
-                logger.warning(f"[{self.provider_id}] Failed to navigate to {view} history: {e}")
+        # Passive: don't auto-navigate. The page's own iframe calls
+        # coupon-history whenever the user lands on /spelhistorik, and the
+        # browser interceptor caches every body under coupon_history_by_url.
+        # If the user has been on history at all this session, we have
+        # something to parse — otherwise this is a no-op and we'll catch it
+        # next 60s tick after they navigate themselves. Mirror only auto-navs
+        # for arb event clicks.
+        from ..browser import get_active_browser
 
-        # Now try the coupon-history API (session should be warm from page visits)
-        for base in _api_bases(self.provider_id, self.domain):
-            url = f"{base}/api/sb/v1/widgets/coupon-history/v1?days=30&page=0&size=50"
-            result = await self._evaluate_api(page, url)
-            if result and "__error" not in result:
-                entries = self._parse_coupon_history(result)
-                if entries:
-                    all_entries.extend(entries)
-                    break
+        browser = get_active_browser()
+        by_url: dict = {}
+        if browser is not None:
+            pdata = browser.provider_data.get(self.provider_id) or {}
+            by_url = pdata.get("coupon_history_by_url") or {}
+            # Back-compat: pre-by_url cache schema only kept the latest body.
+            if not by_url and pdata.get("coupon_history_raw"):
+                by_url = {"latest": pdata["coupon_history_raw"]}
+        logger.debug(f"[{self.provider_id}] sync_history: {len(by_url)} cached coupon-history bodies")
+        seen_coupon_ids: set[str] = set()
+        for _u, body in by_url.items():
+            for e in self._parse_coupon_history(body):
+                cid = e.provider_bet_id or ""
+                if cid and cid in seen_coupon_ids:
+                    continue
+                if cid:
+                    seen_coupon_ids.add(cid)
+                all_entries.append(e)
 
-        # If API didn't work, try fetching open and settled separately
-        if not all_entries:
-            for status_filter in ("open", "settled"):
-                for base in _api_bases(self.provider_id, self.domain):
-                    url = f"{base}/api/sb/v1/widgets/coupon-history/v1?days=30&page=0&size=50&status={status_filter}"
-                    result = await self._evaluate_api(page, url)
-                    if result and "__error" not in result:
-                        entries = self._parse_coupon_history(result)
-                        all_entries.extend(entries)
-                        break
-
-        logger.info(f"[{self.provider_id}] sync_history: {len(all_entries)} bets total")
+        logger.info(f"[{self.provider_id}] sync_history: {len(all_entries)} bets total (passive cache read)")
         return all_entries
 
     def _parse_coupon_history(self, data: dict) -> list[HistoryEntry]:
@@ -186,14 +190,37 @@ class GeckoWorkflow(ProviderWorkflow):
         entries: list[HistoryEntry] = []
         for coupon in coupons:
             try:
-                # Status from betsStatus dict: {"won": N} or {"lost": N}
-                bets_status = coupon.get("betsStatus", {})
-                raw_status = coupon.get("couponStatus", "open").lower()
-                # Override with betsStatus if available
-                for key in ("won", "lost", "void", "cancelled", "cashedOut"):
-                    if key.lower() in bets_status or key in bets_status:
+                # Resolve status, in priority order:
+                # 1) betsStatus dict ({"won": N}, {"lost": N}, {"void": N}, etc.)
+                #    is the most reliable signal — it's set the moment any leg
+                #    is graded.
+                # 2) couponStatus string ("won"/"lost"/"open"/...) for older
+                #    tenants that still send it.
+                # 3) status field ("Open"/"Closed"/...) — Closed implies settled
+                #    but the actual win/loss has to come from betsStatus.
+                # Verbatim spelklubben payload: status="Closed",
+                # couponStatus=null, betsStatus={"lost": 1}. Earlier code did
+                # `coupon.get("couponStatus", "open").lower()` which crashed
+                # on the explicit null and made every coupon silently drop.
+                bets_status = coupon.get("betsStatus") or {}
+                raw_status = None
+                # Use first non-zero bets_status key as the result if there is one.
+                for key in ("won", "lost", "void", "cancelled", "cashedOut", "cashedout"):
+                    if any(k.lower() == key.lower() for k in bets_status.keys()):
                         raw_status = key.lower()
                         break
+                if raw_status is None:
+                    cs = coupon.get("couponStatus")
+                    if isinstance(cs, str) and cs:
+                        raw_status = cs.lower()
+                if raw_status is None:
+                    top_status = coupon.get("status")
+                    if isinstance(top_status, str):
+                        # "Open"/"Pending"/"Active" → pending; "Closed"/"Settled" → fall through to betsStatus
+                        if top_status.lower() in ("open", "pending", "active"):
+                            raw_status = "pending"
+                if raw_status is None:
+                    raw_status = "pending"  # last-resort default
                 mapped = status_map.get(raw_status, "pending")
 
                 event_names = coupon.get("eventNames", [])

@@ -205,18 +205,16 @@ class GenericWorkflow(ProviderWorkflow):
         nav = self.intel.get("navigation", {})
         history_path = (nav or {}).get("history_path") or hist.get("url")
         if history_path:
-            try:
-                current = page.url or ""
-                if history_path not in current:
-                    full_url = (
-                        history_path if history_path.startswith("http") else f"https://{self.domain}{history_path}"
-                    )
-                    await page.goto(full_url, wait_until="domcontentloaded", timeout=15000)
-                    import asyncio
-
-                    await asyncio.sleep(2)
-            except Exception as e:
-                logger.warning(f"[{self.provider_id}] Failed to navigate to history: {e}")
+            current = page.url or ""
+            if history_path not in current:
+                # Passive: don't auto-navigate to the history page. The mirror
+                # only navigates automatically for arb event clicks; everything
+                # else (balance, history, settle) is read off whatever page the
+                # user has open. When they land on history themselves, the next
+                # 60s PendingLoop tick scrapes + records.
+                logger.debug(
+                    f"[{self.provider_id}] sync_history: tab on {current[:60]} (history_path={history_path}) — skipping"
+                )
                 return []
 
         if hist["method"] == "api" and hist.get("api"):
@@ -437,6 +435,14 @@ class GenericWorkflow(ProviderWorkflow):
         if self.strategy and self.strategy.read_slip_odds:
             return await self.strategy.read_slip_odds(page, self.intel)
         return await super().read_slip_odds(page)
+
+    async def read_outcome_odds_dom(self, page: Page, bet) -> float | None:
+        """Provider-specific live-odds reader. Used by /mirror/arb/navigate-opp's
+        poll task as the preferred drift signal — faster than check_live_price
+        and more accurate than read_slip_odds (which can lock at click time)."""
+        if self.strategy and self.strategy.read_outcome_odds_dom:
+            return await self.strategy.read_outcome_odds_dom(page, bet)
+        return None
 
     async def update_slip_stake(self, page: Page, stake: float) -> bool:
         if self.strategy and self.strategy.update_slip_stake:

@@ -889,6 +889,7 @@ class ReplayEngine:
             "fvgs": self._fvgs,
             "single_print_zones": (self._precomputed.get("single_print_zones", []) if self._precomputed else []),
             "swing_structure": (self._precomputed.get("swing_structure") if self._precomputed else None),
+            "precomputed": self._precomputed,  # d/w/m POC/VAH/VAL for structure dims 64-72
             "amt_dynamics": self._amt_tracker.snapshot(),
             "zone_memory": self._get_zone_memory_for_state(zone, ts),
             "prev_zone": self._build_prev_zone_state_replay(zone, price, ts),

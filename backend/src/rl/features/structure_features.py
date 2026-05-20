@@ -10,7 +10,8 @@ from ...market_data.levels import SessionLevels, SwingStructure, VolumeProfile, 
 from ..config import TICK_SIZE
 
 # 20 session/VWAP/VP/IB features  +  40 Dow Theory swing features  +  4 PDH/PDL
-_N_FEATURES = 64
+# +  9 d/w/m VP distance features (POC/VAH/VAL × daily/weekly/monthly)
+_N_FEATURES = 73
 
 # Normalisation constant: distance in ticks clipped to ±1
 _DIST_NORM = 200.0
@@ -137,10 +138,11 @@ def extract_structure_features(
     session_levels: SessionLevels | None,
     session_context: dict | None,
     swing_structure: SwingStructure | None = None,
+    precomputed: dict | None = None,
 ) -> np.ndarray:
-    """Extract 64 market structure and session context features.
+    """Extract 73 market structure and session context features.
 
-    Feature layout (indices 0-63):
+    Feature layout (indices 0-72):
     --- VWAP (0) ---
       0  price_vs_vwap_sd
     --- Volume Profile (1-5) ---
@@ -169,6 +171,11 @@ def extract_structure_features(
       61  dist_to_pdl (signed, clipped +/-1)
       62  position within PDH-PDL range (0=PDL, 1=PDH)
       63  PDH-PDL range width (normalised)
+    --- d/w/m Volume Profile (64-72) ---  [from session_store.compute_precomputed_levels]
+      64-66  dist_to_poc/vah/val_daily   (prev session)
+      67-69  dist_to_poc/vah/val_weekly  (5-session composite)
+      70-72  dist_to_poc/vah/val_monthly (20-session composite)
+      All signed distances normalised by TICK_SIZE * _DIST_NORM, clipped ±1.
     """
     feats = np.zeros(_N_FEATURES, dtype=np.float32)
 
@@ -240,5 +247,26 @@ def extract_structure_features(
         span = pdh - pdl
         feats[62] = float(np.clip((price - pdl) / span, 0.0, 1.0)) if span > 0 else 0.5
         feats[63] = float(np.clip(span / TICK_SIZE / 400.0, 0.0, 1.0))
+
+    # --- d/w/m Volume Profile (feats 64-72) ---
+    # Distance from current price to each of POC/VAH/VAL across daily/weekly/monthly
+    # windows. Comes from session_store.compute_precomputed_levels and survives
+    # zone_builder integration. None values stay at the zero default.
+    pre = precomputed or {}
+    _DWM_VP_KEYS = (
+        ("poc_daily", 64),
+        ("daily_vah", 65),
+        ("daily_val", 66),
+        ("poc_weekly", 67),
+        ("weekly_vah", 68),
+        ("weekly_val", 69),
+        ("poc_monthly", 70),
+        ("monthly_vah", 71),
+        ("monthly_val", 72),
+    )
+    for key, idx in _DWM_VP_KEYS:
+        level = pre.get(key)
+        if level is not None and level > 0:
+            feats[idx] = float(np.clip((price - level) / TICK_SIZE / _DIST_NORM, -1.0, 1.0))
 
     return feats

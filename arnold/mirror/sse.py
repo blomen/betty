@@ -1,4 +1,5 @@
 """Local SSE broadcaster for mirror events."""
+
 import asyncio
 import logging
 from typing import Any
@@ -32,6 +33,12 @@ class MirrorBroadcaster:
                 dead.append(cid)
         for cid in dead:
             self._clients.pop(cid, None)
+        try:
+            from .state_writer import write_event
+
+            write_event(event_type, data)
+        except Exception as e:
+            logger.debug(f"[broadcaster] state_writer.write_event failed: {e!r}")
 
 
 mirror_broadcaster = MirrorBroadcaster()

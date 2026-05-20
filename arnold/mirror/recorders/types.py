@@ -26,11 +26,14 @@ class RecorderResult:
     inserted: int = 0
     skipped_dup: int = 0
     skipped_unmatched: int = 0
+    settled_won: int = 0
+    settled_lost: int = 0
     errors: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         return (
             f"{self.provider_id}: fetched={self.fetched} inserted={self.inserted} "
             f"skipped_dup={self.skipped_dup} skipped_unmatched={self.skipped_unmatched} "
+            f"settled_won={self.settled_won} settled_lost={self.settled_lost} "
             f"errors={len(self.errors)}"
         )

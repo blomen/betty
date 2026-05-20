@@ -24,11 +24,10 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 import requests
-from bs4 import BeautifulSoup
 import yaml
+from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -87,17 +86,15 @@ PROVIDER_ALIASES = {
     # BetConstruct
     "vbet": "vbet",
     "v bet": "vbet",
-    # Interwetten
-    "interwetten": "interwetten",
-    "inter wetten": "interwetten",
 }
 
 
 @dataclass
 class BonusInfo:
     """Scraped bonus information for a provider."""
+
     provider_name: str
-    provider_id: Optional[str] = None  # Canonical ID in providers.yaml
+    provider_id: str | None = None  # Canonical ID in providers.yaml
     bonus_type: str = "bonusdeposit"  # bonusdeposit, freebet, riskfree
     amount: int = 0  # SEK
     wagering_multiplier: float = 1.0  # e.g., 6.0 means 6x
@@ -106,11 +103,11 @@ class BonusInfo:
     sources: list = field(default_factory=list)  # Which sites reported this
 
 
-def normalize_provider_name(name: str) -> Optional[str]:
+def normalize_provider_name(name: str) -> str | None:
     """Map scraped provider name to canonical provider ID."""
     cleaned = name.lower().strip()
     # Remove common suffixes
-    cleaned = re.sub(r'\s*(sport|casino|betting|se)$', '', cleaned).strip()
+    cleaned = re.sub(r"\s*(sport|casino|betting|se)$", "", cleaned).strip()
     return PROVIDER_ALIASES.get(cleaned)
 
 
@@ -127,7 +124,7 @@ def normalize_provider_name_or_raw(name: str) -> tuple[str, bool]:
     raw = name.strip()
 
     # Pure numbers (table row indices)
-    if re.fullmatch(r'\d+', raw):
+    if re.fullmatch(r"\d+", raw):
         return "", False
 
     # Too short (single char/word fragments) or too long (full sentences)
@@ -135,23 +132,52 @@ def normalize_provider_name_or_raw(name: str) -> tuple[str, bool]:
         return "", False
 
     # Contains emoji
-    if re.search(r'[\U0001F300-\U0001FAFF\u2600-\u27BF]', raw):
+    if re.search(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", raw):
         return "", False
 
     # Swedish UI/table labels that aren't providers
     _JUNK_NAMES = {
-        "betalningsmetoder", "kundtjanst", "kundtjänst", "spelutbud",
-        "mobilupplevelse", "spelupplevelse", "helhetsbetyg",
-        "bonuserbjudande", "omsattningskrav", "omsättningskrav",
-        "minsta insattning", "minsta insättning", "bonus", "bonusar",
-        "spelsida", "spelsidor", "bettingsida", "bettingsidor",
-        "oddsbonus", "oddsbonusar", "välkomstbonus", "freebet",
-        "gratisspel", "riskfritt", "riskfria", "webbsida",
-        "uttag", "insattning", "insättning", "licens",
-        "fördelar", "nackdelar", "rank", "spelbolag",
-        "jämförelse av oddsbonusar", "jämförelse",
-        "free spins", "freespins", "cashback",
-        "sbk bonus", "alexsnacke",
+        "betalningsmetoder",
+        "kundtjanst",
+        "kundtjänst",
+        "spelutbud",
+        "mobilupplevelse",
+        "spelupplevelse",
+        "helhetsbetyg",
+        "bonuserbjudande",
+        "omsattningskrav",
+        "omsättningskrav",
+        "minsta insattning",
+        "minsta insättning",
+        "bonus",
+        "bonusar",
+        "spelsida",
+        "spelsidor",
+        "bettingsida",
+        "bettingsidor",
+        "oddsbonus",
+        "oddsbonusar",
+        "välkomstbonus",
+        "freebet",
+        "gratisspel",
+        "riskfritt",
+        "riskfria",
+        "webbsida",
+        "uttag",
+        "insattning",
+        "insättning",
+        "licens",
+        "fördelar",
+        "nackdelar",
+        "rank",
+        "spelbolag",
+        "jämförelse av oddsbonusar",
+        "jämförelse",
+        "free spins",
+        "freespins",
+        "cashback",
+        "sbk bonus",
+        "alexsnacke",
     }
     lowered = raw.lower()
     if lowered in _JUNK_NAMES:
@@ -167,9 +193,20 @@ def normalize_provider_name_or_raw(name: str) -> tuple[str, bool]:
 
     # Starts with common junk prefixes (category headers, descriptive text)
     _JUNK_PREFIXES = (
-        "störst ", "största ", "nya ", "bästa ", "generös ", "topp ",
-        "webbsida:", "🎲", "🎁", "💰", "♠",
-        "inget ", "kan ", "ägare",
+        "störst ",
+        "största ",
+        "nya ",
+        "bästa ",
+        "generös ",
+        "topp ",
+        "webbsida:",
+        "🎲",
+        "🎁",
+        "💰",
+        "♠",
+        "inget ",
+        "kan ",
+        "ägare",
     )
     for prefix in _JUNK_PREFIXES:
         if lowered.startswith(prefix):
@@ -177,8 +214,8 @@ def normalize_provider_name_or_raw(name: str) -> tuple[str, bool]:
 
     # Generate a stable ID from the raw name
     cleaned = lowered
-    cleaned = re.sub(r'\s*(sport|casino|betting|se)$', '', cleaned).strip()
-    cleaned = re.sub(r'[^a-z0-9]', '', cleaned)
+    cleaned = re.sub(r"\s*(sport|casino|betting|se)$", "", cleaned).strip()
+    cleaned = re.sub(r"[^a-z0-9]", "", cleaned)
     if not cleaned or len(cleaned) < 3:
         return "", False
     return cleaned, False
@@ -187,13 +224,13 @@ def normalize_provider_name_or_raw(name: str) -> tuple[str, bool]:
 def parse_amount(text: str) -> int:
     """Extract SEK amount from text like '1 000 kr', '500', 'Up to 1,000'."""
     # Remove common prefixes/suffixes
-    text = re.sub(r'(upp?\s*till?|up\s*to|max)\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r"(upp?\s*till?|up\s*to|max)\s*", "", text, flags=re.IGNORECASE)
     # Normalize unicode whitespace and separators
-    text = text.replace('\xa0', ' ').replace('\u202f', ' ').replace(',', '').replace('.', '')
+    text = text.replace("\xa0", " ").replace("\u202f", " ").replace(",", "").replace(".", "")
     # Find number (potentially with spaces as thousand separator)
-    match = re.search(r'(\d[\d\s]*\d|\d+)', text)
+    match = re.search(r"(\d[\d\s]*\d|\d+)", text)
     if match:
-        return int(match.group(1).replace(' ', ''))
+        return int(match.group(1).replace(" ", ""))
     return 0
 
 
@@ -201,28 +238,28 @@ def parse_wagering(text: str) -> float:
     """Extract wagering multiplier from text like '6x omsättning', '12x bonus', '20x'."""
     # More specific patterns to avoid matching "1x2" provider names
     # Pattern 1: "Nx omsättning/bonus/insättning" (most reliable)
-    match = re.search(r'(\d{1,2})x\s*(?:omsättning|bonus|insättning|gånger)', text, re.IGNORECASE)
+    match = re.search(r"(\d{1,2})x\s*(?:omsättning|bonus|insättning|gånger)", text, re.IGNORECASE)
     if match:
         val = int(match.group(1))
         if 1 <= val <= 50:  # Sanity check
             return float(val)
 
     # Pattern 2: "omsättningskrav: Nx" or "omsättning Nx"
-    match = re.search(r'omsättning(?:skrav)?\s*[:=]?\s*(\d{1,2})x?', text, re.IGNORECASE)
+    match = re.search(r"omsättning(?:skrav)?\s*[:=]?\s*(\d{1,2})x?", text, re.IGNORECASE)
     if match:
         val = int(match.group(1))
         if 1 <= val <= 50:
             return float(val)
 
     # Pattern 3: Standalone "Nx" where N > 1 and followed by word boundary (not "1x2")
-    match = re.search(r'(?<!\d)([2-9]\d?)x\b(?!\d)', text, re.IGNORECASE)
+    match = re.search(r"(?<!\d)([2-9]\d?)x\b(?!\d)", text, re.IGNORECASE)
     if match:
         val = int(match.group(1))
         if 2 <= val <= 50:
             return float(val)
 
     # "no requirement" / "omsättningsfritt"
-    if re.search(r'(omsättningsfri|utan\s*omsättning|no\s*req|inga\s*omsättning)', text, re.IGNORECASE):
+    if re.search(r"(omsättningsfri|utan\s*omsättning|no\s*req|inga\s*omsättning)", text, re.IGNORECASE):
         return 1.0
 
     # Return 0 = unknown (don't assume 1x)
@@ -232,16 +269,20 @@ def parse_wagering(text: str) -> float:
 def parse_min_odds(text: str) -> float:
     """Extract minimum odds from text like '1.80', 'min odds 1.90', 'odds >= 1.80'."""
     # Pattern 1: Explicit "min odds" / "lägsta odds" pattern
-    match = re.search(r'(?:min(?:st|imum)?\s*odds?|lägst[a]?\s*odds?|odds\s*(?:>=?|minst))\s*[:=]?\s*(\d+[.,]\d+)', text, re.IGNORECASE)
+    match = re.search(
+        r"(?:min(?:st|imum)?\s*odds?|lägst[a]?\s*odds?|odds\s*(?:>=?|minst))\s*[:=]?\s*(\d+[.,]\d+)",
+        text,
+        re.IGNORECASE,
+    )
     if match:
-        val = float(match.group(1).replace(',', '.'))
+        val = float(match.group(1).replace(",", "."))
         if 1.10 <= val <= 3.00:
             return val
 
     # Pattern 2: "odds Nx" or standalone odds in likely context
-    match = re.search(r'(?:odds|oddskrav)\s*[:=]?\s*(\d+[.,]\d+)', text, re.IGNORECASE)
+    match = re.search(r"(?:odds|oddskrav)\s*[:=]?\s*(\d+[.,]\d+)", text, re.IGNORECASE)
     if match:
-        val = float(match.group(1).replace(',', '.'))
+        val = float(match.group(1).replace(",", "."))
         if 1.10 <= val <= 3.00:
             return val
 
@@ -252,16 +293,29 @@ def parse_min_odds(text: str) -> float:
 def detect_bonus_type(text: str) -> str:
     """Detect bonus type from description text."""
     text_lower = text.lower()
-    if any(kw in text_lower for kw in ['free bet', 'freebet', 'gratisspel', 'gratis spel', 'gratis insats',
-                                        'riskfri', 'risk-free', 'free play', 'riskfritt']):
-        return 'freebet'
-    if any(kw in text_lower for kw in ['dubbla', 'dubbl', 'double', 'matcha', 'match deposit', 'insättningsbonus']):
-        return 'bonusdeposit'
+    if any(
+        kw in text_lower
+        for kw in [
+            "free bet",
+            "freebet",
+            "gratisspel",
+            "gratis spel",
+            "gratis insats",
+            "riskfri",
+            "risk-free",
+            "free play",
+            "riskfritt",
+        ]
+    ):
+        return "freebet"
+    if any(kw in text_lower for kw in ["dubbla", "dubbl", "double", "matcha", "match deposit", "insättningsbonus"]):
+        return "bonusdeposit"
     # Default: unknown
-    return 'unknown'
+    return "unknown"
 
 
 # ============ Source Scrapers ============
+
 
 def scrape_speltips(session: requests.Session) -> list[BonusInfo]:
     """Scrape speltips.se/bettingsidor/bonusar."""
@@ -284,15 +338,17 @@ def scrape_speltips(session: requests.Session) -> list[BonusInfo]:
             if not provider_id:
                 continue
 
-            bonuses.append(BonusInfo(
-                provider_name=provider_name,
-                provider_id=provider_id,
-                bonus_type=detect_bonus_type(row.get("description", "")),
-                amount=parse_amount(row.get("amount", "0")),
-                wagering_multiplier=parse_wagering(row.get("wagering", "1x")),
-                min_odds=parse_min_odds(row.get("min_odds", "1.80")),
-                sources=["speltips.se"],
-            ))
+            bonuses.append(
+                BonusInfo(
+                    provider_name=provider_name,
+                    provider_id=provider_id,
+                    bonus_type=detect_bonus_type(row.get("description", "")),
+                    amount=parse_amount(row.get("amount", "0")),
+                    wagering_multiplier=parse_wagering(row.get("wagering", "1x")),
+                    min_odds=parse_min_odds(row.get("min_odds", "1.80")),
+                    sources=["speltips.se"],
+                )
+            )
 
         logger.info(f"[speltips.se] Scraped {len(bonuses)} provider bonuses")
     except Exception as e:
@@ -319,15 +375,17 @@ def scrape_rekatochklart(session: requests.Session) -> list[BonusInfo]:
             if not provider_id:
                 continue
 
-            bonuses.append(BonusInfo(
-                provider_name=provider_name,
-                provider_id=provider_id,
-                bonus_type=detect_bonus_type(row.get("description", "")),
-                amount=parse_amount(row.get("amount", "0")),
-                wagering_multiplier=parse_wagering(row.get("wagering", "1x")),
-                min_odds=parse_min_odds(row.get("min_odds", "1.80")),
-                sources=["rekatochklart.com"],
-            ))
+            bonuses.append(
+                BonusInfo(
+                    provider_name=provider_name,
+                    provider_id=provider_id,
+                    bonus_type=detect_bonus_type(row.get("description", "")),
+                    amount=parse_amount(row.get("amount", "0")),
+                    wagering_multiplier=parse_wagering(row.get("wagering", "1x")),
+                    min_odds=parse_min_odds(row.get("min_odds", "1.80")),
+                    sources=["rekatochklart.com"],
+                )
+            )
 
         logger.info(f"[rekatochklart.com] Scraped {len(bonuses)} provider bonuses")
     except Exception as e:
@@ -354,15 +412,17 @@ def scrape_bettingstugan(session: requests.Session) -> list[BonusInfo]:
             if not provider_id:
                 continue
 
-            bonuses.append(BonusInfo(
-                provider_name=provider_name,
-                provider_id=provider_id,
-                bonus_type=detect_bonus_type(row.get("description", "")),
-                amount=parse_amount(row.get("amount", "0")),
-                wagering_multiplier=parse_wagering(row.get("wagering", "1x")),
-                min_odds=parse_min_odds(row.get("min_odds", "1.80")),
-                sources=["bettingstugan.se"],
-            ))
+            bonuses.append(
+                BonusInfo(
+                    provider_name=provider_name,
+                    provider_id=provider_id,
+                    bonus_type=detect_bonus_type(row.get("description", "")),
+                    amount=parse_amount(row.get("amount", "0")),
+                    wagering_multiplier=parse_wagering(row.get("wagering", "1x")),
+                    min_odds=parse_min_odds(row.get("min_odds", "1.80")),
+                    sources=["bettingstugan.se"],
+                )
+            )
 
         logger.info(f"[bettingstugan.se] Scraped {len(bonuses)} provider bonuses")
     except Exception as e:
@@ -389,15 +449,17 @@ def scrape_betting_se(session: requests.Session) -> list[BonusInfo]:
             if not provider_id:
                 continue
 
-            bonuses.append(BonusInfo(
-                provider_name=provider_name,
-                provider_id=provider_id,
-                bonus_type=detect_bonus_type(row.get("description", "")),
-                amount=parse_amount(row.get("amount", "0")),
-                wagering_multiplier=parse_wagering(row.get("wagering", "1x")),
-                min_odds=parse_min_odds(row.get("min_odds", "1.80")),
-                sources=["betting.se"],
-            ))
+            bonuses.append(
+                BonusInfo(
+                    provider_name=provider_name,
+                    provider_id=provider_id,
+                    bonus_type=detect_bonus_type(row.get("description", "")),
+                    amount=parse_amount(row.get("amount", "0")),
+                    wagering_multiplier=parse_wagering(row.get("wagering", "1x")),
+                    min_odds=parse_min_odds(row.get("min_odds", "1.80")),
+                    sources=["betting.se"],
+                )
+            )
 
         logger.info(f"[betting.se] Scraped {len(bonuses)} provider bonuses")
     except Exception as e:
@@ -424,15 +486,17 @@ def scrape_tvmatchen(session: requests.Session) -> list[BonusInfo]:
             if not provider_id:
                 continue
 
-            bonuses.append(BonusInfo(
-                provider_name=provider_name,
-                provider_id=provider_id,
-                bonus_type=detect_bonus_type(row.get("description", "")),
-                amount=parse_amount(row.get("amount", "0")),
-                wagering_multiplier=parse_wagering(row.get("wagering", "1x")),
-                min_odds=parse_min_odds(row.get("min_odds", "1.80")),
-                sources=["tvmatchen.nu"],
-            ))
+            bonuses.append(
+                BonusInfo(
+                    provider_name=provider_name,
+                    provider_id=provider_id,
+                    bonus_type=detect_bonus_type(row.get("description", "")),
+                    amount=parse_amount(row.get("amount", "0")),
+                    wagering_multiplier=parse_wagering(row.get("wagering", "1x")),
+                    min_odds=parse_min_odds(row.get("min_odds", "1.80")),
+                    sources=["tvmatchen.nu"],
+                )
+            )
 
         logger.info(f"[tvmatchen.nu] Scraped {len(bonuses)} provider bonuses")
     except Exception as e:
@@ -442,6 +506,7 @@ def scrape_tvmatchen(session: requests.Session) -> list[BonusInfo]:
 
 
 # ============ HTML Extraction Helpers ============
+
 
 def _extract_bonus_rows(soup: BeautifulSoup) -> list[dict]:
     """
@@ -476,9 +541,15 @@ def _extract_bonus_rows(soup: BeautifulSoup) -> list[dict]:
 
     # Strategy 2: Look for review/bonus cards
     card_selectors = [
-        ".bonus-card", ".review-box", ".betting-bonus",
-        ".operator-card", ".sportsbook-bonus", ".bonus-offer",
-        "[class*='bonus']", "[class*='review']", "[class*='operator']",
+        ".bonus-card",
+        ".review-box",
+        ".betting-bonus",
+        ".operator-card",
+        ".sportsbook-bonus",
+        ".bonus-offer",
+        "[class*='bonus']",
+        "[class*='review']",
+        "[class*='operator']",
     ]
     for selector in card_selectors:
         for card in soup.select(selector):
@@ -506,7 +577,7 @@ def _extract_bonus_rows(soup: BeautifulSoup) -> list[dict]:
     return rows
 
 
-def _parse_table_row(cells: list[str], headers: list[str], tr=None) -> Optional[dict]:
+def _parse_table_row(cells: list[str], headers: list[str], tr=None) -> dict | None:
     """Parse a table row into bonus info dict."""
     if not cells:
         return None
@@ -519,8 +590,8 @@ def _parse_table_row(cells: list[str], headers: list[str], tr=None) -> Optional[
         # Try image alt text
         for img in tr.find_all("img"):
             alt = img.get("alt", "")
-            cleaned = re.sub(r'^(besök|gå till|visit)\s+', '', alt, flags=re.IGNORECASE).strip()
-            cleaned = re.sub(r'\s*(logo|ikon|icon|bonus)$', '', cleaned, flags=re.IGNORECASE).strip()
+            cleaned = re.sub(r"^(besök|gå till|visit)\s+", "", alt, flags=re.IGNORECASE).strip()
+            cleaned = re.sub(r"\s*(logo|ikon|icon|bonus)$", "", cleaned, flags=re.IGNORECASE).strip()
             if cleaned and len(cleaned) >= 3 and len(cleaned) <= 40:
                 provider = cleaned
                 break
@@ -529,13 +600,17 @@ def _parse_table_row(cells: list[str], headers: list[str], tr=None) -> Optional[
         if provider == cells[0]:  # Still unchanged
             for a in tr.find_all("a", href=True):
                 href = a["href"]
-                for pattern in [r'/spelbolag/([a-z0-9-]+)', r'/bettingsidor/([a-z0-9-]+)',
-                                r'/(?:hamta|besok)/([a-z0-9-]+)', r'\.se/([a-z0-9-]+)/?$']:
+                for pattern in [
+                    r"/spelbolag/([a-z0-9-]+)",
+                    r"/bettingsidor/([a-z0-9-]+)",
+                    r"/(?:hamta|besok)/([a-z0-9-]+)",
+                    r"\.se/([a-z0-9-]+)/?$",
+                ]:
                     m = re.search(pattern, href, re.IGNORECASE)
                     if m:
                         slug = m.group(1)
-                        name = re.sub(r'-(casino|sport|betting|se|odds)$', '', slug)
-                        name = name.replace('-', ' ').strip().title()
+                        name = re.sub(r"-(casino|sport|betting|se|odds)$", "", slug)
+                        name = name.replace("-", " ").strip().title()
                         if name and len(name) >= 3:
                             provider = name
                             break
@@ -572,7 +647,7 @@ def _parse_table_row(cells: list[str], headers: list[str], tr=None) -> Optional[
     return row
 
 
-def _parse_bonus_card(card) -> Optional[dict]:
+def _parse_bonus_card(card) -> dict | None:
     """Parse a bonus card/review box element."""
     text = card.get_text(" ", strip=True)
     if len(text) < 10:
@@ -599,13 +674,13 @@ def _parse_bonus_card(card) -> Optional[dict]:
     if not provider:
         for a in card.find_all("a", href=True):
             href = a["href"]
-            for pattern in [r'/spelbolag/([a-z0-9-]+)', r'/bettingsidor/([a-z0-9-]+)', r'/r/([a-z0-9-]+)/']:
+            for pattern in [r"/spelbolag/([a-z0-9-]+)", r"/bettingsidor/([a-z0-9-]+)", r"/r/([a-z0-9-]+)/"]:
                 m = re.search(pattern, href, re.IGNORECASE)
                 if m:
                     slug = m.group(1)
                     # Clean slug: remove trailing -casino, -sport, -betting etc.
-                    name = re.sub(r'-(casino|sport|betting|se|odds)$', '', slug)
-                    name = name.replace('-', ' ').strip().title()
+                    name = re.sub(r"-(casino|sport|betting|se|odds)$", "", slug)
+                    name = name.replace("-", " ").strip().title()
                     if name and len(name) >= 3:
                         provider = name
                         break
@@ -617,9 +692,9 @@ def _parse_bonus_card(card) -> Optional[dict]:
         for img in card.find_all("img"):
             alt = img.get("alt", "")
             # Strip common prefixes: "Besök X", "Gå till X"
-            cleaned = re.sub(r'^(besök|gå till|visit)\s+', '', alt, flags=re.IGNORECASE).strip()
+            cleaned = re.sub(r"^(besök|gå till|visit)\s+", "", alt, flags=re.IGNORECASE).strip()
             # Strip suffixes
-            cleaned = re.sub(r'\s*(casino|sport|betting|logo|ikon)$', '', cleaned, flags=re.IGNORECASE).strip()
+            cleaned = re.sub(r"\s*(casino|sport|betting|logo|ikon)$", "", cleaned, flags=re.IGNORECASE).strip()
             if cleaned and len(cleaned) >= 3 and len(cleaned) <= 30:
                 provider = cleaned
                 break
@@ -630,14 +705,14 @@ def _parse_bonus_card(card) -> Optional[dict]:
     return _parse_text_block(provider, text)
 
 
-def _parse_text_block(provider: str, text: str) -> Optional[dict]:
+def _parse_text_block(provider: str, text: str) -> dict | None:
     """Parse a text block to extract bonus info."""
     row = {"provider": provider, "description": text}
 
     # Amount - look for "N kr" / "N SEK" patterns
-    amount_match = re.search(r'(\d[\d\s\xa0\u202f]*\d|\d+)\s*(?:kr|sek|kronor)', text, re.IGNORECASE)
+    amount_match = re.search(r"(\d[\d\s\xa0\u202f]*\d|\d+)\s*(?:kr|sek|kronor)", text, re.IGNORECASE)
     if amount_match:
-        row["amount"] = amount_match.group(1).replace(' ', '').replace('\xa0', '').replace('\u202f', '')
+        row["amount"] = amount_match.group(1).replace(" ", "").replace("\xa0", "").replace("\u202f", "")
 
     # Wagering - use the improved parse_wagering function
     wager_val = parse_wagering(text)
@@ -653,6 +728,7 @@ def _parse_text_block(provider: str, text: str) -> Optional[dict]:
 
 
 # ============ Aggregation ============
+
 
 def aggregate_bonuses(all_bonuses: list[BonusInfo]) -> dict[str, BonusInfo]:
     """
@@ -725,11 +801,13 @@ def _most_common(values: list, default=None):
     if not values:
         return default
     from collections import Counter
+
     counter = Counter(values)
     return counter.most_common(1)[0][0]
 
 
 # ============ YAML Update ============
+
 
 def update_providers_yaml(
     aggregated: dict[str, BonusInfo],
@@ -816,8 +894,8 @@ def _write_yaml_preserving_structure(path: Path, config: dict):
 
     # Extract header comments (lines before first key)
     header_lines = []
-    for line in original.split('\n'):
-        if line.startswith('#') or line.strip() == '':
+    for line in original.split("\n"):
+        if line.startswith("#") or line.strip() == "":
             header_lines.append(line)
         else:
             break
@@ -827,9 +905,9 @@ def _write_yaml_preserving_structure(path: Path, config: dict):
         pass
 
     def str_representer(dumper, data):
-        if '\n' in data:
-            return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
-        return dumper.represent_scalar('tag:yaml.org,2002:str', data)
+        if "\n" in data:
+            return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data)
 
     CleanDumper.add_representer(str, str_representer)
 
@@ -842,8 +920,8 @@ def _write_yaml_preserving_structure(path: Path, config: dict):
         width=120,
     )
 
-    with open(path, 'w') as f:
-        f.write('\n'.join(header_lines) + '\n' if header_lines else '')
+    with open(path, "w") as f:
+        f.write("\n".join(header_lines) + "\n" if header_lines else "")
         f.write(yaml_content)
 
 
@@ -886,8 +964,6 @@ KNOWN_BONUSES: dict[str, dict] = {
     "quickcasino": {"type": "bonusdeposit", "amount": 500, "wagering_multiplier": 6.0, "min_odds": 1.80},
     # BetConstruct
     "vbet": {"type": "freebet", "amount": 1500, "wagering_multiplier": 1.0, "min_odds": 1.80},
-    # Interwetten
-    "interwetten": {"type": "bonusdeposit", "amount": 1000, "wagering_multiplier": 5.0, "min_odds": 1.70},
 }
 
 
@@ -920,11 +996,13 @@ def scrape_all_bonuses(verbose: bool = False) -> dict[str, BonusInfo]:
     Falls back to KNOWN_BONUSES if scraping yields nothing.
     """
     session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Accept-Language": "sv-SE,sv;q=0.9,en;q=0.8",
-    })
+    session.headers.update(
+        {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Accept-Language": "sv-SE,sv;q=0.9,en;q=0.8",
+        }
+    )
 
     all_bonuses = []
     scrapers = [
@@ -961,7 +1039,6 @@ def validate_bonuses(scraped: dict[str, BonusInfo] | None = None) -> dict:
 
     If scraped is None, uses KNOWN_BONUSES baseline.
     """
-    import json
     from datetime import datetime
 
     config_path = Path(__file__).parent.parent / "src" / "config" / "providers.yaml"
@@ -986,8 +1063,7 @@ def validate_bonuses(scraped: dict[str, BonusInfo] | None = None) -> dict:
 
     # Check all providers in YAML that have bonuses
     yaml_bonus_providers = {
-        pid for pid, p in providers.items()
-        if "bonus" in p and pid not in ("pinnacle", "polymarket")
+        pid for pid, p in providers.items() if "bonus" in p and pid not in ("pinnacle", "polymarket")
     }
     # ALL provider IDs in YAML (for filtering new-provider suggestions)
     all_yaml_providers = set(providers.keys())
@@ -1000,25 +1076,29 @@ def validate_bonuses(scraped: dict[str, BonusInfo] | None = None) -> dict:
         # Require meaningful bonus data: amount >= 50 kr
         if s.amount < 50:
             continue
-        results["missing_from_yaml"].append({
-            "provider_id": pid,
-            "provider_name": s.provider_name,
-            "scraped_bonus": {
-                "type": s.bonus_type,
-                "amount": s.amount,
-                "wagering_multiplier": s.wagering_multiplier,
-                "min_odds": s.min_odds,
-            },
-            "sources": s.sources,
-        })
+        results["missing_from_yaml"].append(
+            {
+                "provider_id": pid,
+                "provider_name": s.provider_name,
+                "scraped_bonus": {
+                    "type": s.bonus_type,
+                    "amount": s.amount,
+                    "wagering_multiplier": s.wagering_multiplier,
+                    "min_odds": s.min_odds,
+                },
+                "sources": s.sources,
+            }
+        )
 
     # Providers in YAML but not in scrape
     for pid in yaml_bonus_providers - scraped_providers:
         yaml_bonus = providers[pid].get("bonus", {})
-        results["missing_from_scrape"].append({
-            "provider_id": pid,
-            "yaml_bonus": yaml_bonus,
-        })
+        results["missing_from_scrape"].append(
+            {
+                "provider_id": pid,
+                "yaml_bonus": yaml_bonus,
+            }
+        )
 
     # Compare matched providers
     for pid in yaml_bonus_providers & scraped_providers:
@@ -1034,40 +1114,50 @@ def validate_bonuses(scraped: dict[str, BonusInfo] | None = None) -> dict:
             if s.wagering_multiplier > 25:
                 suspicious = True
             else:
-                diffs.append({
-                    "field": "wagering_multiplier",
-                    "yaml": yaml_bonus.get("wagering_multiplier"),
-                    "scraped": s.wagering_multiplier,
-                })
+                diffs.append(
+                    {
+                        "field": "wagering_multiplier",
+                        "yaml": yaml_bonus.get("wagering_multiplier"),
+                        "scraped": s.wagering_multiplier,
+                    }
+                )
 
         if yaml_bonus.get("type") != s.bonus_type and s.bonus_type != "unknown":
-            diffs.append({
-                "field": "type",
-                "yaml": yaml_bonus.get("type"),
-                "scraped": s.bonus_type,
-            })
+            diffs.append(
+                {
+                    "field": "type",
+                    "yaml": yaml_bonus.get("type"),
+                    "scraped": s.bonus_type,
+                }
+            )
         if yaml_bonus.get("amount") != s.amount and s.amount > 0:
-            diffs.append({
-                "field": "amount",
-                "yaml": yaml_bonus.get("amount"),
-                "scraped": s.amount,
-            })
+            diffs.append(
+                {
+                    "field": "amount",
+                    "yaml": yaml_bonus.get("amount"),
+                    "scraped": s.amount,
+                }
+            )
         if yaml_bonus.get("min_odds") != s.min_odds and s.min_odds > 0:
-            diffs.append({
-                "field": "min_odds",
-                "yaml": yaml_bonus.get("min_odds"),
-                "scraped": s.min_odds,
-            })
+            diffs.append(
+                {
+                    "field": "min_odds",
+                    "yaml": yaml_bonus.get("min_odds"),
+                    "scraped": s.min_odds,
+                }
+            )
 
         status = "match" if not diffs else "mismatch"
 
         if diffs:
             results["mismatches"] += 1
-            results["changes"].append({
-                "provider_id": pid,
-                "diffs": diffs,
-                "sources": s.sources,
-            })
+            results["changes"].append(
+                {
+                    "provider_id": pid,
+                    "diffs": diffs,
+                    "sources": s.sources,
+                }
+            )
         else:
             results["matches"] += 1
 
@@ -1084,7 +1174,9 @@ def validate_bonuses(scraped: dict[str, BonusInfo] | None = None) -> dict:
                 "amount": s.amount,
                 "wagering_multiplier": s.wagering_multiplier,
                 "min_odds": s.min_odds,
-            } if s.amount > 0 else None,
+            }
+            if s.amount > 0
+            else None,
             "sources": s.sources,
             "diffs": diffs,
         }
@@ -1095,6 +1187,7 @@ def validate_bonuses(scraped: dict[str, BonusInfo] | None = None) -> dict:
 def save_bonus_validation(report: dict, path: Path | None = None) -> Path:
     """Save bonus validation report to JSON."""
     import json
+
     if path is None:
         path = DATA_DIR / "bonus_validation.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1106,6 +1199,7 @@ def save_bonus_validation(report: dict, path: Path | None = None) -> Path:
 def load_bonus_validation(path: Path | None = None) -> dict | None:
     """Load last bonus validation report from JSON."""
     import json
+
     if path is None:
         path = DATA_DIR / "bonus_validation.json"
     if not path.exists():
@@ -1119,10 +1213,9 @@ def load_bonus_validation(path: Path | None = None) -> dict | None:
 
 # ============ Main ============
 
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="Scrape bonus data from affiliate sites and update providers.yaml"
-    )
+    parser = argparse.ArgumentParser(description="Scrape bonus data from affiliate sites and update providers.yaml")
     parser.add_argument("--apply", action="store_true", help="Apply changes to providers.yaml")
     parser.add_argument("--dry-run", action="store_true", default=True, help="Show changes without applying (default)")
     parser.add_argument("--fallback-only", action="store_true", help="Use hardcoded data only (no scraping)")
@@ -1147,10 +1240,12 @@ def main():
     else:
         # Scrape all sources
         session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            "Accept-Language": "sv-SE,sv;q=0.9,en;q=0.8",
-        })
+        session.headers.update(
+            {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                "Accept-Language": "sv-SE,sv;q=0.9,en;q=0.8",
+            }
+        )
 
         all_bonuses = []
         scrapers = [
@@ -1185,7 +1280,7 @@ def main():
         b = aggregated[pid]
         sources_str = ", ".join(b.sources[:3])
         if len(b.sources) > 3:
-            sources_str += f" +{len(b.sources)-3}"
+            sources_str += f" +{len(b.sources) - 3}"
         print(
             f"{pid:<15} {b.bonus_type:<15} {b.amount:>6} kr "
             f"{b.wagering_multiplier:>4.0f}x  {b.min_odds:>6.2f}  {sources_str}"

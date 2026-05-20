@@ -39,6 +39,7 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from mirror import stream_registry  # noqa: E402
 from mirror.browser import MirrorBrowser  # noqa: E402
+from mirror.poly_live_poller import run_poly_live_poller  # noqa: E402
 from mirror.router import create_mirror_router  # noqa: E402
 from mirror.sse import mirror_broadcaster  # noqa: E402
 from proxy import create_proxy_router  # noqa: E402
@@ -135,6 +136,74 @@ async def startup():
     # SSH tunnel watchdog lives in launch.py (background thread, 6-fail
     # tolerance over ~2 min, /health/live probe). Don't double up here —
     # racing two watchdogs causes thrash + duplicate respawn attempts.
+
+    # Reset stale runner_state rows on launch — a previous arnold.bat that
+    # died abnormally (Ctrl+C, kill, OOM) leaves "ready_to_run"/"running" in
+    # `mirror_runner_state`. The frontend's recovery effect would re-show
+    # those as active providers in this fresh session, even though no runner
+    # exists in-memory. Clear the slate; runners will write fresh state as
+    # they actually start this session.
+    asyncio.create_task(_reset_stale_runner_state(), name="reset-runner-state")
+
+    # Polymarket Gamma API live-odds poller — extraction runs every 10 min so
+    # cached odds drift; this polls the top-N polymarket value candidates
+    # every 30s and broadcasts live_price SSE so PlayPage rows stay fresh.
+    asyncio.create_task(run_poly_live_poller(), name="poly-live-poll")
+
+    # Periodic auto-poller for ALL API-based recorders (polymarket + kalshi):
+    # every 5 min, hits /mirror/sync-positions for each, which runs the full
+    # insert + settle cycle. Replaces the need for user to click "sync" — open
+    # positions enter the DB and settled ones close themselves continuously,
+    # no Playwright tab required.
+    from mirror.recorders.auto_poller import run_auto_poller as _run_auto_poller
+
+    asyncio.create_task(_run_auto_poller(), name="recorder-auto-poll")
+
+
+async def _reset_stale_runner_state() -> None:
+    """Clear stale mirror_runner_state rows on every arnold.bat launch.
+
+    The previous session may have died without writing state='idle' (Ctrl+C,
+    kill, OOM, exception inside the runner), leaving "ready_to_run" or
+    "running" rows in the DB. The frontend recovery effect uses those rows
+    to refine card state for already-active providers; if they're stale a
+    page reload would reactivate phantom runners. Clearing on startup gives
+    a clean slate — runners overwrite as they actually start this session.
+
+    Uses the same fire-and-forget tunnel POSTs as state_writer. Failures are
+    swallowed (server may be momentarily down; the recovery effect already
+    tolerates stale data because it gates on activeProviders membership).
+    """
+    try:
+        from mirror.state_writer import write_runner_state
+
+        from arnold.http_client import tunnel_client
+
+        # Brief grace so the tunnel + server are ready to accept POSTs.
+        await asyncio.sleep(2)
+        client = tunnel_client()
+        try:
+            r = await client.get("/api/mirror/state", timeout=10.0)
+            if r.status_code != 200:
+                logger.debug(f"[reset-runner-state] GET /api/mirror/state status={r.status_code}")
+                return
+            payload = r.json()
+        except Exception as e:
+            logger.debug(f"[reset-runner-state] GET failed: {e!r}")
+            return
+        runners = payload.get("runners", []) or []
+        cleared = 0
+        for row in runners:
+            pid = row.get("provider_id")
+            state = row.get("state")
+            if not pid or not state or state in ("idle", "none"):
+                continue
+            write_runner_state(pid, state="idle")
+            cleared += 1
+        if cleared:
+            logger.info(f"[reset-runner-state] cleared {cleared} stale runner rows")
+    except Exception:
+        logger.exception("[reset-runner-state] unexpected error")
 
 
 async def _auto_open_tradingview() -> None:

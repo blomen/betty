@@ -68,6 +68,15 @@ LEG_DRIFT_TOL_PCT = 0.01  # 1% drift tolerance below planned odds → red
 RERANK_INTERVAL_S = 5.0
 DETHRONE_HYSTERESIS_PCT = 0.5
 
+# Providers whose bets are recorded by a position-based API recorder
+# (polymarket_api.sync / kalshi_api.sync, run by auto_poller every 5 min).
+# arb_runner must NOT _record_bet these counters — a CLOB order can fire the
+# placement event without actually filling, producing a phantom DB row with
+# no on-chain position (bets 622/623). The position-based sync only ever sees
+# REAL fills, so deferring to it eliminates phantoms. Cost: the counter shows
+# up in the DB within ~5 min instead of instantly.
+_POSITION_SYNCED_PROVIDERS = {"polymarket", "kalshi"}
+
 
 class ArbRunner:
     """Runs the semi-auto arbitrage play loop for a single soft book.
@@ -98,7 +107,7 @@ class ArbRunner:
         self._placed_today = placed_today
         self._active_providers = list(active_providers or [])
 
-        self.state: str = STATE_IDLE
+        self._state: str = STATE_IDLE
         self.current_opp: dict | None = None
         self.current_arb_group_id: str | None = None
         self.stats: dict = {"placed": 0, "skipped": 0, "rejected": 0, "complete": 0, "total": 0}
@@ -178,6 +187,26 @@ class ArbRunner:
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @state.setter
+    def state(self, value: str) -> None:
+        self._state = value
+        try:
+            from .state_writer import write_runner_state
+
+            write_runner_state(
+                self.provider_id,
+                state=value,
+                mode="arb",
+                current_arb_group_id=self.current_arb_group_id,
+                last_idle_reason=self.last_idle_reason,
+            )
+        except Exception as e:
+            logger.debug(f"[Arb:{self.provider_id}] state_writer failed: {e!r}")
+
     def on_bet_intercepted(self, body: dict, request_body: dict | None = None) -> None:
         """Anchor (soft) leg placement intercepted.
 
@@ -239,8 +268,20 @@ class ArbRunner:
     # ----- run gate -----
 
     async def _await_run_gate(self, workflow: Any, page: Any) -> None:
-        """Park at STATE_READY_TO_RUN until the user opens the run gate."""
+        """Park briefly at STATE_READY_TO_RUN, then auto-release for arb (drain).
+
+        F6 (per docs/superpowers/specs/2026-05-06-betinia-drain-workflow.md): the
+        arb runner is single-press — clicking the soft anchor card already
+        signals intent to drain, no second press needed. We still publish
+        `provider_ready` and sleep 0.5s so the SSE event lands and the card
+        flashes amber, then set `_run_event` so the bet loop starts.
+
+        Pause flow still works: a user-initiated `set_run(False)` clears the
+        event mid-loop, and the bet loop drops back into `_await_run_gate`,
+        which re-publishes `provider_ready` and re-auto-releases.
+        """
         self.state = STATE_READY_TO_RUN
+        auto_released = not self._run_event.is_set()
         self._broadcaster.publish(
             "provider_ready",
             {
@@ -249,8 +290,19 @@ class ArbRunner:
                 "mode": "arb",
                 "placed_today": self._placed_today.get(self.provider_id, 0),
                 "daily_cap": DAILY_BET_CAP,
+                "auto_released": auto_released,
             },
         )
+        if auto_released:
+
+            async def _release_after_delay():
+                try:
+                    await asyncio.sleep(0.5)
+                    self._run_event.set()
+                except asyncio.CancelledError:
+                    pass
+
+            asyncio.create_task(_release_after_delay(), name=f"arb_auto_release_{self.provider_id}")
         self._ready_sync_task = asyncio.create_task(
             self._ready_sync_loop(workflow, page),
             name=f"ready_sync_arb_{self.provider_id}",
@@ -401,15 +453,16 @@ class ArbRunner:
                         )
                         break
 
-                # Fetch fresh arb opps
+                # Fetch fresh arb opps. Empty result is transient — first call
+                # often hits an in-flight scan (30s-3min server-side); the next
+                # call hits the warm cache. Don't break the runner on empty.
                 opps = await self._fetch_arb_opps()
                 if not opps:
                     logger.info(
-                        f"[Arb:{pid}] No arb opps available — done. "
+                        f"[Arb:{pid}] arb opps empty — sleeping {_OPP_FETCH_COOLDOWN}s and retrying. "
                         f"counter_pool={self._counter_pool()} active={self._active_providers}"
                     )
                     self.last_idle_reason = "no_opps_in_pool"
-                    self.last_skip_counts = dict(skip_counts)
                     self._broadcaster.publish(
                         "arb_runner_idle",
                         {
@@ -422,7 +475,8 @@ class ArbRunner:
                             },
                         },
                     )
-                    break
+                    await asyncio.sleep(_OPP_FETCH_COOLDOWN)
+                    continue
 
                 placed_any = False
                 for opp in opps:
@@ -485,7 +539,9 @@ class ArbRunner:
                         actual_stake=anchor_result["actual_stake"],
                     )
                     self._block_event_market(anchor_bet)
-                    await self._record_bet(anchor_bet, anchor_placement, self.current_arb_group_id or "")
+                    await self._record_bet(
+                        anchor_bet, anchor_placement, self.current_arb_group_id or "", is_anchor=True
+                    )
 
                     # Update counter slips and await hedge clicks.
                     # Counter bets are recorded inside _update_counter_slips_and_await_hedges
@@ -591,7 +647,19 @@ class ArbRunner:
         self.current_opp = opp
         self.current_arb_group_id = uuid.uuid4().hex[:12]
 
-        # Navigate + prep all legs in parallel
+        # Navigate + prep all legs in parallel.
+        #
+        # F17 (per docs/superpowers/specs/2026-05-06-betinia-drain-workflow.md):
+        # branch on `wf.autonomous_placement`. The semi-auto mode A workflow has
+        # the user clicking outcome+Place on each tab anyway, so DOM-clicking
+        # the outcome on guided counter sites (pinnacle, kambi, etc.) just
+        # creates failure modes (outcome-btn-not-found, slip-not-populated,
+        # WSDK widget-swap races) without adding value. We still always run
+        # prep on the anchor — it's the soft side and we want odds drift
+        # detection there — and on autonomous workflows (polymarket SDK) we
+        # need the SDK-driven prep+stream chain.
+        anchor_pid = anchor_leg.get("provider")
+
         async def _prep_leg(leg: dict, planned_stake: float) -> tuple[str, bool, str]:
             pid = leg["provider"]
             try:
@@ -607,6 +675,15 @@ class ArbRunner:
                 nav_ok = await wf.navigate_to_event(page, bet_ns)
                 if not nav_ok:
                     return pid, False, "navigate_failed"
+                # Guided counter (autonomous_placement=False AND not the anchor):
+                # skip DOM prep + slip stream. The user will click outcome +
+                # Place themselves on the provider tab; the interceptor catches
+                # the placement XHR and records the bet via arb_group_id.
+                is_anchor = pid == anchor_pid
+                is_autonomous = bool(getattr(wf, "autonomous_placement", False))
+                if not is_anchor and not is_autonomous:
+                    logger.info(f"[Arb:{self.provider_id}] {pid} is guided counter — nav-only (no prep/stream)")
+                    return pid, True, "guided_nav_only"
                 prep = await wf.prep_betslip(page, bet_ns, planned_stake)
                 if prep.status not in ("prepped", "placed"):
                     return pid, False, f"prep_{prep.status}:{getattr(prep, 'reason', '') or 'no_reason'}"
@@ -872,6 +949,18 @@ class ArbRunner:
                     "actual_stake": leg.get("_current_stake"),
                 },
             )
+            # Position-synced providers (polymarket, kalshi): do NOT _record_bet
+            # here. A CLOB placement event can fire without the order filling,
+            # which produced phantom DB rows (bets 622/623 — recorded but no
+            # on-chain position). auto_poller's polymarket_api.sync /
+            # kalshi_api.sync record the counter from the actual /positions
+            # feed within ~5 min — only ever real fills.
+            if pid in _POSITION_SYNCED_PROVIDERS:
+                logger.info(
+                    f"[Arb:{self.provider_id}] counter {pid} hedge placed — deferring DB record "
+                    f"to position-sync (phantom-proof). group={self.current_arb_group_id}"
+                )
+                continue
             counter_bet = self._opp_to_bet(self.current_opp or {}, leg)
             counter_bet["stake"] = leg.get("_current_stake", 0)
             counter_placement = PlacementResult(
@@ -881,6 +970,33 @@ class ArbRunner:
                 actual_stake=leg.get("_current_stake", 0),
             )
             await self._record_bet(counter_bet, counter_placement, self.current_arb_group_id or "")
+
+        # Post-place profit re-check: now that we know the actual placed odds
+        # on every leg, recompute the guaranteed-profit %. If the arb crossed
+        # below zero due to drift between display and placement (e.g. bets
+        # 604/605 Lee/Shin landed at -0.12%; 592/593 Germany/Swiss at -0.93%),
+        # surface a warning. Can't un-place the legs, but the SSE alert lets
+        # the user see the slip immediately and audit logs flag it.
+        try:
+            placed_counter_odds = [float(leg.get("odds") or 0) for leg in self._counter_legs]
+            placed_profit = recalc_profit_pct(float(anchor_actual_odds), placed_counter_odds)
+            if placed_profit is not None and placed_profit < 0:
+                self._broadcaster.publish(
+                    "arb_negative_profit",
+                    {
+                        "arb_group_id": self.current_arb_group_id,
+                        "placed_profit_pct": round(placed_profit, 3),
+                        "anchor_odds": anchor_actual_odds,
+                        "counter_odds": placed_counter_odds,
+                    },
+                )
+                logger.warning(
+                    f"[Arb:{self.provider_id}] arb_group={self.current_arb_group_id} "
+                    f"placed at NEGATIVE profit {placed_profit:.3f}% — "
+                    f"anchor@{anchor_actual_odds} counters@{placed_counter_odds}"
+                )
+        except Exception:
+            logger.exception(f"[Arb:{self.provider_id}] post-place profit check failed")
 
         self._broadcaster.publish(
             "arb_complete",
@@ -921,6 +1037,9 @@ class ArbRunner:
         drop the URL filter and post-filter in Python: every non-anchor leg must be
         a member of self._counter_pool() (active providers + UNLIMITED, minus self
         and same-cluster siblings).
+
+        Timeout 60s — soft scans take 30s-3min cold, then 60s cache + in-flight
+        coalescing keeps subsequent calls fast. 30s was killing every first call.
         """
         from arnold.http_client import tunnel_client as _tc
 
@@ -930,7 +1049,7 @@ class ArbRunner:
             resp = await _tc().get(
                 "/api/opportunities/arb-workflow",
                 params={"providers": self.provider_id},
-                timeout=30.0,
+                timeout=60.0,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -1033,8 +1152,20 @@ class ArbRunner:
             "provider_meta": dict(leg.get("provider_meta") or {}),  # From leg (matchup_id etc.)
         }
 
-    async def _record_bet(self, bet: dict, result: PlacementResult, arb_group_id: str) -> None:
-        """Record a bet to the server DB with arb group linkage."""
+    async def _record_bet(
+        self,
+        bet: dict,
+        result: PlacementResult,
+        arb_group_id: str,
+        is_anchor: bool = False,
+    ) -> None:
+        """Record a bet to the server DB with arb group linkage.
+
+        bet_type is set to "arb_anchor" / "arb_counter" so the server-side edge
+        gate skips this bet — arb legs can individually have negative edge as
+        long as the COMBINED pair locks profit. The server's stand-alone gate
+        would otherwise reject anchors on the favored side.
+        """
         from arnold.http_client import tunnel_client as _tc
 
         provider_bet_id = result.bet_id if isinstance(result.bet_id, str) and result.bet_id else None
@@ -1049,6 +1180,7 @@ class ArbRunner:
             "is_bonus": bet.get("is_bonus", False),
             "start_time": bet.get("start_time"),
             "provider_bet_id": provider_bet_id,
+            "bet_type": "arb_anchor" if is_anchor else "arb_counter",
             "notes": f"arb_group:{arb_group_id}",
         }
         client = _tc()

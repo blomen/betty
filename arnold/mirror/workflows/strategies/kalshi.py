@@ -226,9 +226,13 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
         if e:
             out.append(e)
 
+    # limit=500 instead of 100 — bets can sit 5+ days as pending in our DB
+    # before reactive sync triggers; a busy week wipes the 100-cap window
+    # before we see it (bet 418, 2026-05-11, never showed in 100-cap returns
+    # despite definitely being settled on kalshi's side).
     settled_resp = await _api_get(
         page,
-        "/v1/users/<U>/event_positions?position_status=close&settlement_status=settled&limit=100",
+        "/v1/users/<U>/event_positions?position_status=close&settlement_status=settled&limit=500",
     )
     for pos in _walk_positions(settled_resp):
         realized_cents = int(pos.get("realized_pnl") or 0)
@@ -254,8 +258,41 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
 
 
 def _ticker_from_bet(bet) -> str:
-    val = getattr(bet, "provider_market_ticker", None) or getattr(bet, "provider_event_id", None) or ""
+    """Pull the kalshi ticker from a bet — checks every field name the
+    extraction / scanner / arb-opp paths use. The scanner emits it as
+    `ticker` in provider_meta (which _bet_ns flattens to a top-level attr);
+    older paths used `provider_market_ticker` / `provider_event_id`."""
+    val = (
+        getattr(bet, "provider_market_ticker", None)
+        or getattr(bet, "provider_event_id", None)
+        or getattr(bet, "ticker", None)
+        or ""
+    )
     return str(val or "").replace("kalshi_", "").upper()
+
+
+def _event_ticker_from_market(market_ticker: str) -> str:
+    """Derive the event ticker by stripping a trailing -OUTCOME segment.
+
+    Kalshi event tickers are `<SERIES>-<DATE+ID>`, e.g.
+    `KXBOXING-26MAY16DOHERTHATIM`. A market within an event appends one
+    `-<OUTCOME>` segment:
+        moneyline:    `KXBOXING-26MAY16DOHERTHATIM-HATIM`  (name fragment)
+        spread/total: `KXEPLTOTAL-26MAY24BRIMUN-3` / `-ALN1` (line index)
+
+    So any ticker with ≥3 dash-separated segments is a MARKET ticker — strip
+    the last segment to get the event ticker. 2-segment tickers are already
+    event-level (single-market events) and returned unchanged.
+
+    A digit-aware heuristic used to live here, but spread/total outcome
+    suffixes carry digits ("-3", "-ALN1"), so it wrongly kept them attached
+    and broke navigation. The rare genuine 3-segment event ticker is covered
+    by the full-ticker fallback in `_resolve_market_id`.
+    """
+    parts = (market_ticker or "").split("-")
+    if len(parts) <= 2:
+        return market_ticker
+    return "-".join(parts[:-1])
 
 
 def _series_from_event_ticker(event_ticker: str) -> str:
@@ -273,17 +310,24 @@ async def _resolve_market_id(page: Page, event_ticker: str, market_ticker: str |
         return None
     data = await _api_get(page, f"/v1/cached/events/?tickers={event_ticker}")
     if not isinstance(data, dict) or "__error" in data:
+        print(f"[kalshi resolve] api error for event={event_ticker!r}: {data}", flush=True)
         return None
     events = data.get("events") or []
     if not events:
+        print(f"[kalshi resolve] no events for ticker={event_ticker!r} (response keys={list(data.keys())})", flush=True)
         return None
     markets = (events[0] or {}).get("markets") or []
     if not markets:
+        print(f"[kalshi resolve] event found but no markets — event={events[0]!r}", flush=True)
         return None
     if market_ticker:
         mt = market_ticker.upper()
+        # Kalshi's /v1/cached/events response uses `ticker_name` (not the
+        # documented `ticker`) for the market's ticker. Check both — older
+        # endpoints may still return `ticker`.
         for m in markets:
-            if (m.get("ticker") or "").upper() == mt:
+            mt_val = (m.get("ticker_name") or m.get("ticker") or "").upper()
+            if mt_val == mt:
                 return m.get("id") or m.get("market_id")
     # Fall back to single-market events
     if len(markets) == 1:
@@ -292,13 +336,15 @@ async def _resolve_market_id(page: Page, event_ticker: str, market_ticker: str |
 
 
 def _market_yes_ask(markets: list[dict], market_ticker: str | None) -> int | None:
-    """Pick yes_ask (cents) from the matching market record."""
+    """Pick yes_ask (cents) from the matching market record. Kalshi's
+    cached-events response uses `ticker_name`, not `ticker`."""
     if not markets:
         return None
     if market_ticker:
         mt = market_ticker.upper()
         for m in markets:
-            if (m.get("ticker") or "").upper() == mt:
+            mt_val = (m.get("ticker_name") or m.get("ticker") or "").upper()
+            if mt_val == mt:
                 v = m.get("yes_ask")
                 return int(v) if isinstance(v, (int, float)) and v > 0 else None
     if len(markets) == 1:
@@ -308,28 +354,39 @@ def _market_yes_ask(markets: list[dict], market_ticker: str | None) -> int | Non
 
 
 async def _navigate_to_event(page: Page, bet, intel: dict | None) -> bool:
-    event_ticker = _ticker_from_bet(bet)
-    if not event_ticker:
+    raw_ticker = _ticker_from_bet(bet)
+    if not raw_ticker:
         return False
 
-    # market_ticker may be the same as event_ticker (single-market events) or
-    # a -<OUTCOME> suffix variant. Use whatever the bet carries.
-    market_ticker = getattr(bet, "provider_market_ticker", None) or event_ticker
-    market_ticker = str(market_ticker or "").upper()
+    # market_ticker is the full ticker the bet carries (may include -OUTCOME).
+    # event_ticker is what /v1/cached/events expects — strip the outcome suffix.
+    market_ticker = raw_ticker
 
-    # Resolve event ticker — strip a trailing -OUTCOME suffix that is NOT
-    # part of the actual event ticker (Kalshi event tickers end in a date
-    # token like -26APR30, not an outcome). Conservative: only strip if
-    # the bet provides a distinct provider_event_id.
+    # If the bet has an explicit provider_event_id distinct from the market
+    # ticker, prefer it. Otherwise derive event_ticker by stripping any
+    # trailing -OUTCOME segment from the market ticker.
     pe_id = str(getattr(bet, "provider_event_id", "") or "").upper().replace("KALSHI_", "")
     if pe_id and pe_id != market_ticker:
         event_ticker = pe_id
+    else:
+        event_ticker = _event_ticker_from_market(market_ticker)
 
     series = _series_from_event_ticker(event_ticker)
     market_id = await _resolve_market_id(page, event_ticker, market_ticker)
     if not market_id:
-        logger.warning(f"[kalshi] Could not resolve market_id for event={event_ticker} market={market_ticker}")
-        return False
+        # Fallback: if derived event_ticker returns nothing AND it differs from
+        # the raw market_ticker, try the full market_ticker as an event_ticker
+        # (covers single-market events whose market_ticker IS the event_ticker
+        # but had a numeric trailing segment we mis-identified as a date).
+        if event_ticker != market_ticker:
+            event_ticker_alt = market_ticker
+            market_id = await _resolve_market_id(page, event_ticker_alt, market_ticker)
+            if market_id:
+                event_ticker = event_ticker_alt
+                series = _series_from_event_ticker(event_ticker)
+        if not market_id:
+            logger.warning(f"[kalshi] Could not resolve market_id for event={event_ticker} market={market_ticker}")
+            return False
 
     _pending["market_id"] = market_id
     _pending["market_ticker"] = market_ticker
@@ -368,8 +425,12 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None) -> Pl
     _pending["count"] = count
     _pending["side"] = "yes"
 
+    # status="prepped" matches the convention used by polymarket / altenar
+    # strategies — required so navigate-opp continues into the live-price
+    # poll path. Older "ready" status was treated as prep_failed by the
+    # router, which stopped polling before live odds could surface.
     return PlacementResult(
-        status="ready",
+        status="prepped",
         bet_id=bid,
         actual_odds=round(1.0 / yes_price_dollars, 4),
         actual_stake=actual_stake,

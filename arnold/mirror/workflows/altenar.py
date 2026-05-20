@@ -144,30 +144,12 @@ class AltenarWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def check_login(self, page: Page) -> bool:
-        # Altenar's WSDK only initialises (and sets localStorage.token) when
-        # the page is on /sport. If the user browsed to /sv/ home or any other
-        # path, the token is missing and _authed_fetch returns 401 even when
-        # the user is genuinely logged in via cookies. Detect this and bounce
-        # the tab back to /sport so the WSDK re-runs and re-sets the token.
-        token_present = False
-        try:
-            token_present = bool(await page.evaluate("() => !!localStorage.getItem('token')"))
-        except Exception:
-            pass
-        if not token_present:
-            current = (page.url or "").lower()
-            if "/sport" not in current:
-                logger.info(
-                    f"[{self.provider_id}] check_login: token missing on {current[:60]}, bouncing to {self.home_url}"
-                )
-                try:
-                    await page.goto(self.home_url, wait_until="domcontentloaded", timeout=15000)
-                    # Give WSDK time to initialise + read cookies + set token
-                    await asyncio.sleep(2.5)
-                except Exception as e:
-                    logger.warning(f"[{self.provider_id}] check_login: bounce-to-/sport failed: {e}")
-                    return False
-
+        # Passive only — never navigates the page. Altenar's WSDK only
+        # initialises (and sets localStorage.token) when the page is on
+        # /sport. If the user is elsewhere the token is missing and
+        # _authed_fetch returns 401 — we simply report not-logged-in and
+        # leave the URL alone. User is in charge of navigation; they'll
+        # land on /sport themselves during their normal browsing.
         result = await self._authed_fetch(page, self._balance_url())
         if result is None or "__error" in (result or {}):
             return False
@@ -209,7 +191,13 @@ class AltenarWorkflow(ProviderWorkflow):
     # + dispatching a storage event is enough to push a new stake into the slip.
     # ------------------------------------------------------------------
 
-    async def read_slip_odds(self, page: Page) -> float | None:
+    async def read_slip_odds(self, page: Page, expected_event_id: str | int | None = None) -> float | None:
+        """Return the first slip selection's live price.
+
+        If `expected_event_id` is provided, only return when the slip's
+        selection.odd.intEventId matches — prevents broadcasting stale odds
+        when the user has a leftover selection from a previous event.
+        """
         try:
             integration = self._integration
             key = f"WSDK_{integration}_betSelections"
@@ -222,9 +210,19 @@ class AltenarWorkflow(ProviderWorkflow):
             sels = data.get("state", {}).get("selections") or []
             if not sels:
                 return None
-            # First selection's live price (Altenar updates this in-place as odds drift).
-            price = sels[0].get("odd", {}).get("price")
-            return float(price) if price is not None else None
+            sel = sels[0]
+            odd = sel.get("odd", {})
+            price = odd.get("price")
+            if price is None:
+                return None
+            if expected_event_id is not None:
+                slip_eid = odd.get("intEventId") or sel.get("event", {}).get("id")
+                try:
+                    if str(slip_eid) != str(expected_event_id):
+                        return None
+                except Exception:
+                    return None
+            return float(price)
         except Exception:
             return None
 
@@ -291,6 +289,19 @@ class AltenarWorkflow(ProviderWorkflow):
         try:
             status_raw = str(bet.get("status") or bet.get("betStatus") or "").lower()
             status_map = {
+                # Open / not-yet-settled. Pre-2026-05-11 these mapped to None
+                # → _parse_history_entry returned None → reconcile + the
+                # _record_unknown_open_bets passive recovery flow never saw
+                # any open bets. Every manually-placed Altenar bet (BETINIA
+                # arb anchor, etc.) was silently dropped on the floor.
+                "": "pending",  # some payloads omit status entirely on open bets
+                "0": "pending",
+                "open": "pending",
+                "pending": "pending",
+                "active": "pending",
+                "accepted": "pending",
+                "placed": "pending",
+                "running": "pending",
                 "won": "won",
                 "win": "won",
                 "lost": "lost",
@@ -376,7 +387,7 @@ class AltenarWorkflow(ProviderWorkflow):
         may be days old (past page 1).
 
         TODO(generic-history): refactor into a shared paginate() helper on the
-        base workflow once Kambi/Gecko/Interwetten get the same treatment.
+        base workflow once Kambi/Gecko get the same treatment.
         Tracked as Option C in the audit notes (provider history pagination).
         """
         _MAX_PAGES = 5
@@ -650,6 +661,52 @@ class AltenarWorkflow(ProviderWorkflow):
 
             await page.goto(url, wait_until="domcontentloaded", timeout=15000)
             logger.info(f"[{self.provider_id}] Navigated to event {eid}")
+
+            # Detect "Detta evenemang är avslutat" — Altenar tenants surface
+            # this banner when an event was scratched/withdrawn before
+            # start_time (Betinia removes the row from their listing but our
+            # cached odds linger until the next extraction sweep, ~2 min).
+            # When we see it, broadcast opp_expired so the UI filters the
+            # row out immediately instead of leaving the user clicking dead
+            # links. Best-effort; 1.2s grace for SPA hydration.
+            try:
+                expired = await page.evaluate(
+                    r"""async () => {
+                        await new Promise(r => setTimeout(r, 1200));
+                        const body = (document.body.innerText || '').toLowerCase();
+                        const patterns = [
+                            'detta evenemang är avslutat',
+                            'evenemang är avslutat',
+                            'evenemanget är avslutat',
+                            'event has finished',
+                            'event has ended',
+                        ];
+                        for (const p of patterns) if (body.includes(p)) return true;
+                        return false;
+                    }"""
+                )
+            except Exception:
+                expired = False
+            if expired:
+                logger.info(f"[{self.provider_id}] event {eid} shows 'avslutat' banner — broadcasting opp_expired")
+                try:
+                    from ..sse import mirror_broadcaster
+
+                    canonical_event_id = _g(bet, "event_id", None)
+                    canonical_market = _g(bet, "market", None)
+                    mirror_broadcaster.publish(
+                        "opp_expired",
+                        {
+                            "provider_id": self.provider_id,
+                            "event_id": canonical_event_id,
+                            "market": canonical_market,
+                            "provider_event_id": eid,
+                            "reason": "betinia_event_ended",
+                        },
+                    )
+                except Exception as e:
+                    logger.debug(f"[{self.provider_id}] opp_expired publish failed: {e!r}")
+                return False
             return True
         except Exception as e:
             logger.warning(f"[{self.provider_id}] Navigate failed: {e}")
@@ -662,6 +719,203 @@ class AltenarWorkflow(ProviderWorkflow):
     def cache_event_details(self, event_id: str, data: dict):
         """Called by service when GetEventDetails is intercepted."""
         self._event_details_cache[event_id] = (data, time.time())
+
+    def update_odds_states(self, body: dict) -> int:
+        """Merge GetOddsStates push into every cached event details that has
+        the matching odd id. Bookmaker fires GetOddsStates periodically (~5s)
+        with `[{id, price, oddStatus, ...}]` for outcomes visible in the
+        widget. We update each cache entry's `odds[]` in-place so a subsequent
+        check_live_price call returns the latest price without waiting for a
+        full GetEventDetails refresh.
+
+        Returns the number of odds touched across all cached events.
+        """
+        states = body.get("oddStates") or body.get("OddStates") or body.get("odds") or []
+        if not states:
+            # Some Altenar responses use the bare list at the top level.
+            if isinstance(body, list):
+                states = body
+            else:
+                return 0
+        # Build {odd_id: new_state} map for O(1) lookup.
+        by_id: dict[int, dict] = {}
+        for s in states:
+            if not isinstance(s, dict):
+                continue
+            oid = s.get("id") or s.get("Id") or s.get("oddId") or s.get("OddId")
+            if oid is None:
+                continue
+            try:
+                by_id[int(oid)] = s
+            except (TypeError, ValueError):
+                continue
+        if not by_id:
+            return 0
+
+        touched = 0
+        now = time.time()
+        for eid, (data, _ts) in list(self._event_details_cache.items()):
+            odds_list = data.get("odds")
+            if not isinstance(odds_list, list):
+                continue
+            event_touched = False
+            for odd in odds_list:
+                try:
+                    oid_int = int(odd.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                state = by_id.get(oid_int)
+                if not state:
+                    continue
+                # Update price + status in place. Keep other fields intact.
+                if "price" in state:
+                    odd["price"] = state["price"]
+                if "oddStatus" in state:
+                    odd["oddStatus"] = state["oddStatus"]
+                touched += 1
+                event_touched = True
+            if event_touched:
+                # Refresh cache timestamp so check_live_price's 60s freshness
+                # gate accepts the merged data.
+                self._event_details_cache[eid] = (data, now)
+        return touched
+
+    async def read_outcome_odds_dom(self, page: Page, bet) -> float | None:
+        """Scrape the rendered odd value for the picked outcome from the
+        Altenar widget's shadow DOM.
+
+        The widget keeps the DOM in sync with the bookmaker's live price feed
+        (the user sees the same number on screen), so this is the single most
+        reliable source — independent of whether GetEventDetails is being
+        re-fetched on drift or pushed via WebSocket. Pierces the
+        `stb-sportsbook > div` shadow root, finds the market wrapper whose
+        header matches our `bet.market`, then picks the column matching
+        `bet.outcome` and reads the price.
+        """
+        target_market = (_g(bet, "market", "") or "").lower()
+        target_outcome = (_g(bet, "outcome", "") or "").lower()
+        # Team-name aware column resolution: for moneyline/1x2, the scanner's
+        # home/away mapping doesn't always match Betinia's display column
+        # order. UFC fights are the canonical case — scanner pivots on the
+        # promoter API where Costa is home / Allen is away, but Betinia
+        # renders Allen first. Without the team name, idx=1 (away) returned
+        # Costa's price labelled as Allen's odds. We pass display_home /
+        # display_away so the JS can match by text before falling back to
+        # index order.
+        target_team_name = ""
+        if target_outcome == "home":
+            target_team_name = str(_g(bet, "display_home", "") or _g(bet, "home_team", "") or "").lower()
+        elif target_outcome == "away":
+            target_team_name = str(_g(bet, "display_away", "") or _g(bet, "away_team", "") or "").lower()
+        if not target_outcome:
+            print(f"[DOM-SCRAPE {self.provider_id}] no outcome in bet", flush=True)
+            return None
+        try:
+            print(
+                f"[DOM-SCRAPE {self.provider_id}] start market={target_market!r} outcome={target_outcome!r}",
+                flush=True,
+            )
+            price = await page.evaluate(
+                """(opts) => {
+                    const targetMarket = opts.market;
+                    const targetOutcome = opts.outcome;
+                    const debug = {step: 'start'};
+                    const stb = document.querySelector('stb-sportsbook');
+                    const root = stb && stb.querySelector('div') && stb.querySelector('div').shadowRoot;
+                    if (!root) return {price: null, debug: {...debug, step: 'no_shadow', has_stb: !!stb}};
+
+                    // Wrappers don't carry header text — they only contain
+                    // outcome labels + odds. So match by SHAPE:
+                    //   - 1x2:        exactly 3 columns, draw label "X"/"oavgjort"
+                    //   - moneyline:  2 columns (no draw)
+                    //   - total:      2 columns containing "över"/"under" or "over"/"under"
+                    //   - spread:     2 columns containing "+"/"-" or "(+"/"(-"
+                    // The first wrapper of the matching shape is the main market.
+                    const wrappers = root.querySelectorAll('[class*="EventDetailsMarketWrapperBase"]');
+                    debug.wrappers_count = wrappers.length;
+                    debug.wrapper_headers = Array.from(wrappers).slice(0, 8).map(w => (w.textContent || '').substring(0, 80));
+                    const wantsDraw = (targetMarket === '1x2');
+                    const wantsTotal = (targetMarket === 'total');
+                    const wantsSpread = (targetMarket === 'spread');
+                    const wantsML = (targetMarket === 'moneyline');
+                    let targetWrap = null;
+                    for (const w of wrappers) {
+                        const cols = w.querySelectorAll('[class^="EventDetailsMarketColumn-"]');
+                        if (!cols.length) continue;
+                        const t = (w.textContent || '').toLowerCase();
+                        if (wantsTotal) {
+                            if (cols.length === 2 && /över|over|under/i.test(t)) { targetWrap = w; break; }
+                        } else if (wantsSpread) {
+                            if (cols.length === 2 && /[+\\-]\\s*\\d+/.test(t)) { targetWrap = w; break; }
+                        } else if (wantsDraw) {
+                            // 1x2 — 3 columns, with draw indicator
+                            if (cols.length === 3) { targetWrap = w; break; }
+                        } else if (wantsML) {
+                            // moneyline — 2 columns, NO draw, NOT a totals/spread market
+                            if (cols.length === 2 && !/över|over|under/i.test(t) && !/[+\\-]\\s*\\d+/.test(t)) {
+                                targetWrap = w; break;
+                            }
+                        }
+                    }
+                    if (!targetWrap) return {price: null, debug: {...debug, step: 'no_market_match'}};
+
+                    const columns = targetWrap.querySelectorAll('[class^="EventDetailsMarketColumn-"]');
+                    debug.columns = columns.length;
+                    if (!columns.length) return {price: null, debug: {...debug, step: 'no_columns'}};
+
+                    let idx = -1;
+                    // Team-name match first for moneyline/1x2 home/away. Some
+                    // providers (UFC) reorder display home/away vs the scanner's
+                    // convention; matching by name fixes the swap. Falls back
+                    // to index-based mapping if team name is missing or no
+                    // column text contains it.
+                    const teamName = (opts.teamName || '').trim().toLowerCase();
+                    if (teamName && (targetOutcome === 'home' || targetOutcome === 'away')) {
+                        // Only the team's surname is reliable across providers
+                        // ("Arnold Allen" → "allen"); first names sometimes
+                        // differ ("Mel." vs "Melquizael"). Try full match first
+                        // then surname.
+                        const parts = teamName.split(/\\s+/).filter(Boolean);
+                        const surname = parts.length ? parts[parts.length - 1] : '';
+                        for (let i = 0; i < columns.length; i++) {
+                            const colText = (columns[i].textContent || '').toLowerCase();
+                            if (colText.includes(teamName)) { idx = i; break; }
+                        }
+                        if (idx < 0 && surname.length >= 3) {
+                            for (let i = 0; i < columns.length; i++) {
+                                const colText = (columns[i].textContent || '').toLowerCase();
+                                if (colText.includes(surname)) { idx = i; break; }
+                            }
+                        }
+                        debug.team_match_idx = idx;
+                    }
+                    if (idx < 0) {
+                        if (targetOutcome === 'home') idx = 0;
+                        else if (targetOutcome === 'draw') idx = 1;
+                        else if (targetOutcome === 'away') idx = columns.length >= 3 ? 2 : 1;
+                        else if (targetOutcome === 'over') idx = 0;
+                        else if (targetOutcome === 'under') idx = 1;
+                    }
+                    debug.idx = idx;
+                    if (idx < 0 || idx >= columns.length) return {price: null, debug: {...debug, step: 'bad_idx'}};
+
+                    const oddValueEl = columns[idx].querySelector('[class*="OddValue"]');
+                    if (!oddValueEl) return {price: null, debug: {...debug, step: 'no_odd_value'}};
+                    const text = (oddValueEl.textContent || '').trim();
+                    const v = parseFloat(text);
+                    return {price: (isFinite(v) && v >= 1.01 && v <= 100) ? v : null, debug: {...debug, step: 'ok', text}};
+                }""",
+                {"market": target_market, "outcome": target_outcome, "teamName": target_team_name},
+            )
+            if isinstance(price, dict):
+                p = price.get("price")
+                dbg = price.get("debug")
+                print(f"[DOM-SCRAPE {self.provider_id}] result price={p} debug={dbg}", flush=True)
+                return float(p) if p is not None else None
+            return float(price) if price is not None else None
+        except Exception as e:
+            print(f"[DOM-SCRAPE {self.provider_id}] exception: {e!r}", flush=True)
+            return None
 
     async def check_live_price(self, page: Page, bet) -> tuple[float | None, float | None]:
         """Read live odds from cached GetEventDetails response.
@@ -780,14 +1034,28 @@ class AltenarWorkflow(ProviderWorkflow):
         bet_id = _g(bet, "bet_id", 0) or 0
         target_odds = _g(bet, "odds", 0)
 
-        # Verify we're on the event page
+        # Verify we're on the event page. eid lives under provider_meta for
+        # batch-path bets and as a top-level `altenar_event_id` after _bet_ns
+        # flattens (matching navigate_to_event's resolution order). Chromium
+        # normalises `~` → `%7E` after page.goto, so accept either form plus
+        # a defensive substring match on the eid itself.
         meta = _g(bet, "provider_meta") or {}
-        eid = meta.get("event_id", "")
+        eid = _g(bet, "altenar_event_id", None) or meta.get("event_id", "") or ""
         current_url = page.url or ""
-        on_event = f"eventId~{eid}" in current_url if eid else True
+        if eid:
+            eid_str = str(eid)
+            on_event = (
+                f"eventId~{eid_str}" in current_url
+                or f"eventId%7E{eid_str}" in current_url
+                or f"/{eid_str}" in current_url
+            )
+        else:
+            on_event = True
 
         if not on_event:
-            logger.warning(f"[{self.provider_id}] prep_betslip: not on event page")
+            logger.warning(
+                f"[{self.provider_id}] prep_betslip: not on event page (eid={eid!r}, url={current_url[:100]})"
+            )
             return PlacementResult(status="failed", bet_id=bet_id, actual_stake=stake, reason="wrong_page")
 
         # Auto-select outcome via WSDK toggleSelections([oddId])

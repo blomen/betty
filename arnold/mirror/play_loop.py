@@ -38,8 +38,6 @@ def _bet_ns(bet: dict) -> SimpleNamespace:
     ns.kambi_outcome_id = meta.get("outcome_id", "")
     # Gecko V2 fields — same event_id key in provider_meta, different prefix
     ns.gecko_event_id = meta.get("event_id", "")
-    # Interwetten fields
-    ns.interwetten_event_id = meta.get("event_id", "")
     # Altenar fields — provider_meta stores routing IDs unprefixed (event_id,
     # sport_id, category_id, championship_id) but _navigate_to_event reads
     # altenar_*-prefixed names. Without this, top-level event_id (canonical
@@ -270,7 +268,234 @@ class PlayLoop:
         if runner:
             runner.on_bet_intercepted(body, request_body)
             return
-        logger.warning(f"[PlayCoordinator] Bet intercepted for {provider_id} — no runner matched")
+        # Manual-control fallback — no runner exists for this provider (the
+        # user clicked an arb row directly without spawning the auto-loop).
+        # Dedup per provider+provider_bet_id so the same intercept doesn't
+        # double-record when the bookmaker fires placeWidget twice or our
+        # interceptor catches both request/response halves. Without this the
+        # 4× polymarket dups appeared again last placement.
+        recorded = getattr(self, "_recently_recorded", None)
+        if recorded is None:
+            self._recently_recorded = {}
+            recorded = self._recently_recorded
+        # Cheap key: provider + parsed bet id (or response identity). Use the
+        # workflow's parser to extract a stable id; fall back to a body hash.
+        from .workflows import get_workflow as _gw
+
+        try:
+            wf_for_key = _gw(provider_id)
+            key_id = (
+                wf_for_key.parse_placement_response(body) if hasattr(wf_for_key, "parse_placement_response") else None
+            )
+        except Exception:
+            key_id = None
+        if not key_id:
+            # Hash the body as a fallback so identical re-intercepts collapse
+            # to one record.
+            import hashlib
+            import json as _json
+
+            try:
+                key_id = hashlib.md5(_json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()[:16]
+            except Exception:
+                key_id = str(id(body))
+        dedup_key = f"{provider_id}|{key_id}"
+        now_ts = asyncio.get_event_loop().time()
+        # Evict entries older than 60s to keep the dict bounded.
+        for k in [k for k, ts in recorded.items() if now_ts - ts > 60]:
+            recorded.pop(k, None)
+        if dedup_key in recorded:
+            logger.info(f"[PlayCoordinator] {provider_id} duplicate intercept (key={key_id}) — skipping")
+            return
+        recorded[dedup_key] = now_ts
+        logger.info(f"[PlayCoordinator] Bet intercepted for {provider_id} — no runner, recording via fallback")
+        self._broadcaster.publish(
+            "bet_intercepted_unattached",
+            {"provider_id": provider_id, "body": body, "request_body": request_body},
+        )
+        asyncio.create_task(
+            self._record_manual_bet(provider_id, body, request_body),
+            name=f"manual_bet_{provider_id}",
+        )
+
+    async def record_user_placed_bet(
+        self,
+        provider_id: str,
+        stake: float,
+        odds: float,
+        provider_bet_id: str | None = None,
+    ) -> dict:
+        """Same as `_record_manual_bet` but with user-typed stake+odds instead
+        of an intercepted bookmaker response. Used for providers whose login
+        we can't complete in the mirror (anti-bot rejects the BankID callback)
+        where the user logs in + places bets in real Chrome and tells the
+        mirror "I placed this" via a button.
+
+        Picks up event_id/market/outcome/point/start_time from the same
+        `browser._user_picked_opp` cache that `/mirror/arb/navigate-opp`
+        populates — so the user has to click the arb row first to set context,
+        then mark placed.
+        """
+        picked = (getattr(self._browser, "_user_picked_opp", {}) or {}).get(provider_id) or {}
+        if not picked:
+            raise ValueError(
+                f"no picked-opp context for {provider_id} — click the arb/value-bet row first, then mark it placed"
+            )
+        payload = {
+            "event_id": picked.get("event_id") or "",
+            "provider_id": provider_id,
+            "market": picked.get("market") or "",
+            "outcome": picked.get("outcome") or "",
+            "odds": float(odds),
+            "point": picked.get("point"),
+            "stake": float(stake),
+            "is_bonus": False,
+            "bet_type": "arb",
+            "provider_bet_id": provider_bet_id,
+            "start_time": picked.get("start_time"),
+        }
+        from arnold.http_client import tunnel_client
+
+        resp = await tunnel_client().post("/api/bets", json=payload, timeout=10.0)
+        resp.raise_for_status()
+        data = resp.json()
+        bet_id = data.get("bet_id") or data.get("id")
+        logger.info(
+            f"[PlayCoordinator] User-marked bet recorded {provider_id} bet_id={bet_id} "
+            f"stake={stake} odds={odds} event={payload['event_id'][:60]}"
+        )
+        self._broadcaster.publish(
+            "bet_recorded",
+            {
+                "provider_id": provider_id,
+                "bet_id": bet_id,
+                "event_id": payload["event_id"],
+                "market": payload["market"],
+                "outcome": payload["outcome"],
+                "odds": payload["odds"],
+                "stake": payload["stake"],
+                "provider_bet_id": provider_bet_id,
+                "source": "user_marked_placed",
+            },
+        )
+        return {"ok": True, "bet_id": bet_id, "payload": payload}
+
+    async def _record_manual_bet(self, provider_id: str, body: dict, request_body: dict | None) -> None:
+        """POST an intercepted bet to /api/bets when no runner is active."""
+        from .workflows import get_workflow
+
+        wf = get_workflow(provider_id)
+
+        # Reject failed placements — some bookmakers return 200 with a
+        # success=false body when stake limits hit, geo-blocks, etc. The
+        # parse_placement_status helper knows the per-provider success shape.
+        if hasattr(wf, "parse_placement_status"):
+            try:
+                pstatus = wf.parse_placement_status(body) or {}
+                if pstatus and pstatus.get("success") is False:
+                    logger.info(f"[PlayCoordinator] {provider_id} placement returned success=false — skipping record")
+                    self._broadcaster.publish(
+                        "bet_record_failed",
+                        {"provider_id": provider_id, "reason": pstatus.get("reason") or "rejected"},
+                    )
+                    return
+            except Exception:
+                pass
+
+        provider_bet_id: str | None = None
+        actual_odds: float | None = None
+        actual_stake: float | None = None
+        try:
+            provider_bet_id = wf.parse_placement_response(body)
+        except Exception:
+            pass
+        if hasattr(wf, "parse_placement_details"):
+            try:
+                details = wf.parse_placement_details(body) or {}
+                actual_odds = details.get("actual_odds")
+                actual_stake = details.get("actual_stake")
+            except Exception:
+                pass
+        # NEVER fall back to the planned/request stake. When the bookmaker
+        # stake-limits (the user requested 559 kr but the slip accepted 171),
+        # the request body still carries 559 — recording that produces a row
+        # with the wrong amount and inflates downstream stake totals. If we
+        # can't read the ACCEPTED stake from the response body, skip the
+        # manual record and let the reactive history sync (which reads what
+        # the provider's bet-history API reports — guaranteed to match the
+        # actually-accepted amount) pick it up when the user lands on the
+        # history page.
+        if actual_stake is None or actual_stake <= 0:
+            logger.info(
+                f"[PlayCoordinator] {provider_id} placement response didn't expose actual_stake — "
+                "deferring to reactive history sync"
+            )
+            self._broadcaster.publish(
+                "bet_record_deferred",
+                {
+                    "provider_id": provider_id,
+                    "reason": "no_actual_stake",
+                    "hint": "navigate to provider history page to recover",
+                },
+            )
+            return
+
+        # Correlate against the picked opp from /mirror/arb/navigate-opp.
+        # browser._user_picked_opp[provider_id] is set by that endpoint and
+        # carries event_id + market + outcome — fills in whatever the
+        # response body didn't provide.
+        picked = (getattr(self._browser, "_user_picked_opp", {}) or {}).get(provider_id) or {}
+        event_id = picked.get("event_id") or ""
+        market = picked.get("market") or ""
+        outcome = picked.get("outcome") or ""
+        point = picked.get("point")
+        planned_odds = picked.get("planned_odds")
+        start_time = picked.get("start_time")
+
+        payload = {
+            "event_id": event_id,
+            "provider_id": provider_id,
+            "market": market,
+            "outcome": outcome,
+            "odds": actual_odds or planned_odds or 0,
+            "point": point,
+            "stake": actual_stake,
+            "is_bonus": False,
+            "bet_type": "arb",
+            "provider_bet_id": provider_bet_id,
+            "start_time": start_time,
+        }
+        try:
+            from arnold.http_client import tunnel_client
+
+            resp = await tunnel_client().post("/api/bets", json=payload, timeout=10.0)
+            resp.raise_for_status()
+            data = resp.json()
+            bet_id = data.get("bet_id") or data.get("id")
+            logger.info(
+                f"[PlayCoordinator] Recorded manual bet {provider_id} bet_id={bet_id} "
+                f"odds={payload['odds']} stake={payload['stake']} event={event_id[:60]}"
+            )
+            self._broadcaster.publish(
+                "bet_recorded",
+                {
+                    "provider_id": provider_id,
+                    "bet_id": bet_id,
+                    "event_id": event_id,
+                    "market": market,
+                    "outcome": outcome,
+                    "odds": payload["odds"],
+                    "stake": payload["stake"],
+                    "provider_bet_id": provider_bet_id,
+                    "source": "manual_intercept",
+                },
+            )
+        except Exception as e:
+            logger.exception(f"[PlayCoordinator] Failed to record manual bet for {provider_id}: {e}")
+            self._broadcaster.publish(
+                "bet_record_failed",
+                {"provider_id": provider_id, "reason": str(e)[:120]},
+            )
 
     def confirm_settlements(self, confirmed: list[dict] | None = None) -> None:
         """No-op for parallel play — settlements auto-confirm in runners."""

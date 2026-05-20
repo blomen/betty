@@ -54,6 +54,13 @@ export const api = {
   pauseProvider: (providerId: string) =>
     apiFetch<any>(`/mirror/play/pause/${providerId}`, { method: 'POST' }),
   getPlayStatus: () => apiFetch<any>('/mirror/play/status'),
+  // User-picked arb: drive the soft anchor tab to a specific opp (navigate +
+  // prep + start slip-odds stream). Bypasses the runner queue.
+  navigateOpp: (providerId: string, opp: any) =>
+    apiFetch<any>('/mirror/arb/navigate-opp', {
+      method: 'POST',
+      body: JSON.stringify({ provider_id: providerId, opp }),
+    }),
   settleBatch: (batch: { bet_id: number; result: string }[]) =>
     apiFetch<any>('/api/opportunities/play/settle-batch', { method: 'POST', body: JSON.stringify(batch) }),
 };

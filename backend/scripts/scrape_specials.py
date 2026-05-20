@@ -18,10 +18,9 @@ import asyncio
 import json
 import re
 import time
-from dataclasses import dataclass, asdict, replace, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
 from zoneinfo import ZoneInfo
 
 # Provider name normalization map
@@ -43,62 +42,169 @@ PROVIDER_ALIASES: dict[str, str] = {
     "dbet": "dbet",
     "quickcasino": "quickcasino",
     "vbet": "vbet",
-    "interwetten": "interwetten",
     "mrgreen": "mrgreen",
 }
 
 SPORT_KEYWORDS: dict[str, list[str]] = {
     "football": [
-        "fotboll", "football", "soccer", "futbol", "fútbol",
-        "premier league", "champions league",
-        "allsvenskan", "la liga", "serie a", "bundesliga", "ligue 1",
-        "europa league", "vm kval", "nations league", "conference league",
-        "fa cup", "carabao", "copa del rey", "superettan", "eredivisie",
-        "süper lig", "super lig", "lig a",
-        "manchester", "arsenal", "liverpool", "chelsea", "tottenham",
-        "barcelona", "real madrid", "atletico", "juventus", "inter milan",
-        "ac milan", "bayern", "dortmund", "psg", "napoli",
-        "aston villa", "newcastle", "west ham", "brighton", "wolves",
-        "crystal palace", "everton", "fulham", "brentford", "bournemouth",
-        "sunderland", "leicester", "nottingham", "ipswich", "southampton",
-        "malmö ff", "aik", "djurgården", "hammarby", "ifk göteborg",
-        "häcken", "elfsborg", "norrköping", "kalmar", "sirius",
-        "playoff fotbolls-vm", "vm-kval",
-        "liga mx", "primera division", "primera a", "pro league",
-        "superligaen", "liga professionell",
-        "bologna", "valencia", "lyon", "marseille", "roma", "lazio",
-        "fiorentina", "atalanta", "sporting", "benfica", "porto",
-        "ajax", "feyenoord", "psv", "celtic", "rangers",
-        "sevilla", "villarreal", "betis", "sociedad",
-        "svenska cupen", "fa cup", "coppa italia", "dfb pokal",
-        "coupe de france", "copa del rey",
-        "halvtid", "hörnor", "slutställning", "resultat",
-        "vinner", "båda vinner",
+        "fotboll",
+        "football",
+        "soccer",
+        "futbol",
+        "fútbol",
+        "premier league",
+        "champions league",
+        "allsvenskan",
+        "la liga",
+        "serie a",
+        "bundesliga",
+        "ligue 1",
+        "europa league",
+        "vm kval",
+        "nations league",
+        "conference league",
+        "fa cup",
+        "carabao",
+        "copa del rey",
+        "superettan",
+        "eredivisie",
+        "süper lig",
+        "super lig",
+        "lig a",
+        "manchester",
+        "arsenal",
+        "liverpool",
+        "chelsea",
+        "tottenham",
+        "barcelona",
+        "real madrid",
+        "atletico",
+        "juventus",
+        "inter milan",
+        "ac milan",
+        "bayern",
+        "dortmund",
+        "psg",
+        "napoli",
+        "aston villa",
+        "newcastle",
+        "west ham",
+        "brighton",
+        "wolves",
+        "crystal palace",
+        "everton",
+        "fulham",
+        "brentford",
+        "bournemouth",
+        "sunderland",
+        "leicester",
+        "nottingham",
+        "ipswich",
+        "southampton",
+        "malmö ff",
+        "aik",
+        "djurgården",
+        "hammarby",
+        "ifk göteborg",
+        "häcken",
+        "elfsborg",
+        "norrköping",
+        "kalmar",
+        "sirius",
+        "playoff fotbolls-vm",
+        "vm-kval",
+        "liga mx",
+        "primera division",
+        "primera a",
+        "pro league",
+        "superligaen",
+        "liga professionell",
+        "bologna",
+        "valencia",
+        "lyon",
+        "marseille",
+        "roma",
+        "lazio",
+        "fiorentina",
+        "atalanta",
+        "sporting",
+        "benfica",
+        "porto",
+        "ajax",
+        "feyenoord",
+        "psv",
+        "celtic",
+        "rangers",
+        "sevilla",
+        "villarreal",
+        "betis",
+        "sociedad",
+        "svenska cupen",
+        "fa cup",
+        "coppa italia",
+        "dfb pokal",
+        "coupe de france",
+        "copa del rey",
+        "halvtid",
+        "hörnor",
+        "slutställning",
+        "resultat",
+        "vinner",
+        "båda vinner",
     ],
     "ice_hockey": [
-        "hockey", "ishockey", "shl", "nhl", "hockeyallsvenskan",
-        "vinterspelen", "winter olympics", "tre kronor", "os herrar",
-        "rögle", "växjö", "brynäs", "färjestad", "frölunda",
-        "luleå", "skellefteå", "örebro", "linköping", "leksand",
-        "timrå", "oskarshamn", "hv71", "modo",
+        "hockey",
+        "ishockey",
+        "shl",
+        "nhl",
+        "hockeyallsvenskan",
+        "vinterspelen",
+        "winter olympics",
+        "tre kronor",
+        "os herrar",
+        "rögle",
+        "växjö",
+        "brynäs",
+        "färjestad",
+        "frölunda",
+        "luleå",
+        "skellefteå",
+        "örebro",
+        "linköping",
+        "leksand",
+        "timrå",
+        "oskarshamn",
+        "hv71",
+        "modo",
     ],
-    "tennis": ["tennis", "atp", "wta", "grand slam", "wimbledon", "us open",
-               "french open", "australian open", "roland garros"],
+    "tennis": [
+        "tennis",
+        "atp",
+        "wta",
+        "grand slam",
+        "wimbledon",
+        "us open",
+        "french open",
+        "australian open",
+        "roland garros",
+    ],
     "basketball": ["basket", "basketball", "nba", "euroleague", "ncaa"],
     "handball": ["handboll", "handball"],
     "mma": ["mma", "ufc", "bellator"],
     "esports": ["esport", "cs2", "counter-strike", "league of legends", "dota"],
-    "american_football": ["nfl", "super bowl", "american football",
-                          "patriots", "seahawks", "touchdown"],
+    "american_football": ["nfl", "super bowl", "american football", "patriots", "seahawks", "touchdown"],
 }
+
 
 # Output path — use centralized paths for bundled mode support
 def _get_data_dir() -> Path:
     try:
         from src.paths import get_data_dir
+
         return get_data_dir()
     except ImportError:
         return Path(__file__).parent.parent / "data"
+
 
 DATA_DIR = _get_data_dir()
 
@@ -106,40 +212,43 @@ DATA_DIR = _get_data_dir()
 @dataclass
 class Special:
     """A single odds boost."""
+
     provider: str
-    title: str              # enriched: "market_label: selection_label"
+    title: str  # enriched: "market_label: selection_label"
     description: str = ""
-    original_odds: Optional[float] = None
-    boosted_odds: Optional[float] = None
-    boost_pct: Optional[float] = None   # pre-calculated boost percentage
-    max_stake: Optional[float] = None
-    category: str = "boost"   # boost, superboost
+    original_odds: float | None = None
+    boosted_odds: float | None = None
+    boost_pct: float | None = None  # pre-calculated boost percentage
+    max_stake: float | None = None
+    category: str = "boost"  # boost, superboost
     sport: str = "unknown"
-    league: str = ""          # e.g. "Premier League"
-    event: str = ""           # e.g. "Arsenal vs Sunderland"
-    event_time: Optional[str] = None  # ISO datetime of the event
-    expires_at: Optional[str] = None
+    league: str = ""  # e.g. "Premier League"
+    event: str = ""  # e.g. "Arsenal vs Sunderland"
+    event_time: str | None = None  # ISO datetime of the event
+    expires_at: str | None = None
     url: str = ""
     scraped_at: str = ""
     source: str = ""
-    market_label: str = ""              # raw market label
-    shared_providers: Optional[list] = None  # providers sharing this boost
+    market_label: str = ""  # raw market label
+    shared_providers: list | None = None  # providers sharing this boost
 
 
 @dataclass
 class BoostProviderLog:
     """Metrics for a single provider's boost scrape."""
+
     provider_id: str
     scraper_type: str
     status: str = "success"  # success, failed, skipped
     duration_seconds: float = 0.0
     boosts_found: int = 0
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
 
 @dataclass
 class BoostRunLog:
     """Aggregate log for an entire boost scrape run."""
+
     run_id: str = ""
     scraped_at: str = ""
     total_boosts: int = 0
@@ -158,13 +267,16 @@ def detect_sport(text: str) -> str:
 
 # ============ Provider Boost Pages ============
 
+
 # Config path for boost definitions — use centralized paths for bundled mode
 def _get_config_dir() -> Path:
     try:
         from src.paths import get_config_dir
+
         return get_config_dir()
     except ImportError:
         return Path(__file__).parent.parent / "src" / "config"
+
 
 CONFIG_DIR = _get_config_dir()
 
@@ -176,20 +288,23 @@ def _load_boost_config() -> list[dict]:
         return []
     try:
         import yaml
+
         with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
         boosts_cfg = config.get("boosts", {})
         entries = []
         for name, entry in boosts_cfg.items():
             if entry.get("enabled") and entry.get("type"):
-                entries.append({
-                    "name": name,
-                    "type": entry["type"],
-                    "url": entry.get("url", ""),
-                    "primary_provider": entry.get("primary_provider", name),
-                    "shared_with": entry.get("shared_with", []),
-                    "integration": entry.get("integration", ""),
-                })
+                entries.append(
+                    {
+                        "name": name,
+                        "type": entry["type"],
+                        "url": entry.get("url", ""),
+                        "primary_provider": entry.get("primary_provider", name),
+                        "shared_with": entry.get("shared_with", []),
+                        "integration": entry.get("integration", ""),
+                    }
+                )
         return entries
     except Exception:
         return []
@@ -238,40 +353,42 @@ async def scrape_provider_boosts(verbose: bool = False) -> tuple[list[Special], 
             await asyncio.sleep(3)
 
         if verbose:
-            print(f"  [{cfg['name']}] {provider_id}: {boost_url or cfg.get('integration','')} (type={cfg['type']})")
+            print(f"  [{cfg['name']}] {provider_id}: {boost_url or cfg.get('integration', '')} (type={cfg['type']})")
 
         try:
             if cfg["type"] == "kambi":
-                boosts = await _scrape_kambi_boosts(
-                    provider_id, boost_url, now_iso, verbose
-                )
+                boosts = await _scrape_kambi_boosts(provider_id, boost_url, now_iso, verbose)
             elif cfg["type"] == "altenar":
                 integration = cfg.get("integration", "")
-                boosts = await _scrape_altenar_boosts(
-                    provider_id, integration, now_iso, verbose
-                )
+                boosts = await _scrape_altenar_boosts(provider_id, integration, now_iso, verbose)
             elif cfg["type"] == "betconstruct":
-                boosts = await _scrape_betconstruct_boosts(
-                    provider_id, now_iso, verbose
-                )
+                boosts = await _scrape_betconstruct_boosts(provider_id, now_iso, verbose)
             else:
                 continue
             for b in boosts:
                 b.shared_providers = shared if shared else None
             all_boosts.extend(boosts)
-            provider_logs.append(BoostProviderLog(
-                provider_id=provider_id, scraper_type=cfg["type"],
-                status="success", duration_seconds=round(time.monotonic() - t0, 2),
-                boosts_found=len(boosts),
-            ))
+            provider_logs.append(
+                BoostProviderLog(
+                    provider_id=provider_id,
+                    scraper_type=cfg["type"],
+                    status="success",
+                    duration_seconds=round(time.monotonic() - t0, 2),
+                    boosts_found=len(boosts),
+                )
+            )
             if verbose:
                 print(f"  {provider_id}: {len(boosts)} boosts found")
         except Exception as e:
-            provider_logs.append(BoostProviderLog(
-                provider_id=provider_id, scraper_type=cfg["type"],
-                status="failed", duration_seconds=round(time.monotonic() - t0, 2),
-                error_message=str(e)[:500],
-            ))
+            provider_logs.append(
+                BoostProviderLog(
+                    provider_id=provider_id,
+                    scraper_type=cfg["type"],
+                    status="failed",
+                    duration_seconds=round(time.monotonic() - t0, 2),
+                    error_message=str(e)[:500],
+                )
+            )
             if verbose:
                 print(f"  {provider_id} failed: {e}")
         last_altenar = cfg["type"] == "altenar"
@@ -282,12 +399,12 @@ async def scrape_provider_boosts(verbose: bool = False) -> tuple[list[Special], 
             async with async_playwright() as pw:
                 browser = await pw.chromium.launch(
                     headless=True,
-                    args=['--disable-blink-features=AutomationControlled'],
+                    args=["--disable-blink-features=AutomationControlled"],
                 )
                 context = await browser.new_context(
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                               "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                    locale='sv-SE',
+                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    locale="sv-SE",
                 )
 
                 for cfg in browser_configs:
@@ -302,21 +419,11 @@ async def scrape_provider_boosts(verbose: bool = False) -> tuple[list[Special], 
 
                     try:
                         if boost_type == "gecko_v2":
-                            boosts = await _scrape_gecko_boosts(
-                                context, provider_id, boost_url, now_iso, verbose
-                            )
-                        elif boost_type == "interwetten":
-                            boosts = await _scrape_interwetten_boosts(
-                                context, provider_id, boost_url, now_iso, verbose
-                            )
+                            boosts = await _scrape_gecko_boosts(context, provider_id, boost_url, now_iso, verbose)
                         elif boost_type == "comeon":
-                            boosts = await _scrape_comeon_boosts(
-                                context, provider_id, boost_url, now_iso, verbose
-                            )
+                            boosts = await _scrape_comeon_boosts(context, provider_id, boost_url, now_iso, verbose)
                         elif boost_type == "spectate":
-                            boosts = await _scrape_spectate_boosts(
-                                context, provider_id, boost_url, now_iso, verbose
-                            )
+                            boosts = await _scrape_spectate_boosts(context, provider_id, boost_url, now_iso, verbose)
                         else:
                             if verbose:
                                 print(f"    Unsupported boost type: {boost_type}")
@@ -327,24 +434,33 @@ async def scrape_provider_boosts(verbose: bool = False) -> tuple[list[Special], 
                             b.shared_providers = shared if shared else None
 
                         all_boosts.extend(boosts)
-                        provider_logs.append(BoostProviderLog(
-                            provider_id=provider_id, scraper_type=boost_type,
-                            status="success", duration_seconds=round(time.monotonic() - t0, 2),
-                            boosts_found=len(boosts),
-                        ))
+                        provider_logs.append(
+                            BoostProviderLog(
+                                provider_id=provider_id,
+                                scraper_type=boost_type,
+                                status="success",
+                                duration_seconds=round(time.monotonic() - t0, 2),
+                                boosts_found=len(boosts),
+                            )
+                        )
                         if verbose:
                             print(f"  {provider_id}: {len(boosts)} boosts found")
                             if shared:
                                 print(f"    (also available on: {', '.join(shared)})")
                     except Exception as e:
-                        provider_logs.append(BoostProviderLog(
-                            provider_id=provider_id, scraper_type=boost_type,
-                            status="failed", duration_seconds=round(time.monotonic() - t0, 2),
-                            error_message=str(e)[:500],
-                        ))
+                        provider_logs.append(
+                            BoostProviderLog(
+                                provider_id=provider_id,
+                                scraper_type=boost_type,
+                                status="failed",
+                                duration_seconds=round(time.monotonic() - t0, 2),
+                                error_message=str(e)[:500],
+                            )
+                        )
                         if verbose:
                             print(f"  {provider_id} failed: {e}")
                             import traceback
+
                             traceback.print_exc()
 
                 await browser.close()
@@ -355,9 +471,7 @@ async def scrape_provider_boosts(verbose: bool = False) -> tuple[list[Special], 
     return all_boosts, provider_logs
 
 
-async def _scrape_kambi_boosts(
-    provider_id: str, api_url: str, now_iso: str, verbose: bool
-) -> list[Special]:
+async def _scrape_kambi_boosts(provider_id: str, api_url: str, now_iso: str, verbose: bool) -> list[Special]:
     """
     Scrape Kambi odds boosts via the public offering API.
 
@@ -422,24 +536,26 @@ async def _scrape_kambi_boosts(
                     else:
                         continue
 
-                    boosts.append(Special(
-                        provider=provider_id,
-                        title=title,
-                        event=event_name,
-                        original_odds=None,  # Kambi doesn't expose pre-boost odds
-                        boosted_odds=odds,
-                        boost_pct=None,  # Can't calculate without original
-                        max_stake=None,
-                        sport=sport,
-                        league=group_name,
-                        category="boost",
-                        expires_at=None,
-                        event_time=event_start,
-                        source=provider_id,
-                        scraped_at=now_iso,
-                        url=api_url,
-                        market_label=crit_label,
-                    ))
+                    boosts.append(
+                        Special(
+                            provider=provider_id,
+                            title=title,
+                            event=event_name,
+                            original_odds=None,  # Kambi doesn't expose pre-boost odds
+                            boosted_odds=odds,
+                            boost_pct=None,  # Can't calculate without original
+                            max_stake=None,
+                            sport=sport,
+                            league=group_name,
+                            category="boost",
+                            expires_at=None,
+                            event_time=event_start,
+                            source=provider_id,
+                            scraped_at=now_iso,
+                            url=api_url,
+                            market_label=crit_label,
+                        )
+                    )
 
     except Exception as e:
         if verbose:
@@ -452,15 +568,20 @@ ALTENAR_API_BASE = "https://sb2frontend-altenar2.biahosted.com/api"
 
 # Altenar sport IDs to canonical names
 ALTENAR_SPORT_MAP: dict[int, str] = {
-    66: "football", 67: "basketball", 68: "tennis", 70: "ice_hockey",
-    73: "handball", 75: "american_football", 76: "baseball", 84: "mma",
-    101: "rugby", 145: "esports",
+    66: "football",
+    67: "basketball",
+    68: "tennis",
+    70: "ice_hockey",
+    73: "handball",
+    75: "american_football",
+    76: "baseball",
+    84: "mma",
+    101: "rugby",
+    145: "esports",
 }
 
 
-async def _scrape_altenar_boosts(
-    provider_id: str, integration: str, now_iso: str, verbose: bool
-) -> list[Special]:
+async def _scrape_altenar_boosts(provider_id: str, integration: str, now_iso: str, verbose: bool) -> list[Special]:
     """
     Scrape Altenar odds boosts via the public widget API.
 
@@ -497,8 +618,8 @@ async def _scrape_altenar_boosts(
         async with aiohttp.ClientSession(
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                              "AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/131.0.0.0 Safari/537.36",
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36",
                 "Accept": "application/json",
             },
             timeout=aiohttp.ClientTimeout(total=30),
@@ -532,10 +653,7 @@ async def _scrape_altenar_boosts(
                     if eid in event_map:
                         continue
                     comp_ids = ev.get("competitorIds", [])
-                    comp_names = [
-                        competitors.get(cid, {}).get("name", "").strip()
-                        for cid in comp_ids
-                    ]
+                    comp_names = [competitors.get(cid, {}).get("name", "").strip() for cid in comp_ids]
                     champ = champs.get(ev.get("champId", 0), {})
                     ev["_comp_names"] = comp_names
                     ev["_league"] = champ.get("name", "")
@@ -543,8 +661,7 @@ async def _scrape_altenar_boosts(
                     sport_for_event[eid] = ALTENAR_SPORT_MAP.get(sport_id, "unknown")
 
             if verbose:
-                print(f"    [{provider_id}] {len(event_map)} events across "
-                      f"{len(set(sport_for_event.values()))} sports")
+                print(f"    [{provider_id}] {len(event_map)} events across {len(set(sport_for_event.values()))} sports")
 
             # Fetch event details in batches to find boosts
             # Altenar API drops connections above ~30 concurrent, so
@@ -656,26 +773,26 @@ async def _scrape_altenar_boosts(
                     boosted_f = float(boosted_price)
                     boost_pct_val = ((boosted_f / orig_f) - 1) * 100
 
-                    boosts.append(Special(
-                        provider=provider_id,
-                        title=title,
-                        event=event_name,
-                        original_odds=orig_f,
-                        boosted_odds=boosted_f,
-                        boost_pct=round(boost_pct_val, 1),
-                        max_stake=200,
-                        sport=sport if sport != "unknown" else detect_sport(
-                            f"{title} {event_name} {league}"
-                        ),
-                        league=league,
-                        category=category,
-                        expires_at=end_date,
-                        event_time=event_start,
-                        source=provider_id,
-                        scraped_at=now_iso,
-                        url=f"https://www.{provider_id}.se",
-                        market_label=", ".join(market_labels) if market_labels else "",
-                    ))
+                    boosts.append(
+                        Special(
+                            provider=provider_id,
+                            title=title,
+                            event=event_name,
+                            original_odds=orig_f,
+                            boosted_odds=boosted_f,
+                            boost_pct=round(boost_pct_val, 1),
+                            max_stake=200,
+                            sport=sport if sport != "unknown" else detect_sport(f"{title} {event_name} {league}"),
+                            league=league,
+                            category=category,
+                            expires_at=end_date,
+                            event_time=event_start,
+                            source=provider_id,
+                            scraped_at=now_iso,
+                            url=f"https://www.{provider_id}.se",
+                            market_label=", ".join(market_labels) if market_labels else "",
+                        )
+                    )
 
             if verbose:
                 print(f"    [{provider_id}] {events_with_boosts}/{len(event_map)} events had boosts")
@@ -684,6 +801,7 @@ async def _scrape_altenar_boosts(
         if verbose:
             print(f"    [{provider_id}] Error: {e}")
             import traceback
+
             traceback.print_exc()
 
     if verbose:
@@ -693,7 +811,7 @@ async def _scrape_altenar_boosts(
     return boosts
 
 
-def _parse_gecko_time(time_info: str) -> Optional[str]:
+def _parse_gecko_time(time_info: str) -> str | None:
     """Parse Gecko V2 timeInfo into ISO datetime string.
 
     Formats: "HH:MM", "Ikväll", "Imorgon", "YYYY-MM-DD...", or empty.
@@ -717,7 +835,7 @@ def _parse_gecko_time(time_info: str) -> Optional[str]:
         return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
     # "HH:MM" — today at that time CET
-    hm_match = re.match(r'^(\d{2}):(\d{2})$', time_info)
+    hm_match = re.match(r"^(\d{2}):(\d{2})$", time_info)
     if hm_match:
         h, m = int(hm_match.group(1)), int(hm_match.group(2))
         dt = now_cet.replace(hour=h, minute=m, second=0, microsecond=0)
@@ -726,7 +844,7 @@ def _parse_gecko_time(time_info: str) -> Optional[str]:
         return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
     # "YYYY-MM-DD..." — full date string
-    if re.match(r'^\d{4}-\d{2}-\d{2}', time_info):
+    if re.match(r"^\d{4}-\d{2}-\d{2}", time_info):
         try:
             dt = datetime.fromisoformat(time_info)
             if dt.tzinfo is None:
@@ -738,9 +856,7 @@ def _parse_gecko_time(time_info: str) -> Optional[str]:
     return None
 
 
-async def _scrape_gecko_boosts(
-    context, provider_id: str, boost_url: str, now_iso: str, verbose: bool
-) -> list[Special]:
+async def _scrape_gecko_boosts(context, provider_id: str, boost_url: str, now_iso: str, verbose: bool) -> list[Special]:
     """
     Scrape Gecko V2 (Betsson group) odds boosts from the rendered DOM.
 
@@ -766,15 +882,17 @@ async def _scrape_gecko_boosts(
     boosts: list[Special] = []
 
     try:
-        await page.goto(boost_url, wait_until='load', timeout=30000)
+        await page.goto(boost_url, wait_until="load", timeout=30000)
         await asyncio.sleep(3)
 
         # Handle cookie consent (try multiple common selectors)
         for selector in [
-            '#onetrust-accept-btn-handler',
-            '#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll',
-            'button:has-text("Acceptera")', 'button:has-text("Accept")',
-            'button:has-text("Godkänn")', 'button:has-text("Tillåt")',
+            "#onetrust-accept-btn-handler",
+            "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
+            'button:has-text("Acceptera")',
+            'button:has-text("Accept")',
+            'button:has-text("Godkänn")',
+            'button:has-text("Tillåt")',
             '[data-testid="cookie-accept"]',
         ]:
             try:
@@ -793,7 +911,7 @@ async def _scrape_gecko_boosts(
         # Some OBG sites (Bethard) load the sportsbook in a cross-origin iframe
         target_frame = page
         for f in page.frames:
-            if f.name == 'sb-iframe' or 'playground' in f.url:
+            if f.name == "sb-iframe" or "playground" in f.url:
                 target_frame = f
                 if verbose:
                     print(f"    [{provider_id}] Using sportsbook iframe: {f.url[:80]}")
@@ -931,17 +1049,23 @@ async def _scrape_gecko_boosts(
         if verbose or len(raw_cards) == 0:
             # Debug: dump frame info and line count when 0 cards
             frame_info = f"frame={'iframe' if target_frame != page else 'main'}"
-            line_count = await target_frame.evaluate("() => { function getAllLines(root) { const lines = []; if (!root) return lines; const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); while (walker.nextNode()) { const text = walker.currentNode.textContent.trim(); if (text) lines.push(text); } const elements = root.querySelectorAll('*'); for (const el of elements) { if (el.shadowRoot) { lines.push(...getAllLines(el.shadowRoot)); } } return lines; } return getAllLines(document).length; }")
-            print(f"    [{provider_id}] {len(raw_cards)} boost cards found in DOM ({frame_info}, {line_count} text lines)")
+            line_count = await target_frame.evaluate(
+                "() => { function getAllLines(root) { const lines = []; if (!root) return lines; const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); while (walker.nextNode()) { const text = walker.currentNode.textContent.trim(); if (text) lines.push(text); } const elements = root.querySelectorAll('*'); for (const el of elements) { if (el.shadowRoot) { lines.push(...getAllLines(el.shadowRoot)); } } return lines; } return getAllLines(document).length; }"
+            )
+            print(
+                f"    [{provider_id}] {len(raw_cards)} boost cards found in DOM ({frame_info}, {line_count} text lines)"
+            )
             if len(raw_cards) == 0 and line_count > 0:
                 # Dump first 30 lines to see what the page actually contains
-                sample = await target_frame.evaluate("() => { function getAllLines(root) { const lines = []; if (!root) return lines; const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); while (walker.nextNode()) { const text = walker.currentNode.textContent.trim(); if (text) lines.push(text); } const elements = root.querySelectorAll('*'); for (const el of elements) { if (el.shadowRoot) { lines.push(...getAllLines(el.shadowRoot)); } } return lines; } return getAllLines(document).slice(0, 50); }")
+                sample = await target_frame.evaluate(
+                    "() => { function getAllLines(root) { const lines = []; if (!root) return lines; const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); while (walker.nextNode()) { const text = walker.currentNode.textContent.trim(); if (text) lines.push(text); } const elements = root.querySelectorAll('*'); for (const el of elements) { if (el.shadowRoot) { lines.push(...getAllLines(el.shadowRoot)); } } return lines; } return getAllLines(document).slice(0, 50); }"
+                )
                 print(f"    [{provider_id}] First 50 lines: {sample}")
 
         # Convert raw cards to Special objects
         for card in raw_cards:
-            original_odds = card.get('forut')
-            boosted_odds = card.get('nu')
+            original_odds = card.get("forut")
+            boosted_odds = card.get("nu")
             if not original_odds or not boosted_odds:
                 continue
 
@@ -950,19 +1074,19 @@ async def _scrape_gecko_boosts(
             if boost_ratio > 2.0 or boost_ratio < 1.01:
                 continue
 
-            description = card.get('description', '')
-            team1 = card.get('team1', '')
-            team2 = card.get('team2', '')
-            league_path = card.get('leaguePath', '')
-            max_stake = card.get('maxStake')
+            description = card.get("description", "")
+            team1 = card.get("team1", "")
+            team2 = card.get("team2", "")
+            league_path = card.get("leaguePath", "")
+            max_stake = card.get("maxStake")
 
             # Build event name from team names
-            event_name = f"{team1} vs {team2}" if team1 and team2 else ''
+            event_name = f"{team1} vs {team2}" if team1 and team2 else ""
 
             # Extract league from path like "Fotboll / Premier League (EPL)"
-            league = ''
+            league = ""
             if league_path:
-                parts = league_path.split(' / ')
+                parts = league_path.split(" / ")
                 league = parts[-1].strip() if len(parts) > 1 else league_path.strip()
 
             # Title is the boost description
@@ -972,33 +1096,34 @@ async def _scrape_gecko_boosts(
             boost_pct_val = ((boosted_odds / original_odds) - 1) * 100
 
             # Sport detection
-            sport = detect_sport(
-                f"{title} {event_name} {league} {league_path}"
-            )
+            sport = detect_sport(f"{title} {event_name} {league} {league_path}")
 
-            boosts.append(Special(
-                provider=provider_id,
-                title=title,
-                event=event_name,
-                original_odds=round(original_odds, 2),
-                boosted_odds=round(boosted_odds, 2),
-                boost_pct=round(boost_pct_val, 1),
-                max_stake=max_stake,
-                sport=sport,
-                league=league,
-                category="boost",
-                expires_at=None,
-                event_time=_parse_gecko_time(card.get('timeInfo', '')),
-                source=provider_id,
-                scraped_at=now_iso,
-                url=boost_url,
-                market_label="",
-            ))
+            boosts.append(
+                Special(
+                    provider=provider_id,
+                    title=title,
+                    event=event_name,
+                    original_odds=round(original_odds, 2),
+                    boosted_odds=round(boosted_odds, 2),
+                    boost_pct=round(boost_pct_val, 1),
+                    max_stake=max_stake,
+                    sport=sport,
+                    league=league,
+                    category="boost",
+                    expires_at=None,
+                    event_time=_parse_gecko_time(card.get("timeInfo", "")),
+                    source=provider_id,
+                    scraped_at=now_iso,
+                    url=boost_url,
+                    market_label="",
+                )
+            )
 
     except Exception as e:
         if verbose:
             print(f"    [{provider_id}] Error: {e}")
             import traceback
+
             traceback.print_exc()
     finally:
         await page.close()
@@ -1006,15 +1131,12 @@ async def _scrape_gecko_boosts(
     if verbose:
         with_orig = sum(1 for b in boosts if b.original_odds is not None)
         without = len(boosts) - with_orig
-        print(f"    [{provider_id}] {len(boosts)} boosts parsed "
-              f"({with_orig} with original odds, {without} without)")
+        print(f"    [{provider_id}] {len(boosts)} boosts parsed ({with_orig} with original odds, {without} without)")
 
     return boosts
 
 
-async def _scrape_betconstruct_boosts(
-    provider_id: str, now_iso: str, verbose: bool
-) -> list[Special]:
+async def _scrape_betconstruct_boosts(provider_id: str, now_iso: str, verbose: bool) -> list[Special]:
     """
     Scrape BetConstruct (Vbet) odds boosts via Swarm WebSocket.
 
@@ -1026,8 +1148,10 @@ async def _scrape_betconstruct_boosts(
 
     Note: BetConstruct boost API only returns boosted odds (no original/pre-boost price).
     """
+    from datetime import datetime as dt
+    from datetime import timezone as tz
+
     import websockets
-    from datetime import datetime as dt, timezone as tz
 
     boosts: list[Special] = []
     ws_url = "wss://eu-swarm-newm.vbet.se/"
@@ -1036,9 +1160,15 @@ async def _scrape_betconstruct_boosts(
 
     # BetConstruct sport alias -> canonical name
     BC_SPORT_MAP = {
-        "Soccer": "football", "Basketball": "basketball", "IceHockey": "ice_hockey",
-        "Tennis": "tennis", "Baseball": "baseball", "AmericanFootball": "american_football",
-        "Handball": "handball", "MMA": "mma", "Esports": "esports",
+        "Soccer": "football",
+        "Basketball": "basketball",
+        "IceHockey": "ice_hockey",
+        "Tennis": "tennis",
+        "Baseball": "baseball",
+        "AmericanFootball": "american_football",
+        "Handball": "handball",
+        "MMA": "mma",
+        "Esports": "esports",
     }
 
     try:
@@ -1047,21 +1177,25 @@ async def _scrape_betconstruct_boosts(
             additional_headers={
                 "Origin": "https://www.vbet.se",
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                              "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
             },
             max_size=20 * 1024 * 1024,
             close_timeout=10,
         ) as ws:
             # 1. Request session (language=swe required for Swedish site boosts)
             rid += 1
-            await ws.send(json.dumps({
-                "command": "request_session",
-                "params": {
-                    "source": 42,
-                    "language": "swe",
-                    "site_id": site_id,
-                },
-            }))
+            await ws.send(
+                json.dumps(
+                    {
+                        "command": "request_session",
+                        "params": {
+                            "source": 42,
+                            "language": "swe",
+                            "site_id": site_id,
+                        },
+                    }
+                )
+            )
             resp = json.loads(await ws.recv())
             if resp.get("code") != 0:
                 if verbose:
@@ -1073,11 +1207,15 @@ async def _scrape_betconstruct_boosts(
 
             # 2. Get boosted selection IDs
             rid += 1
-            await ws.send(json.dumps({
-                "command": "get_boosted_selections",
-                "params": {},
-                "rid": rid,
-            }))
+            await ws.send(
+                json.dumps(
+                    {
+                        "command": "get_boosted_selections",
+                        "params": {},
+                        "rid": rid,
+                    }
+                )
+            )
             boost_resp = json.loads(await ws.recv())
 
             if boost_resp.get("code") != 0:
@@ -1105,29 +1243,37 @@ async def _scrape_betconstruct_boosts(
 
             # 3. Fetch 1x2/moneyline data for boosted matches
             rid += 1
-            await ws.send(json.dumps({
-                "command": "get",
-                "params": {
-                    "source": "betting",
-                    "what": {
-                        "sport": ["id", "name", "alias"],
-                        "region": ["id", "name"],
-                        "competition": ["id", "name"],
-                        "game": [
-                            "id", "team1_name", "team2_name", "start_ts",
-                            "is_live", "type",
-                        ],
-                        "market": ["id", "type", "name", "base"],
-                        "event": ["id", "name", "price", "type", "base"],
-                    },
-                    "where": {
-                        "game": {"id": {"@in": match_ids}},
-                        "market": {"type": {"@in": ["P1XP2", "P1P2"]}},
-                    },
-                    "subscribe": False,
-                },
-                "rid": rid,
-            }))
+            await ws.send(
+                json.dumps(
+                    {
+                        "command": "get",
+                        "params": {
+                            "source": "betting",
+                            "what": {
+                                "sport": ["id", "name", "alias"],
+                                "region": ["id", "name"],
+                                "competition": ["id", "name"],
+                                "game": [
+                                    "id",
+                                    "team1_name",
+                                    "team2_name",
+                                    "start_ts",
+                                    "is_live",
+                                    "type",
+                                ],
+                                "market": ["id", "type", "name", "base"],
+                                "event": ["id", "name", "price", "type", "base"],
+                            },
+                            "where": {
+                                "game": {"id": {"@in": match_ids}},
+                                "market": {"type": {"@in": ["P1XP2", "P1P2"]}},
+                            },
+                            "subscribe": False,
+                        },
+                        "rid": rid,
+                    }
+                )
+            )
             game_resp = json.loads(await ws.recv())
 
             if game_resp.get("code") != 0:
@@ -1203,255 +1349,40 @@ async def _scrape_betconstruct_boosts(
                                     sel_name = ev.get("name", "").strip()
                                     title = f"{mkt_name}: {sel_name}" if mkt_name and sel_name else sel_name or mkt_name
 
-                                    boosts.append(Special(
-                                        provider=provider_id,
-                                        title=title,
-                                        event=event_name,
-                                        original_odds=None,
-                                        boosted_odds=float(price),
-                                        boost_pct=None,
-                                        max_stake=None,
-                                        sport=sport if sport != "unknown" else detect_sport(
-                                            f"{title} {event_name} {league}"
-                                        ),
-                                        league=league,
-                                        category="boost",
-                                        expires_at=None,
-                                        event_time=event_time,
-                                        source=provider_id,
-                                        scraped_at=now_iso,
-                                        url="https://www.vbet.se",
-                                        market_label=mkt_name,
-                                    ))
+                                    boosts.append(
+                                        Special(
+                                            provider=provider_id,
+                                            title=title,
+                                            event=event_name,
+                                            original_odds=None,
+                                            boosted_odds=float(price),
+                                            boost_pct=None,
+                                            max_stake=None,
+                                            sport=sport
+                                            if sport != "unknown"
+                                            else detect_sport(f"{title} {event_name} {league}"),
+                                            league=league,
+                                            category="boost",
+                                            expires_at=None,
+                                            event_time=event_time,
+                                            source=provider_id,
+                                            scraped_at=now_iso,
+                                            url="https://www.vbet.se",
+                                            market_label=mkt_name,
+                                        )
+                                    )
 
     except Exception as e:
         if verbose:
             print(f"    [{provider_id}] Error: {e}")
             import traceback
+
             traceback.print_exc()
 
     if verbose:
         print(f"    [{provider_id}] Total: {len(boosts)} boosts")
     return boosts
 
-
-async def _scrape_interwetten_boosts(
-    context, provider_id: str, boost_url: str, now_iso: str, verbose: bool
-) -> list[Special]:
-    """
-    Scrape Interwetten odds boosts from the frontpage via DOM parsing.
-
-    Interwetten shows boost promotions directly on the startpage as visible
-    elements with "ODDS BOOST" labels and arrows showing original → boosted odds.
-
-    Strategy:
-    1. Navigate to interwetten.se
-    2. Accept cookies
-    3. Search DOM for boost elements (cards with original + boosted prices)
-    4. Parse visible text to extract boost data
-    """
-    import asyncio
-
-    page = await context.new_page()
-    boosts: list[Special] = []
-
-    try:
-        await page.goto(boost_url, wait_until='load', timeout=30000)
-        await asyncio.sleep(2)
-
-        # Handle cookie consent
-        for selector in [
-            '#onetrust-accept-btn-handler',
-            'button:has-text("Acceptera")', 'button:has-text("Accept")',
-            'button:has-text("Godkänn")', '[class*="cookie"] button',
-        ]:
-            try:
-                btn = page.locator(selector).first
-                if await btn.is_visible(timeout=2000):
-                    await btn.click()
-                    await asyncio.sleep(0.5)
-                    break
-            except Exception:
-                continue
-
-        await asyncio.sleep(3)
-
-        # Scroll to load more content
-        for i in range(5):
-            await page.evaluate(f"window.scrollTo(0, {(i + 1) * 600})")
-            await asyncio.sleep(0.8)
-
-        # Extract boost data from the page
-        # Interwetten shows boosts in cards with "ODDS BOOST" and strikethrough original odds
-        boost_data = await page.evaluate(r'''() => {
-            const results = [];
-
-            // Method 1: Look for elements with "odds boost" or "oddsboost" text
-            const allElements = document.querySelectorAll('*');
-            const boostSections = [];
-
-            for (const el of allElements) {
-                const text = (el.textContent || '').toLowerCase();
-                const cls = (typeof el.className === 'string' ? el.className : '').toLowerCase();
-                if ((text.includes('odds boost') || text.includes('oddsboost') ||
-                     cls.includes('boost') || cls.includes('enhanced'))
-                    && el.children.length > 0) {
-                    // Check if this is a container (not a leaf with huge text)
-                    if (el.textContent.length < 500 && el.textContent.length > 10) {
-                        boostSections.push(el);
-                    }
-                }
-            }
-
-            // Method 2: Look for price pairs (original → boosted)
-            // Interwetten uses strikethrough for original and highlighted for boosted
-            const pricePattern = /(\d+[.,]\d+)\s*(?:→|->|⟶|►)?\s*(\d+[.,]\d+)/;
-            const strikeThroughs = document.querySelectorAll('del, s, [style*="line-through"]');
-
-            for (const del_el of strikeThroughs) {
-                const origText = del_el.textContent.trim();
-                const origMatch = origText.match(/(\d+[.,]\d+)/);
-                if (!origMatch) continue;
-
-                // Look at sibling/parent for the boosted price
-                const parent = del_el.parentElement;
-                if (!parent) continue;
-
-                const parentText = parent.textContent;
-                const prices = parentText.match(/(\d+[.,]\d+)/g);
-                if (!prices || prices.length < 2) continue;
-
-                const origOdds = parseFloat(origMatch[1].replace(',', '.'));
-                // Find the higher price (boosted)
-                let boostedOdds = null;
-                for (const p of prices) {
-                    const pf = parseFloat(p.replace(',', '.'));
-                    if (pf > origOdds) {
-                        boostedOdds = pf;
-                        break;
-                    }
-                }
-
-                if (boostedOdds) {
-                    // Walk up to find event context
-                    let container = parent;
-                    let context = '';
-                    for (let i = 0; i < 5 && container; i++) {
-                        container = container.parentElement;
-                        if (container) {
-                            context = container.textContent.substring(0, 300);
-                            if (context.length > 40) break;
-                        }
-                    }
-                    results.push({
-                        original: origOdds,
-                        boosted: boostedOdds,
-                        context: context.trim(),
-                    });
-                }
-            }
-
-            // Method 3: Broader search for boost cards with multiple prices
-            const cards = document.querySelectorAll(
-                '[class*="boost"], [class*="Boost"], [class*="enhanced"], [data-boost]'
-            );
-            for (const card of cards) {
-                const text = card.textContent || '';
-                const prices = text.match(/(\d+[.,]\d+)/g);
-                if (prices && prices.length >= 2) {
-                    const nums = prices.map(p => parseFloat(p.replace(',', '.')))
-                        .filter(n => n >= 1.01 && n < 100);
-                    if (nums.length >= 2) {
-                        nums.sort((a, b) => a - b);
-                        results.push({
-                            original: nums[0],
-                            boosted: nums[nums.length - 1],
-                            context: text.substring(0, 300).trim(),
-                        });
-                    }
-                }
-            }
-
-            return results;
-        }''')
-
-        if verbose:
-            print(f"    [{provider_id}] Found {len(boost_data)} boost elements in DOM")
-
-        seen_keys = set()
-        for item in boost_data:
-            orig = item.get("original")
-            boosted = item.get("boosted")
-            context_text = item.get("context", "")
-
-            if not orig or not boosted or boosted <= orig:
-                continue
-
-            # Deduplicate
-            key = (round(orig, 2), round(boosted, 2))
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-
-            # Parse context for event/market info
-            boost_pct_val = ((boosted / orig) - 1) * 100
-
-            # Try to extract a meaningful title from context
-            title = context_text[:100].strip() if context_text else f"Odds Boost {orig:.2f} → {boosted:.2f}"
-            # Clean up multiline
-            title = ' '.join(title.split())
-
-            # Extract event name from title: "Team A - Team B Market: Selection"
-            event_name = ""
-            market_kws = [
-                "halvtid", "resultat", "totalt", "vinnare", "poäng",
-                "mål", "tips", "tip", "1x2", "över", "under",
-                "antal", "båda", "first", "sista", "handicap",
-            ]
-            if " - " in title:
-                # Find where the market description starts after the teams
-                title_lower = title.lower()
-                split_pos = len(title)
-                for kw in market_kws:
-                    idx = title_lower.find(kw)
-                    if idx > 0 and idx < split_pos:
-                        split_pos = idx
-                event_name = title[:split_pos].strip().rstrip(" -–—")
-                # Normalize "Team A - Team B" to "Team A vs Team B"
-                if " - " in event_name:
-                    parts = event_name.split(" - ", 1)
-                    event_name = f"{parts[0].strip()} vs {parts[1].strip()}"
-
-            sport = detect_sport(f"{title} {event_name} {context_text}")
-
-            boosts.append(Special(
-                provider=provider_id,
-                title=title,
-                event=event_name,
-                original_odds=round(orig, 2),
-                boosted_odds=round(boosted, 2),
-                boost_pct=round(boost_pct_val, 1),
-                max_stake=None,
-                sport=sport,
-                league="",
-                category="boost",
-                expires_at=None,
-                event_time=None,
-                source=provider_id,
-                scraped_at=now_iso,
-                url=boost_url,
-                market_label="",
-            ))
-
-    except Exception as e:
-        if verbose:
-            print(f"    [{provider_id}] Error: {e}")
-            import traceback
-            traceback.print_exc()
-    finally:
-        await page.close()
-
-    return boosts
 
 
 async def _scrape_comeon_boosts(
@@ -1484,18 +1415,18 @@ async def _scrape_comeon_boosts(
         """Minimal RSocket frame decoder — extract JSON payloads."""
         results = []
         try:
-            text = data.decode('utf-8', errors='ignore')
+            text = data.decode("utf-8", errors="ignore")
             depth = 0
             start = None
             for i, c in enumerate(text):
-                if c in ('{', '['):
+                if c in ("{", "["):
                     if depth == 0:
                         start = i
                     depth += 1
-                elif c in ('}', ']'):
+                elif c in ("}", "]"):
                     depth -= 1
                     if depth == 0 and start is not None:
-                        fragment = text[start:i+1]
+                        fragment = text[start : i + 1]
                         try:
                             parsed = json.loads(fragment)
                             results.append(parsed)
@@ -1520,16 +1451,19 @@ async def _scrape_comeon_boosts(
                         ws_messages.append(json.loads(payload))
                     except json.JSONDecodeError:
                         pass
+
             ws.on("framereceived", on_frame_received)
+
         page.on("websocket", on_websocket)
 
-        await page.goto(boost_url, wait_until='load', timeout=30000)
+        await page.goto(boost_url, wait_until="load", timeout=30000)
         await asyncio.sleep(2)
 
         # Handle cookie consent
         for selector in [
-            '#onetrust-accept-btn-handler',
-            'button:has-text("Acceptera")', 'button:has-text("Accept")',
+            "#onetrust-accept-btn-handler",
+            'button:has-text("Acceptera")',
+            'button:has-text("Accept")',
         ]:
             try:
                 btn = page.locator(selector).first
@@ -1542,28 +1476,28 @@ async def _scrape_comeon_boosts(
 
         # Force-remove overlay
         try:
-            await page.evaluate('''() => {
+            await page.evaluate("""() => {
                 const filter = document.querySelector('.onetrust-pc-dark-filter');
                 if (filter) filter.remove();
                 const sdk = document.querySelector('#onetrust-consent-sdk');
                 if (sdk) sdk.remove();
-            }''')
+            }""")
         except Exception:
             pass
 
         # Check if we got redirected, navigate back if needed
         current_url = page.url
-        if '85' not in current_url and 'odds-boost' not in current_url:
+        if "85" not in current_url and "odds-boost" not in current_url:
             if verbose:
                 print(f"    [{provider_id}] Redirected to {current_url}, navigating back")
-            await page.goto(boost_url, wait_until='load', timeout=30000)
+            await page.goto(boost_url, wait_until="load", timeout=30000)
 
         # Wait for WS data
         await asyncio.sleep(5)
 
         # Click through date buttons to find future boosts
         # Scroll date container to reveal all dates first
-        await page.evaluate(r'''() => {
+        await page.evaluate(r"""() => {
             const allBtns = document.querySelectorAll('button');
             let dateBtn = null;
             for (const btn of allBtns) {
@@ -1581,11 +1515,11 @@ async def _scrape_comeon_boosts(
                 }
                 container = container.parentElement;
             }
-        }''')
+        }""")
         await asyncio.sleep(0.3)
 
         # Discover date buttons and click through them
-        date_labels = await page.evaluate(r'''() => {
+        date_labels = await page.evaluate(r"""() => {
             const labels = [];
             document.querySelectorAll('button').forEach(btn => {
                 const text = btn.textContent.trim();
@@ -1595,20 +1529,23 @@ async def _scrape_comeon_boosts(
                 }
             });
             return labels;
-        }''')
+        }""")
 
         if date_labels and verbose:
             print(f"    [{provider_id}] Scanning {len(date_labels)} future dates for boosts")
 
         for label in date_labels[:7]:  # Check ~1 week ahead
             try:
-                clicked = await page.evaluate('''(targetLabel) => {
+                clicked = await page.evaluate(
+                    """(targetLabel) => {
                     const btns = document.querySelectorAll('button');
                     for (const btn of btns) {
                         if (btn.textContent.trim() === targetLabel) { btn.click(); return true; }
                     }
                     return false;
-                }''', label)
+                }""",
+                    label,
+                )
                 if clicked:
                     await asyncio.sleep(1.5)
             except Exception:
@@ -1630,30 +1567,32 @@ async def _scrape_comeon_boosts(
                 _extract_comeon_entities(msg, all_events, all_markets, all_selections)
 
         if verbose:
-            print(f"    [{provider_id}] WS entities: {len(all_events)} events, "
-                  f"{len(all_markets)} markets, {len(all_selections)} selections")
+            print(
+                f"    [{provider_id}] WS entities: {len(all_events)} events, "
+                f"{len(all_markets)} markets, {len(all_selections)} selections"
+            )
 
         # Build mappings
         event_markets: dict[int, list] = {}
         for mid, mkt in all_markets.items():
-            eid = mkt.get('eventId')
+            eid = mkt.get("eventId")
             if eid:
                 event_markets.setdefault(eid, []).append(mid)
 
         market_sels: dict[int, list] = {}
         for sid, sel in all_selections.items():
-            mid = sel.get('marketId')
+            mid = sel.get("marketId")
             if mid:
                 market_sels.setdefault(mid, []).append(sel)
 
         # Parse events into boosts
         for eid, event_data in all_events.items():
-            event_name_raw = event_data.get('eventName', '')
-            league_raw = event_data.get('leagueName', '')
-            start_time = event_data.get('startingOn') or event_data.get('startTime')
+            event_name_raw = event_data.get("eventName", "")
+            league_raw = event_data.get("leagueName", "")
+            start_time = event_data.get("startingOn") or event_data.get("startTime")
 
             # Detect "Odds Boost Plus" as superboost category
-            is_super = 'plus' in league_raw.lower() or 'super' in league_raw.lower()
+            is_super = "plus" in league_raw.lower() or "super" in league_raw.lower()
 
             # Use event name directly — boost events are combos like
             # "Sunderland & Fulham - båda vinner (Ord.speltid)"
@@ -1662,9 +1601,9 @@ async def _scrape_comeon_boosts(
 
             # Clean league: "Odds Boost - FA Cup" → "FA Cup"
             league = league_raw
-            for prefix in ('Odds Boost Plus - ', 'Odds Boost - ', 'Odds Boost Plus', 'Odds Boost'):
+            for prefix in ("Odds Boost Plus - ", "Odds Boost - ", "Odds Boost Plus", "Odds Boost"):
                 if league.startswith(prefix):
-                    league = league[len(prefix):].strip()
+                    league = league[len(prefix) :].strip()
                     break
 
             # Sport detection from event name + league
@@ -1674,12 +1613,12 @@ async def _scrape_comeon_boosts(
             mkt_ids = event_markets.get(eid, [])
             for mid in mkt_ids:
                 mkt = all_markets.get(mid, {})
-                mt = mkt.get('marketType', {})
-                mkt_name = mt.get('name', '') if isinstance(mt, dict) else ''
+                mt = mkt.get("marketType", {})
+                mkt_name = mt.get("name", "") if isinstance(mt, dict) else ""
 
                 sels = market_sels.get(mid, [])
                 for sel in sels:
-                    odds = sel.get('trueOdds', 0)
+                    odds = sel.get("trueOdds", 0)
                     if not odds or float(odds) <= 1.0:
                         continue
 
@@ -1687,34 +1626,37 @@ async def _scrape_comeon_boosts(
                     # (market name is just "Specialare", selection is just "Ja")
                     title = event_name_raw
                     if not title:
-                        sel_name = sel.get('name', '')
+                        sel_name = sel.get("name", "")
                         title = f"{mkt_name}: {sel_name}" if mkt_name and sel_name else sel_name or mkt_name
                     if not title:
                         continue
 
-                    boosts.append(Special(
-                        provider=provider_id,
-                        title=title,
-                        event=event_name,
-                        original_odds=None,  # ComeOn boost page only shows boosted odds
-                        boosted_odds=float(odds),
-                        boost_pct=None,
-                        max_stake=None,
-                        sport=sport,
-                        league=league,
-                        category="superboost" if is_super else "boost",
-                        expires_at=None,
-                        event_time=start_time,
-                        source=provider_id,
-                        scraped_at=now_iso,
-                        url=boost_url,
-                        market_label=mkt_name,
-                    ))
+                    boosts.append(
+                        Special(
+                            provider=provider_id,
+                            title=title,
+                            event=event_name,
+                            original_odds=None,  # ComeOn boost page only shows boosted odds
+                            boosted_odds=float(odds),
+                            boost_pct=None,
+                            max_stake=None,
+                            sport=sport,
+                            league=league,
+                            category="superboost" if is_super else "boost",
+                            expires_at=None,
+                            event_time=start_time,
+                            source=provider_id,
+                            scraped_at=now_iso,
+                            url=boost_url,
+                            market_label=mkt_name,
+                        )
+                    )
 
     except Exception as e:
         if verbose:
             print(f"    [{provider_id}] Error: {e}")
             import traceback
+
             traceback.print_exc()
     finally:
         await page.close()
@@ -1727,25 +1669,25 @@ def _extract_comeon_entities(msg: dict, events: dict, markets: dict, selections:
     if not isinstance(msg, dict):
         return
 
-    payload = msg.get('payload', msg)  # Payload might be top-level or nested
+    payload = msg.get("payload", msg)  # Payload might be top-level or nested
 
-    for ev in payload.get('events', []):
-        eid = ev.get('id')
+    for ev in payload.get("events", []):
+        eid = ev.get("id")
         if eid:
             events[eid] = ev
 
-    for mkt in payload.get('markets', []):
-        mid = mkt.get('id')
+    for mkt in payload.get("markets", []):
+        mid = mkt.get("id")
         if mid:
             markets[mid] = mkt
 
-    for sel in payload.get('selections', []):
-        sid = sel.get('id')
+    for sel in payload.get("selections", []):
+        sid = sel.get("id")
         if sid:
             selections[sid] = sel
 
     # Also check nested 'data' or 'body' fields
-    for key in ('data', 'body', 'result'):
+    for key in ("data", "body", "result"):
         nested = msg.get(key)
         if isinstance(nested, dict):
             _extract_comeon_entities(nested, events, markets, selections)
@@ -1781,25 +1723,25 @@ async def _scrape_spectate_boosts(
             url = response.url.lower()
             if response.status != 200:
                 return
-            ct = response.headers.get('content-type', '')
-            if 'json' not in ct:
+            ct = response.headers.get("content-type", "")
+            if "json" not in ct:
                 return
             try:
-                if ('spectate' in url or 'event' in url or 'boost' in url
-                    or 'offer' in url or 'odds' in url):
+                if "spectate" in url or "event" in url or "boost" in url or "offer" in url or "odds" in url:
                     data = await response.json()
-                    api_responses.append({'url': response.url, 'data': data})
+                    api_responses.append({"url": response.url, "data": data})
             except Exception:
                 pass
 
-        page.on('response', capture_response)
-        await page.goto(boost_url, wait_until='load', timeout=30000)
+        page.on("response", capture_response)
+        await page.goto(boost_url, wait_until="load", timeout=30000)
         await asyncio.sleep(3)
 
         # Handle cookie consent
         for selector in [
-            '#onetrust-accept-btn-handler',
-            'button:has-text("Acceptera")', 'button:has-text("Accept")',
+            "#onetrust-accept-btn-handler",
+            'button:has-text("Acceptera")',
+            'button:has-text("Accept")',
             'button:has-text("Godkänn")',
         ]:
             try:
@@ -1825,12 +1767,12 @@ async def _scrape_spectate_boosts(
 
         # Parse API responses for boost data
         for resp_item in api_responses:
-            data = resp_item.get('data', {})
+            data = resp_item.get("data", {})
             _parse_spectate_api_response(data, boosts, provider_id, now_iso, verbose)
 
         # Fallback: Parse visible DOM for boost information
         if not boosts:
-            dom_boosts = await page.evaluate(r'''() => {
+            dom_boosts = await page.evaluate(r"""() => {
                 const results = [];
                 // Look for boost card elements
                 const cards = document.querySelectorAll(
@@ -1895,16 +1837,16 @@ async def _scrape_spectate_boosts(
                 }
 
                 return results;
-            }''')
+            }""")
 
             if verbose:
                 print(f"    [{provider_id}] DOM fallback: {len(dom_boosts)} boost elements")
 
             seen_keys = set()
             for item in dom_boosts:
-                text = item.get('text', '')
-                orig = item.get('original')
-                boosted = item.get('boosted')
+                text = item.get("text", "")
+                orig = item.get("original")
+                boosted = item.get("boosted")
                 if not boosted:
                     continue
 
@@ -1918,31 +1860,34 @@ async def _scrape_spectate_boosts(
                 if orig and boosted > orig:
                     boost_pct_val = round(((boosted / orig) - 1) * 100, 1)
 
-                title = ' '.join(text.split())[:120]
+                title = " ".join(text.split())[:120]
 
-                boosts.append(Special(
-                    provider=provider_id,
-                    title=title,
-                    event="",
-                    original_odds=round(orig, 2) if orig else None,
-                    boosted_odds=round(boosted, 2),
-                    boost_pct=boost_pct_val,
-                    max_stake=None,
-                    sport=sport,
-                    league="",
-                    category="boost",
-                    expires_at=None,
-                    event_time=None,
-                    source=provider_id,
-                    scraped_at=now_iso,
-                    url=boost_url,
-                    market_label="",
-                ))
+                boosts.append(
+                    Special(
+                        provider=provider_id,
+                        title=title,
+                        event="",
+                        original_odds=round(orig, 2) if orig else None,
+                        boosted_odds=round(boosted, 2),
+                        boost_pct=boost_pct_val,
+                        max_stake=None,
+                        sport=sport,
+                        league="",
+                        category="boost",
+                        expires_at=None,
+                        event_time=None,
+                        source=provider_id,
+                        scraped_at=now_iso,
+                        url=boost_url,
+                        market_label="",
+                    )
+                )
 
     except Exception as e:
         if verbose:
             print(f"    [{provider_id}] Error: {e}")
             import traceback
+
             traceback.print_exc()
     finally:
         await page.close()
@@ -1969,7 +1914,7 @@ def _parse_spectate_api_response(
         return
 
     # Spectate responses can contain events, markets, selections in various formats
-    events = data.get('events', [])
+    events = data.get("events", [])
     if isinstance(events, list):
         for ev in events:
             _parse_spectate_event(ev, boosts, provider_id, now_iso)
@@ -1978,7 +1923,7 @@ def _parse_spectate_api_response(
             _parse_spectate_event(ev, boosts, provider_id, now_iso)
 
     # Check nested data structures
-    for key in ('data', 'body', 'sections', 'offers', 'results'):
+    for key in ("data", "body", "sections", "offers", "results"):
         nested = data.get(key)
         if isinstance(nested, dict):
             _parse_spectate_api_response(nested, boosts, provider_id, now_iso, verbose)
@@ -1988,28 +1933,26 @@ def _parse_spectate_api_response(
                     _parse_spectate_api_response(item, boosts, provider_id, now_iso, verbose)
 
 
-def _parse_spectate_event(
-    ev: dict, boosts: list, provider_id: str, now_iso: str
-) -> None:
+def _parse_spectate_event(ev: dict, boosts: list, provider_id: str, now_iso: str) -> None:
     """Parse a single Spectate event for boost data."""
     if not isinstance(ev, dict):
         return
 
-    event_name = ev.get('name', '')
-    league = ev.get('competition', ev.get('league', ''))
-    start_time = ev.get('startTime', ev.get('startDate'))
+    event_name = ev.get("name", "")
+    league = ev.get("competition", ev.get("league", ""))
+    start_time = ev.get("startTime", ev.get("startDate"))
     sport = detect_sport(f"{event_name} {league}")
 
-    markets = ev.get('markets', ev.get('offers', []))
+    markets = ev.get("markets", ev.get("offers", []))
     if isinstance(markets, dict):
         markets = list(markets.values())
 
     for mkt in markets:
         if not isinstance(mkt, dict):
             continue
-        mkt_name = mkt.get('name', mkt.get('label', ''))
+        mkt_name = mkt.get("name", mkt.get("label", ""))
 
-        outcomes = mkt.get('outcomes', mkt.get('selections', []))
+        outcomes = mkt.get("outcomes", mkt.get("selections", []))
         if isinstance(outcomes, dict):
             outcomes = list(outcomes.values())
 
@@ -2017,36 +1960,39 @@ def _parse_spectate_event(
             if not isinstance(out, dict):
                 continue
 
-            odds = out.get('odds', out.get('price'))
+            odds = out.get("odds", out.get("price"))
             if not odds or float(odds) <= 1.0:
                 continue
 
-            out_name = out.get('name', out.get('label', ''))
+            out_name = out.get("name", out.get("label", ""))
             title = f"{mkt_name}: {out_name}" if mkt_name and out_name else out_name or mkt_name
             if not title:
                 continue
 
-            boosts.append(Special(
-                provider=provider_id,
-                title=title,
-                event=event_name,
-                original_odds=None,
-                boosted_odds=float(odds),
-                boost_pct=None,
-                max_stake=None,
-                sport=sport,
-                league=league if isinstance(league, str) else "",
-                category="boost",
-                expires_at=None,
-                event_time=start_time,
-                source=provider_id,
-                scraped_at=now_iso,
-                url="https://www.mrgreen.se/sport/odds-boost/",
-                market_label=mkt_name,
-            ))
+            boosts.append(
+                Special(
+                    provider=provider_id,
+                    title=title,
+                    event=event_name,
+                    original_odds=None,
+                    boosted_odds=float(odds),
+                    boost_pct=None,
+                    max_stake=None,
+                    sport=sport,
+                    league=league if isinstance(league, str) else "",
+                    category="boost",
+                    expires_at=None,
+                    event_time=start_time,
+                    source=provider_id,
+                    scraped_at=now_iso,
+                    url="https://www.mrgreen.se/sport/odds-boost/",
+                    market_label=mkt_name,
+                )
+            )
 
 
 # ============ Aggregation ============
+
 
 def deduplicate_specials(specials: list[Special]) -> list[Special]:
     """Remove duplicate specials based on provider + event + title + boosted odds."""
@@ -2080,10 +2026,9 @@ def scrape_all(verbose: bool = False) -> tuple[list[Special], BoostRunLog]:
 
         if loop and loop.is_running():
             import concurrent.futures
+
             with concurrent.futures.ThreadPoolExecutor() as pool:
-                result = pool.submit(
-                    lambda: asyncio.run(scrape_provider_boosts(verbose=verbose))
-                ).result(timeout=180)
+                result = pool.submit(lambda: asyncio.run(scrape_provider_boosts(verbose=verbose))).result(timeout=180)
         else:
             result = asyncio.run(scrape_provider_boosts(verbose=verbose))
 
@@ -2113,7 +2058,7 @@ def scrape_all(verbose: bool = False) -> tuple[list[Special], BoostRunLog]:
     return unique, run_log
 
 
-def save_specials(specials: list[Special], path: Optional[Path] = None) -> Path:
+def save_specials(specials: list[Special], path: Path | None = None) -> Path:
     """Save specials to JSON file."""
     if path is None:
         path = DATA_DIR / "specials.json"
@@ -2132,7 +2077,7 @@ def save_specials(specials: list[Special], path: Optional[Path] = None) -> Path:
     return path
 
 
-def load_specials(path: Optional[Path] = None) -> list[dict]:
+def load_specials(path: Path | None = None) -> list[dict]:
     """Load specials from JSON file."""
     if path is None:
         path = DATA_DIR / "specials.json"
@@ -2149,6 +2094,7 @@ def load_specials(path: Optional[Path] = None) -> list[dict]:
 
 
 # ============ CLI ============
+
 
 def _print(text: str):
     """Print with fallback for Windows console encoding issues."""
@@ -2179,9 +2125,9 @@ def main():
             print(f"Empty results saved to {path}")
         return
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  ODDS BOOSTS ({len(specials)} found)")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     by_provider: dict[str, list[Special]] = {}
     for s in specials:

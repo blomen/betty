@@ -212,43 +212,62 @@ async def _post_api(page: Page, url: str, body: dict) -> dict | None:
 async def _check_login(page: Page, intel: dict | None) -> bool:
     """True when Pinnacle session is live.
 
-    Two-signal check — accept either:
-      1. localStorage['Main:User'].loggedIn === true && token (primary, survives
-         UI language switch).
-      2. DOM text shows DEPONERA/DEPOSIT + SEK balance + no LOG IN button
-         (fallback — covers the brief window after navigation when localStorage
-         hasn't repopulated yet, and matchup pages where Main:User is cleared).
-    """
-    import asyncio
+    Single-shot check — the frontend polls /mirror/browser/provider/pinnacle
+    every 10s, so any retry/wait belongs at the caller, not here. Previous
+    1+3*1.5s sleep loop turned every poll into a 5.5s blocker.
 
-    await asyncio.sleep(1)
-    for _ in range(3):
-        try:
-            result = await page.evaluate(
-                r"""() => {
-                    // Signal 1: localStorage Main:User
-                    try {
-                        const raw = localStorage.getItem('Main:User');
-                        if (raw) {
-                            const u = JSON.parse(raw);
-                            if (u && u.loggedIn === true && u.token) return {logged_in: true, via: 'storage'};
-                        }
-                    } catch {}
-                    // Signal 2: DOM text — DEPONERA + SEK balance + no LOG IN.
-                    const text = document.body.innerText || '';
-                    const hasLogin = /\bLOG IN\b/i.test(text) || /\bLOGGA IN\b/i.test(text);
-                    const hasBalance = /SEK\s*[\d,.]+/i.test(text) || /[\d,.]+\s*KR/i.test(text);
-                    const hasDeposit = /\bDEPONERA\b/i.test(text) || /\bDEPOSIT\b/i.test(text);
-                    if (hasBalance && hasDeposit && !hasLogin) return {logged_in: true, via: 'dom'};
-                    return {logged_in: false};
-                }"""
-            )
-            if isinstance(result, dict) and result.get("logged_in"):
-                return True
-        except Exception:
-            pass
-        await asyncio.sleep(1.5)
-    return False
+    Signals (any one suffices):
+      1. localStorage['Main:User'].loggedIn === true && token (primary).
+      2. DOM text shows DEPONERA/DEPOSIT + SEK balance + no LOG IN button
+         (fallback — covers the brief window after navigation when
+         localStorage hasn't repopulated yet).
+    """
+    try:
+        result = await _check_login_signals(page)
+    except Exception:
+        return False
+    return bool(result.get("logged_in"))
+
+
+async def _check_login_signals(page: Page) -> dict:
+    """Returns the raw signal dict — used by both _check_login and the
+    debug-eval endpoint so we can inspect what's actually detected."""
+    return await page.evaluate(
+        r"""() => {
+            const out = {logged_in: false, signals: {}, via: null};
+            // Signal 1: localStorage Main:User
+            try {
+                const raw = localStorage.getItem('Main:User');
+                if (raw) {
+                    const u = JSON.parse(raw);
+                    out.signals.mainUser_loggedIn = !!(u && u.loggedIn);
+                    out.signals.mainUser_token = !!(u && u.token);
+                    out.signals.mainUser_username = u && u.username || null;
+                    out.signals.mainUser_balance = u && (u.balance && u.balance.amount != null ? u.balance.amount : u.balance);
+                    if (u && u.loggedIn === true && u.token) {
+                        out.logged_in = true;
+                        out.via = 'storage';
+                        return out;
+                    }
+                }
+            } catch (e) { out.signals.mainUser_error = String(e); }
+            // Signal 2: DOM text — DEPONERA + SEK balance + no LOG IN.
+            const text = document.body.innerText || '';
+            const hasLogin = /\bLOG IN\b/i.test(text) || /\bLOGGA IN\b/i.test(text);
+            const hasBalance = /SEK\s*[\d,.]+/i.test(text) || /[\d,.]+\s*KR/i.test(text);
+            const hasDeposit = /\bDEPONERA\b/i.test(text) || /\bDEPOSIT\b/i.test(text);
+            const hasMaintenance = /\bUNDERH[ÅA]LL\b/i.test(text) || /\bMAINTENANCE\b/i.test(text);
+            out.signals.hasLogin = hasLogin;
+            out.signals.hasBalance = hasBalance;
+            out.signals.hasDeposit = hasDeposit;
+            out.signals.hasMaintenance = hasMaintenance;
+            if (hasBalance && hasDeposit && !hasLogin) {
+                out.logged_in = true;
+                out.via = 'dom';
+            }
+            return out;
+        }"""
+    )
 
 
 async def _sync_balance(page: Page, intel: dict | None) -> float:
@@ -618,13 +637,40 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
 
     logger.info(f"[pinnacle] DOM scrape: {len(entries)} bet(s)")
 
-    # API fallback
+    # API fallback — runs whenever the DOM scrape didn't find settled cards.
+    # Always fetch BOTH unsettled (pending) AND settled. The pending side is
+    # what the reactive sync needs to record placements so they appear in
+    # the UI's PENDING section and get blacklisted out of the value-bet
+    # table; the settled side is for reconcile to mark won/lost/void.
     if not entries:
         start, end = _date_range()
+
+        # Pending bets — emit as status="pending" so _record_unknown_open_bets
+        # picks them up (it skips non-"pending" entries).
+        unsettled = await _evaluate_api(page, f"{api}/bets?status=unsettled&startDate={start}&endDate={end}")
+        if isinstance(unsettled, dict) and "__error" in unsettled:
+            unsettled = None
+        for b in _bets_list(unsettled):
+            p = _parse_api_bet(b)
+            if not p["stake"] or not p["odds"]:
+                continue
+            entries.append(
+                HistoryEntry(
+                    provider_bet_id=str(p["pin_id"] or ""),
+                    event_name=p["event"],
+                    market=p["market_type"],
+                    outcome=p["designation"],
+                    odds=p["odds"],
+                    stake=p["stake"],
+                    status="pending",
+                    payout=0.0,
+                )
+            )
+
+        # Settled bets — for reconcile/settlement matching.
         data = await _evaluate_api(page, f"{api}/bets?status=settled&startDate={start}&endDate={end}")
         if isinstance(data, dict) and "__error" in data:
             data = None
-
         for b in _bets_list(data):
             p = _parse_api_bet(b)
             if p["outcome"] == "none":
@@ -656,39 +702,46 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
 # ------------------------------------------------------------------
 
 
-async def _check_live_price(page: Page, bet, intel: dict | None) -> float | None:
+async def _check_live_price(page: Page, bet, intel: dict | None) -> tuple[float | None, float | None]:
+    """Return (live_odds, live_edge) for the bet's outcome.
+
+    Convention matches polymarket / kalshi: a 2-tuple. The router's poll loop
+    unpacks via `live, _ = await wf.check_live_price(...)` — returning a
+    single value here used to raise TypeError that was silently swallowed
+    by the loop's broad except, so pinnacle live odds never surfaced.
+    """
     try:
         from ....analysis.value import compute_edge
     except ImportError:
         logger.warning("[pinnacle] analysis.value not available — live price check disabled")
-        return None
+        return None, None
 
     api = _api_base(intel)
     matchup_id = getattr(bet, "matchup_id", None)
     fair_odds = getattr(bet, "fair_odds", None)
     if not matchup_id or not fair_odds:
-        return None
+        return None, None
 
     markets = await _evaluate_api(page, f"{api}/matchups/{matchup_id}/markets/straight")
     if not markets or not isinstance(markets, list):
-        return None
+        return None, None
 
     market = getattr(bet, "market", "")
     point = getattr(bet, "point", None)
     target = _find_market(markets, market, point, intel)
     if not target:
-        return None
+        return None, None
 
     outcome = getattr(bet, "outcome", "")
     designation = _designation_map(intel).get(outcome)
     price_entry = next((p for p in target.get("prices", []) if p.get("designation") == designation), None)
     if not price_entry:
-        return None
+        return None, None
 
     decimal_odds = _american_to_decimal(price_entry["price"])
     edge = compute_edge("pinnacle", decimal_odds, fair_odds)
     logger.info(f"[pinnacle] Live: {outcome} @ {decimal_odds:.2f} (fair {fair_odds:.2f}) edge={edge:.1f}%")
-    return edge
+    return decimal_odds, edge
 
 
 # ------------------------------------------------------------------
@@ -737,24 +790,283 @@ def _find_market(markets: list[dict], market_type: str, point: float | None, int
 # ------------------------------------------------------------------
 
 
+def _slug(s: str) -> str:
+    """Lowercase, hyphen-separate, drop non-alphanum-or-hyphen chars.
+
+    Mirrors the slugs Pinnacle uses in canonical URLs:
+      "England - Premier League" → "england-premier-league"
+      "West Ham United"          → "west-ham-united"
+      "Soccer"                   → "soccer"
+    """
+    import re
+
+    s = (s or "").lower().strip()
+    s = re.sub(r"[\s_]+", "-", s)
+    s = re.sub(r"[^a-z0-9-]", "", s)
+    s = re.sub(r"-+", "-", s).strip("-")
+    return s
+
+
+# API key embedded in Pinnacle's frontend bundle (window.__appConfig__.api.apiKey).
+# Same value across all customers/sessions — it's a public client identifier,
+# not a secret. Required to hit the authenticated /0.1/* endpoints which
+# return full matchup data (vs the guest endpoint which 401s for many IDs).
+_PINNACLE_FRONTEND_API_KEY = "CmX2KcMrXuFmNg6YFbmTxE0y9CIrOi0R"
+_PINNACLE_API_BASE = "https://api.arcadia.pinnacle.se/0.1"
+
+
+async def _resolve_canonical_url(page: Page, matchup_id: int | str) -> str | None:
+    """Build the canonical Pinnacle URL for a matchup.
+
+    Pinnacle's bare /sv/matchup/{id}/ URL renders only the home shell —
+    the SPA needs the full /sv/<sport>/<league>/<teams>/<id>/ path to
+    mount the event card. This resolver:
+      1. Hits api.arcadia.pinnacle.se/0.1/matchups/<id> with X-API-Key
+         (bypasses CORS via Playwright's request context, works for ANY
+         matchup ID — pre-match, live, retired)
+      2. If the matchup has gone live (hasLive=true, status=pending), looks
+         up the live successor by parentId
+      3. Builds the canonical URL using slugs
+    Returns the URL or None on failure.
+    """
+    headers = {"X-API-Key": _PINNACLE_FRONTEND_API_KEY}
+    try:
+        r1 = await page.request.get(
+            f"{_PINNACLE_API_BASE}/matchups/{matchup_id}",
+            headers=headers,
+            timeout=8_000,
+        )
+        if not r1.ok:
+            logger.debug(f"[pinnacle] matchup {matchup_id} api {r1.status}")
+            return None
+        m = await r1.json()
+        if not isinstance(m, dict) or not m.get("league"):
+            return None
+
+        # Follow pre-match → live successor chain. Pin parent league_id to
+        # avoid landing on a derivative market (e.g. "Premier League Corners"
+        # has its own league_id but same parentId).
+        if m.get("hasLive") and m.get("status") == "pending":
+            parent_league_id = m["league"]["id"]
+            try:
+                r2 = await page.request.get(
+                    f"{_PINNACLE_API_BASE}/leagues/{parent_league_id}/matchups",
+                    headers=headers,
+                    timeout=8_000,
+                )
+                if r2.ok:
+                    all_matchups = await r2.json()
+                    candidates = [
+                        x
+                        for x in all_matchups
+                        if x.get("parentId") == int(matchup_id)
+                        and x.get("type") == "matchup"
+                        and x.get("isLive") is True
+                        and x.get("status") == "started"
+                        and (x.get("league") or {}).get("id") == parent_league_id
+                    ]
+                    full_match = next(
+                        (c for c in candidates if any(p.get("period") == 0 for p in (c.get("periods") or []))),
+                        None,
+                    )
+                    live = full_match or (candidates[0] if candidates else None)
+                    if live:
+                        m = live
+            except Exception as e:
+                logger.debug(f"[pinnacle] live-successor lookup failed: {e!r}")
+
+        sport_name = ((m.get("league") or {}).get("sport") or {}).get("name", "")
+        league_name = (m.get("league") or {}).get("name", "")
+        parts = [(p if isinstance(p, str) else p.get("name", "")) for p in (m.get("participants") or [])]
+        sport_slug = _slug(sport_name)
+        league_slug = _slug(league_name)
+        team_slug = "-vs-".join(_slug(p) for p in parts if p)
+        final_id = m.get("id")
+        if not (sport_slug and league_slug and team_slug and final_id):
+            return None
+        return f"https://www.pinnacle.se/sv/{sport_slug}/{league_slug}/{team_slug}/{final_id}/"
+    except Exception as e:
+        logger.debug(f"[pinnacle] resolve_canonical_url failed: {e!r}")
+        return None
+
+
+async def _read_outcome_odds_dom(page: Page, bet) -> float | None:
+    """Live-odds reader for Pinnacle. Reads directly from the SPA's MobX
+    markets store (`window.stores.markets.items`) — no API calls per poll
+    and no DOM scraping. The store is updated by the WebSocket so every
+    odds tick the user sees on the page is instantly readable here.
+
+    Returns decimal odds for the picked (matchup_id, market, outcome,
+    point) or None if the store hasn't loaded yet.
+    """
+    matchup_id = getattr(bet, "matchup_id", None)
+    market = getattr(bet, "market", "")
+    point = getattr(bet, "point", None)
+    outcome = getattr(bet, "outcome", "")
+    if not matchup_id or not market or not outcome:
+        return None
+
+    # Map our market/outcome strings to Pinnacle's key/designation shape:
+    #   moneyline/1x2 → market.key starts with "s;<period>;m", designations: home/away/draw
+    #   spread        → market.key starts with "s;<period>;s;...;<point>", designations: home/away
+    #   total         → market.key starts with "s;<period>;ou;...;<point>", designations: over/under
+    # Period 0 = full match. We always pick period 0 (the canonical full-match
+    # successor when an event has gone live).
+    market_prefix_map = {
+        "moneyline": "s;0;m",
+        "1x2": "s;0;m",
+        "spread": "s;0;s;",
+        "total": "s;0;ou;",
+    }
+    market_prefix = market_prefix_map.get(market)
+    if not market_prefix:
+        return None
+    designation_map = {"home": "home", "away": "away", "draw": "draw", "over": "over", "under": "under"}
+    designation = designation_map.get(outcome)
+    if not designation:
+        return None
+
+    try:
+        american = await page.evaluate(
+            f"""(() => {{
+                try {{
+                    const matchupId = {int(matchup_id)};
+                    // Build the set of valid matchup IDs to read odds from:
+                    //   - the user's chosen ID (pre-match or already-live)
+                    //   - its live successor (any matchup with parentId === our ID,
+                    //     type=matchup, isLive). When the URL is on the live page,
+                    //     that's where the markets are mounted, NOT the pre-match.
+                    // Markets themselves don't carry parentId; only matchups do, so
+                    // we resolve via the matchups store first.
+                    const validMatchupIds = new Set([matchupId]);
+                    const matchupsStore = window.stores && window.stores.matchups;
+                    if (matchupsStore && matchupsStore.items) {{
+                        for (const [_k, mu] of matchupsStore.items) {{
+                            if (!mu) continue;
+                            if (mu.parentId === matchupId && mu.type === 'matchup' && mu.isLive) {{
+                                validMatchupIds.add(mu.id);
+                            }}
+                        }}
+                    }}
+                    const markets = window.stores && window.stores.markets;
+                    if (!markets || !markets.items) return null;
+
+                    let best = null;
+                    for (const [_k, m] of markets.items) {{
+                        if (!m || !m.key) continue;
+                        if (m.isAlternate) continue;
+                        if (!validMatchupIds.has(m.matchupId)) continue;
+                        if (!m.key.startsWith({market_prefix!r})) continue;
+                        // Filter on point for spread / total. Pinnacle's market keys
+                        // for these are 4-segment: "s;0;s;<point>" or "s;0;ou;<point>".
+                        const expectedPoint = {("null" if point is None else float(point))};
+                        if (expectedPoint !== null) {{
+                            const parts = m.key.split(';');
+                            const lastPart = parseFloat(parts[parts.length - 1]);
+                            if (Math.abs(lastPart - expectedPoint) > 0.01) continue;
+                        }}
+                        const prices = m.prices || [];
+                        const pe = prices.find(p => p.designation === {designation!r});
+                        if (pe && typeof pe.price === 'number') {{
+                            best = pe.price;
+                            break;
+                        }}
+                    }}
+                    return best;
+                }} catch (e) {{
+                    return null;
+                }}
+            }})()"""
+        )
+        if american is None:
+            return None
+        return _american_to_decimal(float(american))
+    except Exception as e:
+        logger.debug(f"[pinnacle] read_outcome_odds_dom failed: {e!r}")
+        return None
+
+
 async def _navigate_to_event(page: Page, bet, intel: dict | None) -> bool:
-    """Navigate to Pinnacle event page by matchup ID."""
+    """Navigate to Pinnacle event page using its canonical URL.
+
+    Pinnacle's SPA only renders the matchup card on the canonical
+    /sv/<sport>/<league>/<teams>/<id>/ URL — the bare /sv/matchup/{id}/
+    URL just shows the home shell. We resolve the canonical URL via the
+    public matchups API (which also follows the pre-match → live chain)
+    and navigate there.
+    """
+    import asyncio as _asyncio
+
     matchup_id = getattr(bet, "matchup_id", None)
     if not matchup_id:
         return False
 
-    url = f"https://www.pinnacle.se/sv/matchup/{matchup_id}"
-    current = page.url or ""
-    if str(matchup_id) in current:
-        return True  # Already on this event
-
-    try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-        logger.info(f"[pinnacle] Navigated to matchup {matchup_id}")
-        return True
-    except Exception as e:
-        logger.warning(f"[pinnacle] Navigate failed: {e}")
+    canonical = await _resolve_canonical_url(page, matchup_id)
+    if not canonical:
+        logger.warning(f"[pinnacle] could not resolve canonical URL for {matchup_id}")
         return False
+
+    # Skip the goto if we're already on this URL (idempotent re-clicks).
+    current = page.url or ""
+    if canonical not in current:
+        try:
+            await page.goto(canonical, wait_until="domcontentloaded", timeout=15000)
+            logger.info(f"[pinnacle] Navigated to {canonical}")
+        except Exception as e:
+            logger.warning(f"[pinnacle] Navigate failed for {canonical}: {e}")
+            return False
+
+    # Verify content actually mounted (poll up to 6s).
+    for _ in range(12):
+        try:
+            ok = await page.evaluate(
+                r"""() => {
+                    if (document.querySelector('[class*="Matchup"], [class*="Market"], [class*="EventDetail"]')) return true;
+                    const btns = Array.from(document.querySelectorAll('button'));
+                    return btns.filter(b => /^\s*\d+\.\d{2,3}\s*$/.test(b.textContent || '')).length >= 2;
+                }"""
+            )
+            if ok:
+                return True
+        except Exception:
+            pass
+        await _asyncio.sleep(0.5)
+
+    logger.warning(f"[pinnacle] matchup {matchup_id} canonical URL loaded but no content rendered")
+    return False
+
+
+async def _is_matchup_empty(page: Page) -> bool:
+    """True when a Pinnacle matchup URL loaded but rendered no event content.
+
+    Used as the Pinnacle equivalent of "event closed" — Pinnacle pulls
+    expired/suspended matchups by serving a 502 from the matchup API,
+    which leaves the React app rendering only the home shell (sidebar +
+    sport list, no event card). Polls up to 6s for matchup-shaped content
+    to appear; if it doesn't, the leg is dead.
+    """
+    import asyncio as _asyncio
+
+    for _ in range(12):  # 12 × 500ms = 6s
+        try:
+            ok = await page.evaluate(
+                r"""() => {
+                    // Direct hooks: Pinnacle's React app uses class names
+                    // containing "Matchup" / "Market" / "EventDetail" once
+                    // the event renders.
+                    if (document.querySelector('[class*="Matchup"], [class*="Market"], [class*="EventDetail"]')) return true;
+                    // Fallback: at least 2 decimal-odds buttons. Bare price
+                    // digits inside a button is the canonical odds shape.
+                    const btns = Array.from(document.querySelectorAll('button'));
+                    return btns.filter(b => /^\s*\d+\.\d{2,3}\s*$/.test(b.textContent || '')).length >= 2;
+                }"""
+            )
+            if ok:
+                return False
+        except Exception:
+            pass
+        await _asyncio.sleep(0.5)
+    return True
 
 
 # ------------------------------------------------------------------
@@ -1030,6 +1342,7 @@ strategy = Strategy(
     scan=_scan,
     settle_all=_settle_all,
     read_slip_odds=_read_slip_odds,
+    read_outcome_odds_dom=_read_outcome_odds_dom,
     update_slip_stake=_update_slip_stake,
     parse_placement_response=parse_placement_response,
     parse_placement_status=parse_placement_status,

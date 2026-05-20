@@ -134,6 +134,46 @@ def reconcile_from_history(db_pending: list[dict], history: list[dict]) -> list[
         delta = _compute_delta(bet_id, bet, entry, "fuzzy", score)
         if delta:
             deltas.append(delta)
+            matched_bets.add(bet_id)
+
+    # Pass 3: signature-only fallback for bets with neither id nor event_name.
+    # Manually-recovered kalshi/polymarket bets sometimes land in the DB with
+    # confirmation_id="" AND boost_event="" — the reactive-sync path bailed
+    # too early and stripped the routing metadata. They never reconcile via
+    # passes 1 or 2 because both keys are empty. (odds, stake) is unique
+    # enough for these tiny-stake cents markets; only match against TERMINAL
+    # history entries so we never accidentally settle an open bet.
+    _SIG_ODDS_TOL_PCT = 5.0
+    _SIG_STAKE_TOL_PCT = 5.0
+    for bet in db_pending:
+        bet_id = bet.get("bet_id") or bet.get("id")
+        if not bet_id or bet_id in matched_bets:
+            continue
+        bet_odds = float(bet.get("odds", 0) or 0)
+        bet_stake = float(bet.get("stake", 0) or 0)
+        if bet_odds <= 0 or bet_stake <= 0:
+            continue
+
+        for idx, entry in enumerate(history):
+            if idx in used_history:
+                continue
+            h_status = (entry.get("status") or "").lower()
+            if h_status not in ("won", "lost", "void", "cashout"):
+                continue
+            h_odds = float(entry.get("odds", 0) or 0)
+            h_stake = float(entry.get("stake", 0) or 0)
+            if h_odds <= 0 or h_stake <= 0:
+                continue
+            if abs(h_odds - bet_odds) / bet_odds * 100.0 > _SIG_ODDS_TOL_PCT:
+                continue
+            if abs(h_stake - bet_stake) / bet_stake * 100.0 > _SIG_STAKE_TOL_PCT:
+                continue
+            used_history.add(idx)
+            delta = _compute_delta(bet_id, bet, entry, "signature", 100.0)
+            if delta:
+                deltas.append(delta)
+                matched_bets.add(bet_id)
+            break
 
     return deltas
 
@@ -149,16 +189,22 @@ def _compute_delta(bet_id: int, bet: dict, entry: dict, method: str, confidence:
         if bet_status != h_status:
             changes["result"] = h_status
 
-    # stake
+    # stake — 0 is a "not recoverable from this row" sentinel, NOT a real
+    # value. Polymarket Loss/Redeemed history rows report stake=0 (the row
+    # doesn't carry cost basis); Altenar settled rows can too. Overwriting a
+    # real stake with 0 destroys the bet's P&L (2026-05-14: 8 polymarket bets
+    # settled with stake wiped to 0 — the losses stopped being counted).
+    # Only ever push a stake that's strictly positive.
     h_stake = entry.get("stake")
     bet_stake = bet.get("stake")
-    if h_stake is not None and _has_meaningful_diff(bet_stake, h_stake):
+    if h_stake is not None and h_stake > 0 and _has_meaningful_diff(bet_stake, h_stake):
         changes["stake"] = float(h_stake)
 
-    # odds
+    # odds — same sentinel rule. A real bet's odds are always > 1.0; 0 means
+    # the history row didn't expose them, not that the bet had zero odds.
     h_odds = entry.get("odds")
     bet_odds = bet.get("odds")
-    if h_odds is not None and _has_meaningful_diff(bet_odds, h_odds, abs_tol=0.01, pct_tol=0.1):
+    if h_odds is not None and h_odds > 1.0 and _has_meaningful_diff(bet_odds, h_odds, abs_tol=0.01, pct_tol=0.1):
         changes["odds"] = float(h_odds)
 
     # payout

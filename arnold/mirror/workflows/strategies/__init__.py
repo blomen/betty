@@ -46,6 +46,9 @@ class Strategy:
     # placement response bodies (no I/O).
     read_slip_odds: Callable | None = None  # async (page, intel) -> float | None
     update_slip_stake: Callable | None = None  # async (page, stake, intel) -> bool
+    read_outcome_odds_dom: Callable | None = (
+        None  # async (page, bet) -> float | None — page-state live odds (faster than check_live_price)
+    )
     parse_placement_response: Callable | None = None  # sync (body) -> str | None
     parse_placement_status: Callable | None = None  # sync (body) -> dict
 

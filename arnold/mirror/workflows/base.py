@@ -195,7 +195,46 @@ class ProviderWorkflow(ABC):
         pass
 
     async def _evaluate_api(self, page: Page, url: str, method: str = "GET", body: dict | None = None) -> dict | None:
-        """Make an API call from the page's session (inherits cookies/auth)."""
+        """Make an API call from the page's session (inherits cookies/auth).
+
+        Tries the BrowserContext request API first — it shares cookies with the
+        page but isn't affected by the page's window.fetch overrides. Several
+        providers ship analytics shims (Spelklubben's GTM tracker.js, others
+        with Sentry/Datadog wrappers) that monkey-patch fetch and reject
+        cross-origin calls our page.evaluate path would make. Falls back to
+        page.evaluate if request context fails for any reason — keeps the
+        original behaviour for cases where the page-side fetch is required
+        (e.g. auth tokens injected only into the page's window).
+        """
+        # Path A: BrowserContext.request — bypasses page-level fetch hijack
+        try:
+            headers = {"Accept": "application/json"}
+            origin = f"https://{self.domain}" if self.domain else None
+            if origin:
+                headers["Origin"] = origin
+                headers["Referer"] = origin + "/"
+            if body is not None:
+                headers["Content-Type"] = "application/json"
+                resp = await page.context.request.fetch(url, method=method, headers=headers, data=body)
+            else:
+                resp = await page.context.request.fetch(url, method=method, headers=headers)
+            if resp.status < 200 or resp.status >= 400:
+                logger.debug(
+                    f"[{self.provider_id}] context.request {method} {url} → {resp.status}; falling back to page.evaluate"
+                )
+                raise RuntimeError(f"status {resp.status}")
+            try:
+                return await resp.json()
+            except Exception as e:
+                logger.debug(f"[{self.provider_id}] context.request {url} JSON parse failed: {e}")
+                return None
+        except RuntimeError:
+            pass
+        except Exception as e:
+            logger.debug(f"[{self.provider_id}] context.request {url} raised: {e!r}; falling back")
+
+        # Path B: page.evaluate (legacy) — keeps working for providers where
+        # auth depends on something only available in the page context.
         try:
             if body:
                 body_json = json.dumps(body)

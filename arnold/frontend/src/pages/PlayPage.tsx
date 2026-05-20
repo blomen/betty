@@ -36,7 +36,7 @@ const SOFT_CLUSTER_MEMBERS: Record<string, string[]> = {
 // Standalone soft providers — their own one-provider "cluster". Listed so they
 // always appear in the UI even when fully untouched (no balance / bonus / pending).
 const SOFT_STANDALONES: string[] = [
-  'interwetten', 'vbet', '10bet', 'tipwin', 'coolbet', 'bethard',
+  'vbet', '10bet', 'tipwin', 'coolbet', 'bethard',
 ]
 // Active soft anchors are now dynamic — any soft provider that has either a
 // balance above DRAIN_THRESHOLD_SEK, an unclaimed bonus, or pending bets
@@ -247,7 +247,7 @@ export default function PlayPage() {
   const [providerBalances, setProviderBalances] = useState<Record<string, ProviderBalanceLike>>({})
   const [pendingByProvider, setPendingByProvider] = useState<Record<string, any[]>>({})
   const [placedToday, setPlacedToday] = useState<Record<string, number>>({})
-  const [ttkFilter, setTtkFilter] = useState<number>(24)
+  const [ttkFilter, setTtkFilter] = useState<number>(168)
   const [error, setError] = useState<string | null>(null)
   // Mirror error into a ref so the polling tick can read the latest value
   // without re-creating the effect (avoids restarting the timer chain on
@@ -1535,6 +1535,16 @@ export default function PlayPage() {
       const pid = data.provider_id
       if (eid) setDrainedEventIds(prev => prev.has(eid) ? prev : new Set([...prev, eid]))
       if (pid) setProviderStatusFor(pid, `event finished — auto-skipping`)
+    }
+    if (type === 'opp_expired') {
+      // Provider page shows "event avslutat" / "event has ended" banner —
+      // Betinia removed the event but our cached opp lingers. Drain so the
+      // row disappears from the value-bet + arb tables immediately.
+      const eid = data.event_id
+      const pid = data.provider_id
+      if (eid) setDrainedEventIds(prev => prev.has(eid) ? prev : new Set([...prev, eid]))
+      const reason = data.reason || 'event ended on provider'
+      if (pid) setProviderStatusFor(pid, `event expired — auto-removing (${reason})`)
     }
     if (type === 'provider_manual_nav') {
       // User browsed the counter tab to a matchup page on their own.
@@ -3513,9 +3523,9 @@ export default function PlayPage() {
                                         e.stopPropagation()
                                         // Navigate every leg whose provider IS logged in. Skip the
                                         // ones that aren't — the user plays those manually on the
-                                        // bookmaker's site (e.g., interwetten not logged in but
-                                        // Pinnacle is → clicking opens the Pinnacle event page so
-                                        // the hedge math can be referenced/placed). Previously this
+                                        // bookmaker's site (the un-logged-in legs); clicking opens
+                                        // the logged-in event page so the hedge math can be
+                                        // referenced/placed). Previously this
                                         // path bailed entirely on !canRun, which hid the calc-side
                                         // value of seeing whatever counter tabs ARE available.
                                         if (!canRun) {
@@ -3526,6 +3536,39 @@ export default function PlayPage() {
                                         }
                                         if (loggedInProviders.has(pid)) {
                                           navigateLeg(pid, anchorLeg, `${anchorOutcome} on ${pid}`)
+                                        } else {
+                                          // Manual-play branch: navigateLeg is skipped (anchor not
+                                          // logged in), so pickedEventByProvider[pid] would never
+                                          // get set — meaning the DUTCH ARB calculator widget
+                                          // (editable payout + per-leg stakes) never renders for
+                                          // manual-play rows. Pin the picked event manually
+                                          // so the user still sees stake math while placing on
+                                          // the bookmaker's site by hand. Mirrors the cleanup of
+                                          // stale sync/picking state that navigateLeg does when
+                                          // the anchor click switches events.
+                                          const prevEid = pickedEventByProvider[pid]
+                                          if (prevEid && prevEid !== opp.event_id) {
+                                            setSyncedLegs(prev => {
+                                              if (!(prevEid in prev)) return prev
+                                              const next = { ...prev }
+                                              delete next[prevEid]
+                                              return next
+                                            })
+                                            setPickingLegs(prev => {
+                                              if (!(prevEid in prev)) return prev
+                                              const next = { ...prev }
+                                              delete next[prevEid]
+                                              return next
+                                            })
+                                          }
+                                          setPickedEventByProvider(prev =>
+                                            prev[pid] === opp.event_id ? prev : { ...prev, [pid]: opp.event_id },
+                                          )
+                                          pickedLegMetaByProvider.current[pid] = {
+                                            eid: opp.event_id,
+                                            outcome: anchorLeg?.outcome ?? '',
+                                            point: anchorLeg?.point ?? null,
+                                          }
                                         }
                                         // Auto-chain: fire navigateLeg for EVERY logged-in counter
                                         // leg. When two legs share a counter provider (e.g. 1X2 arb

@@ -156,12 +156,13 @@ def extract_orderflow_features(
         big_net_raw = sum(c.delta for c in big_candles)
         big_net = big_net_raw / max(avg_vol, 1.0)
 
-        # vsa_absorption (no-signals fallback) — mirrors orderflow.py fix:
-        # close must be at range extreme, not mid-range compression.
-        if last.volume > avg_vol * 1.5 and last.body_ratio < 0.3:
+        # vsa_absorption (no-signals fallback) — mirrors orderflow.py.
+        # Relaxed 2026-05-18 (PROFILE follow-up): same thresholds as signal
+        # path so the no-signals and with-signals paths agree.
+        if last.volume > avg_vol * 1.3 and last.body_ratio < 0.4:
             _last_range = max(last.high - last.low, 1e-6)
             _range_pos = (last.close - last.low) / _last_range
-            vsa_abs = 1.0 if (_range_pos > 0.7 or _range_pos < 0.3) else 0.0
+            vsa_abs = 1.0 if (_range_pos > 0.65 or _range_pos < 0.35) else 0.0
         else:
             vsa_abs = 0.0
         stop_run = 0.0  # Cannot reliably detect without signals

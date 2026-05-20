@@ -25,13 +25,13 @@ from ..config import LevelType
 from .narrative_features import NARRATIVE_NAMES
 from .observation import OBSERVATION_DIM
 
-SCHEMA_VERSION = 4  # 2026-05-17: OF dims 6 (spread_ticks) and 7 (passive_active_ratio)
-# now L1-quote-derived when LevelMonitor.l1_state holds a snapshot; falls
-# back to candle-derived for backward compat. Dim count unchanged (313).
-# Episodes recorded before this date have these dims candle-derived; new
-# episodes recorded inside a container receiving TopstepX GatewayQuote
-# events have them computed from true bestBid/bestAsk + Lee-Ready
-# aggressor classification.
+SCHEMA_VERSION = 5  # 2026-05-19: structure segment grew 64 → 73 with 9 new
+# d/w/m VP distance dims (dist_to_{poc,vah,val}_{daily,weekly,monthly}).
+# Total obs dim count: 313 → 322. Validated_baseline_dims.json needs
+# regeneration to include / re-bless the 9 new dims before any RL retrain.
+# Prior schema v4 (2026-05-17): OF dims 6/7 became L1-quote-derived from
+# TopstepX GatewayQuote bestBid/bestAsk + Lee-Ready aggressor classification.
+# Episodes recorded before 2026-05-17 have those candle-derived.
 
 # Methodology group taxonomy (2026-05-17, per Fabio Valentini AMT + Ryan/
 # blockroots OF + Cimitan + VSA fondamenti — 12 sources read).
@@ -155,6 +155,17 @@ def _structure_labels() -> list[str]:
         out.append(f"swing_momentum_{tf}")
     out.append("trend_alignment")
     out += ["dist_to_pdh", "dist_to_pdl", "pdh_pdl_position", "pdh_pdl_range"]
+    out += [
+        "dist_to_poc_daily",
+        "dist_to_vah_daily",
+        "dist_to_val_daily",
+        "dist_to_poc_weekly",
+        "dist_to_vah_weekly",
+        "dist_to_val_weekly",
+        "dist_to_poc_monthly",
+        "dist_to_vah_monthly",
+        "dist_to_val_monthly",
+    ]
     return out
 
 
@@ -358,8 +369,8 @@ def _build_segments() -> list[Segment]:
         },
         {
             "name": "structure",
-            "title": "Structure / VWAP / VP / Dow",
-            "size": 64,
+            "title": "Structure / VWAP / VP / Dow / d-w-m VP",
+            "size": 73,
             "labels": structure_labels,
             "kind": "scalar",
             "category": "DOW_STRUCTURE",

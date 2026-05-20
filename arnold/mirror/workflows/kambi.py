@@ -457,15 +457,11 @@ class KambiWorkflow(ProviderWorkflow):
             logger.info(f"[{self.provider_id}] sync_history: {len(entries)} bets from KSP API")
             return entries
 
-        # Last resort: navigate to bet history page
-        betting_path = self._BETTING_PATHS.get(self.provider_id, "/betting/sports")
-        hist_url = f"https://www.{self.domain}{betting_path}#bethistory"
-        if "#bethistory" not in (page.url or ""):
-            try:
-                await page.goto(hist_url, wait_until="domcontentloaded", timeout=15000)
-                await asyncio.sleep(3)
-            except Exception as e:
-                logger.warning(f"[{self.provider_id}] Could not navigate to bet history: {e}")
+        # KSP API came back empty. Don't auto-navigate to #bethistory — the
+        # user wants the mirror to be passive (only auto-nav for arb event
+        # clicks). When they navigate to history manually the next 60s tick
+        # picks it up.
+        logger.debug(f"[{self.provider_id}] sync_history: KSP empty, no manual history page — skipping nav")
         return []
 
     async def fetch_positions(self, page: Page) -> list[PositionEntry]:

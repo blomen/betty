@@ -19,6 +19,6 @@
   },
   "navigation": {
     "event_url_template": "https://www.pinnacle.se/sv/matchup/{matchup_id}",
-    "history_path": "/sv/my-account/bet-history"
+    "history_path": "/sv/account/bets"
   }
 }

@@ -2784,6 +2784,7 @@ class LevelMonitor:
             "l1_snapshot": self.l1_state.snapshot(),
             "recent_trades": recent_ticks,
             "swing_structure": ctx.get("swing_structure"),
+            "precomputed": ctx,  # d/w/m POC/VAH/VAL etc. — structure dims 64-72
             "amt_dynamics": self._amt_tracker.snapshot(),
             "zone_memory": self._build_zone_memory_for_state(),
             "prev_zone": self._build_prev_zone_state(zone, price),
@@ -2978,6 +2979,7 @@ class LevelMonitor:
             "l1_snapshot": self.l1_state.snapshot(),
             "recent_trades": recent_ticks,
             "swing_structure": ctx.get("swing_structure"),
+            "precomputed": ctx,  # d/w/m POC/VAH/VAL etc. — structure dims 64-72
             "amt_dynamics": self._amt_tracker.snapshot(),
             # Session-anchored CVD — feeds seg_session_cvd(2).
             "session_cvd": self._session_cvd_value,

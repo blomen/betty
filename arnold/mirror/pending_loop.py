@@ -226,12 +226,77 @@ class PendingLoop:
         if not (self._browser.running and self._browser.context):
             return
 
+        # Refresh balance for every provider with an open tab, regardless of
+        # pending bets. Without this, balance only writes to DB when the SPA
+        # itself fetches /balance and the browser interceptor catches it —
+        # so providers like kalshi go stale once the user navigates away
+        # from portfolio (the SPA stops re-fetching balance on a markets page).
+        await self._refresh_balances()
+
         pending_by_provider = await self._fetch_pending()
-        if not pending_by_provider:
+
+        # Also sync every provider with an open tab — even if DB shows 0
+        # pending. The provider may have pending bets we don't know about
+        # (manually placed, or placed before the mirror existed), and
+        # _record_unknown_open_bets inside _sync_provider is the only way
+        # they get inserted into the DB / surfaced in the UI's PENDING
+        # section. Without this, spelklubben's 7 historical pending bets
+        # stay invisible forever even though the tab is open.
+        sync_pids: dict[str, list[dict]] = dict(pending_by_provider)
+        seen: set[str] = set()
+        for page in list(self._browser.context.pages):
+            try:
+                url = page.url or ""
+            except Exception:
+                continue
+            pid = self._browser._detect_provider(url)
+            if not pid or pid in seen:
+                continue
+            seen.add(pid)
+            sync_pids.setdefault(pid, [])
+
+        if not sync_pids:
             return
 
-        tasks = [self._sync_provider(pid, bets) for pid, bets in pending_by_provider.items()]
+        tasks = [self._sync_provider(pid, bets) for pid, bets in sync_pids.items()]
         await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _refresh_balances(self) -> None:
+        """Pull a fresh balance from each open provider tab and write it to the DB.
+
+        Uses the same tab-state safety gate as `_sync_provider` (no event-page
+        clobbering) and only acts on providers whose strategy implements a
+        non-DOM-disrupting `sync_balance` (all current strategies qualify —
+        request-context API or read-only DOM scrape).
+        """
+        from .workflows import get_workflow
+
+        seen: set[str] = set()
+        for page in list(self._browser.context.pages):
+            try:
+                url = page.url or ""
+            except Exception:
+                continue
+            pid = self._browser._detect_provider(url)
+            if not pid or pid in seen:
+                continue
+            seen.add(pid)
+            url_lower = url.lower()
+            # Same gate as _sync_provider — never refresh while user is on an
+            # event page; a play runner may have a betslip prepped + pending
+            # confirmation, and we don't want to surface a network error
+            # banner mid-bet.
+            if "/event/" in url_lower or "#/event/" in url_lower:
+                continue
+            try:
+                workflow = get_workflow(pid)
+                if not await workflow.check_login(page):
+                    continue
+                balance = await workflow.sync_balance(page)
+                if balance >= 0:
+                    await self._post_balance(pid, balance)
+            except Exception:
+                logger.debug(f"[PendingLoop] balance refresh failed for {pid}")
 
     async def _fetch_pending(self) -> dict[str, list[dict]]:
         """GET /api/opportunities/play/pending-bets → {provider_id: [bet, ...]}"""
@@ -281,36 +346,45 @@ class PendingLoop:
 
         # Skip if the tab is on an event page — a play runner likely has the betslip
         # prepped and waiting for confirmation. A bet history sync would clobber it.
-        # Safe pages: landing, /portfolio (history on many sites), and Kambi's
-        # /betting or /betting/sports lobbies (hash-based history nav does not leave
-        # the page, so syncing here is safe).
+        # Everything else is safe — landing, lobby, /portfolio, history pages
+        # (/spelhistorik on Gecko V2, /history on others), search results.
+        # If we're not mid-bet, the page can be navigated freely.
         current_url = (page.url or "").lower()
         has_event = "/event/" in current_url or "#/event/" in current_url
-        safe_to_sync = not has_event and (
-            "/portfolio" in current_url
-            or current_url.endswith(workflow.domain)
-            or current_url == f"https://{workflow.domain}/"
-            or current_url == "about:blank"
-            or current_url.rstrip("/").endswith("/betting")
-            or "/betting/sports" in current_url
-            or "/sv-se/betting" in current_url
-        )
-        if not safe_to_sync:
+        if has_event:
             logger.debug(
                 f"[PendingLoop] {pid} tab is on an event page ({current_url[:60]}); "
                 f"skipping sync to avoid clobbering an active betslip"
             )
             return
 
-        # 2. Check login
+        # 2. Check login — three-tier (same as /mirror/browser/provider/{pid})
+        # because workflow.check_login fails for several providers that ship
+        # an analytics shim hijacking window.fetch (Spelklubben's GTM
+        # tracker.js → "TypeError: Failed to fetch" on cloud-api/wallets).
+        # The page's own JS still loads successfully, the interceptor caught
+        # the wallets response (browser.provider_data has logged_in=True,
+        # balance set), and the DOM scrape can confirm. Trust any of those.
+        logged_in = False
         try:
-            logged_in = await workflow.check_login(page)
-            if not logged_in:
-                logger.warning(f"[PendingLoop] not logged in on {pid}")
-                self._broadcaster.publish("login_required", {"provider_id": pid})
-                return
+            if await workflow.check_login(page):
+                logged_in = True
         except Exception:
-            logger.warning(f"[PendingLoop] check_login failed for {pid}")
+            logger.debug(f"[PendingLoop] workflow.check_login raised for {pid}")
+        if not logged_in:
+            intercepted = self._browser.provider_data.get(pid, {}) or {}
+            if intercepted.get("logged_in"):
+                logged_in = True
+        if not logged_in:
+            try:
+                dom = await self._browser.check_login_dom(pid)
+                if dom.get("logged_in"):
+                    logged_in = True
+            except Exception:
+                pass
+        if not logged_in:
+            logger.warning(f"[PendingLoop] not logged in on {pid}")
+            self._broadcaster.publish("login_required", {"provider_id": pid})
             return
 
         # 3. Sync history
@@ -354,6 +428,15 @@ class PendingLoop:
         else:
             logger.info(f"[PendingLoop] reconciled {n} bets for {pid}")
 
+        # 5. Record any pending bets that exist on the provider but not in DB.
+        # Without this, manually-placed bets (or bets placed before the mirror
+        # came up) never surface in the UI's PENDING section because reconcile
+        # only updates EXISTING DB bets. The play_loop runner has the same
+        # logic but only runs during active play sessions — the user wants
+        # spelklubben's 7 historical pending bets visible just from having
+        # the tab open.
+        await self._record_unknown_open_bets(pid, history, db_bets)
+
     # ------------------------------------------------------------------
     # HTTP helpers
     # ------------------------------------------------------------------
@@ -388,3 +471,193 @@ class PendingLoop:
             logger.info(f"[PendingLoop] balance posted for {pid}: {balance}")
         except Exception:
             logger.warning(f"[PendingLoop] failed to post balance for {pid}")
+
+    # ------------------------------------------------------------------
+    # Unknown-open-bet recording
+    # ------------------------------------------------------------------
+
+    async def _record_unknown_open_bets(
+        self, provider_id: str, history: list[dict], db_pending: list[dict] | None
+    ) -> None:
+        """Insert pending bets that exist on the provider but not in the DB.
+
+        Mirrors provider_runner._record_unknown_open_bets but runs from the
+        passive PendingLoop so unknown bets surface even without an active
+        play session. Match key is (odds, stake) rounded — same as runner
+        side to keep the two paths consistent (don't double-insert).
+
+        FAIL-CLOSED: db_pending is None means the caller's pending-bets fetch
+        failed and we have NO idea what's already in the DB. Inserting blindly
+        re-records every open bet as a duplicate — abort instead. The next
+        sync (with a working fetch) recovers any genuinely-missing bet.
+        """
+        if db_pending is None:
+            logger.warning(
+                f"[PendingLoop] _record_unknown_open_bets({provider_id}) aborted — "
+                "db_pending unknown (fetch failed); refusing to insert (would create duplicates)"
+            )
+            return
+        # Build dedup sets from existing DB rows + cluster siblings:
+        # - known_pids: set of provider_bet_id strings already tracked
+        # - known_sigs: count of (odds, stake) signatures in DB. We dedup
+        #   against COUNTS, not presence — so the user can have 2 identical
+        #   bets and we record both, but a single bet that appears 5x in
+        #   paginated history (Betinia returns 5 pages, same row each time)
+        #   only inserts once.
+        from collections import Counter
+
+        from .play_loop import _CLUSTER_MEMBERS, _PROVIDER_TO_CLUSTER
+
+        known_pids: set[str] = set()
+        known_sigs: Counter[tuple[float, float]] = Counter()
+
+        def _sig(b: dict) -> tuple[float, float]:
+            return (round(float(b.get("odds", 0) or 0), 2), round(float(b.get("stake", 0) or 0), 1))
+
+        for b in db_pending:
+            pid_id = str(b.get("provider_bet_id") or "")
+            if pid_id:
+                known_pids.add(pid_id)
+            known_sigs[_sig(b)] += 1
+
+        cluster = _PROVIDER_TO_CLUSTER.get(provider_id)
+        if cluster:
+            for sibling in _CLUSTER_MEMBERS.get(cluster, []):
+                if sibling == provider_id:
+                    continue
+                sibling_bets = await self._fetch_pending_for_provider(sibling)
+                # A sibling holds cluster-shared odds — its pending bets dedup
+                # against ours. If we can't read a sibling's state, abort:
+                # inserting could duplicate a bet the sibling already tracks.
+                if sibling_bets is None:
+                    logger.warning(
+                        f"[PendingLoop] _record_unknown_open_bets({provider_id}) aborted — "
+                        f"sibling {sibling} fetch failed; refusing to insert"
+                    )
+                    return
+                for b in sibling_bets:
+                    pid_id = str(b.get("provider_bet_id") or "")
+                    if pid_id:
+                        known_pids.add(pid_id)
+                    known_sigs[_sig(b)] += 1
+
+        # Dedup the incoming history first. Provider paginations often return
+        # the same row across multiple pages; without this we'd insert N
+        # duplicates per real bet (the BETINIA × 22 bug).
+        seen_in_history: set[tuple[str, tuple[float, float]]] = set()
+
+        recorded = 0
+        for entry in history:
+            if (entry.get("status") or "").lower() != "pending":
+                continue
+            pid_id = str(entry.get("provider_bet_id") or "")
+            sig = _sig(entry)
+
+            # Skip if this exact history row was already processed in this batch
+            # (pagination overlap).
+            history_key = (pid_id, sig)
+            if history_key in seen_in_history:
+                continue
+            seen_in_history.add(history_key)
+
+            # Skip if already in DB by provider_bet_id (exact match)
+            if pid_id and pid_id in known_pids:
+                continue
+
+            # Skip if a DB row already matches signature AND we haven't already
+            # claimed every slot for that signature.
+            if known_sigs[sig] > 0:
+                known_sigs[sig] -= 1
+                continue
+
+            # Try to inherit event_id/market/outcome/start_time from the
+            # user's picked opp (set by /mirror/arb/navigate-opp). Without
+            # this the manually-recovered bet has empty event_id (blacklist
+            # can't match) and null start_time (pending row can't show
+            # "starts HH:MM" or ready-to-settle pill).
+            picked = (getattr(self._browser, "_user_picked_opp", {}) or {}).get(provider_id) or {}
+            picked_event_id = picked.get("event_id") or ""
+            picked_market = picked.get("market") or ""
+            picked_outcome = picked.get("outcome") or ""
+            picked_start_time = picked.get("start_time")
+            payload = {
+                "event_id": picked_event_id,
+                "provider_id": provider_id,
+                "market": picked_market or entry.get("market", ""),
+                "outcome": picked_outcome or entry.get("outcome", ""),
+                "odds": entry.get("odds", 0),
+                "stake": entry.get("stake", 0),
+                "is_bonus": False,
+                "provider_bet_id": pid_id or None,
+                # Free-text event name → boost_event field. UI uses this when
+                # home_team/away_team are null (no Event row joined).
+                "boost_event": entry.get("event_name") or None,
+                "start_time": picked_start_time,
+                # Skip balance check — the bookmaker already accepted these
+                # bets. Without this flag, recording fails with 400
+                # "Insufficient balance" whenever the user has drained their
+                # provider balance below a placed bet's stake.
+                "external_placement": True,
+            }
+            try:
+                from arnold.http_client import tunnel_client
+
+                resp = await tunnel_client().post("/api/bets", json=payload, timeout=10.0)
+                resp.raise_for_status()
+                data = resp.json()
+                logger.info(
+                    f"[PendingLoop] Recorded unknown open bet for {provider_id}: "
+                    f"{entry.get('event_name')} {entry.get('outcome')} "
+                    f"@ {entry.get('odds')} stake={entry.get('stake')} → bet #{data.get('bet_id', '?')}"
+                )
+                recorded += 1
+                # Track the just-inserted bet so a subsequent history page in
+                # this same call doesn't re-insert it.
+                if pid_id:
+                    known_pids.add(pid_id)
+            except Exception as exc:
+                # Include the actual error + response body (if any) to surface
+                # validation failures from /api/bets. Without this every
+                # failure looks identical and you can't tell whether it's
+                # a schema mismatch, FK violation, or tunnel hiccup.
+                body_preview = ""
+                if hasattr(exc, "response") and exc.response is not None:
+                    try:
+                        body_preview = exc.response.text[:200]
+                    except Exception:
+                        body_preview = ""
+                logger.warning(
+                    f"[PendingLoop] Failed to record unknown bet for {provider_id}: "
+                    f"{entry.get('event_name')} @ {entry.get('odds')} stake={entry.get('stake')} — "
+                    f"{type(exc).__name__}: {exc!s}{(' | body=' + body_preview) if body_preview else ''}"
+                )
+
+        if recorded:
+            self._broadcaster.publish(
+                "unknown_bets_recorded",
+                {"provider_id": provider_id, "count": recorded},
+            )
+
+    async def _fetch_pending_for_provider(self, provider_id: str) -> list[dict] | None:
+        """Lookup currently-known pending bets for one provider.
+
+        Returns None on fetch failure (tunnel error / timeout) — distinct from
+        [] which means the provider genuinely has no pending bets. Callers MUST
+        fail-closed on None: _record_unknown_open_bets inserts every history
+        entry it can't find in db_pending, so a silent [] on failure made it
+        re-insert every open bet as a duplicate (the BETINIA ×3 dup bug,
+        2026-05-12 — 4 open bets became 12 DB rows across 3 failed syncs).
+        """
+        from arnold.http_client import tunnel_client
+
+        try:
+            resp = await tunnel_client().get("/api/opportunities/play/pending-bets", timeout=15.0)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            logger.warning(f"[PendingLoop] _fetch_pending_for_provider({provider_id}) failed: {e!r}")
+            return None
+        for prov in data.get("providers", []):
+            if prov.get("provider_id") == provider_id:
+                return prov.get("bets", []) or []
+        return []

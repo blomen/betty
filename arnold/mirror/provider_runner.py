@@ -175,7 +175,7 @@ class ProviderRunner:
         self._push_bet = push_bet or (lambda _b: None)
 
         # Per-runner state
-        self.state: str = STATE_IDLE
+        self._state: str = STATE_IDLE
         self.current_bet: dict | None = None
         self.stats: dict = {"placed": 0, "skipped": 0, "total": 0}
 
@@ -239,6 +239,25 @@ class ProviderRunner:
     @property
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @state.setter
+    def state(self, value: str) -> None:
+        self._state = value
+        try:
+            from .state_writer import write_runner_state
+
+            write_runner_state(
+                self.provider_id,
+                state=value,
+                mode="value",
+                current_opp_id=(self.current_bet or {}).get("bet_id") if self.current_bet else None,
+            )
+        except Exception as e:
+            logger.debug(f"[Runner:{self.provider_id}] state_writer failed: {e!r}")
 
     def skip(self) -> None:
         self._skip_event.set()
@@ -1388,26 +1407,154 @@ class ProviderRunner:
 
     @staticmethod
     async def _is_event_closed(page) -> bool:
+        """Detect a finished or suspended event.
+
+        Two signals — either fires:
+          (1) Explicit closed/finished/suspended text on the page (typical when
+              bookmaker swaps the event card for a "Detta evenemang är avslutat"
+              banner).
+          (2) ALL primary outcome buttons render with a lock icon / disabled
+              attribute (the betinia/Altenar pattern when the match is in
+              progress + markets suspended). The event card stays mounted but
+              every outcome is unclickable.
+        """
         try:
-            await asyncio.sleep(1.5)
+            # Give the WSDK / event widget a fair chance to bootstrap before
+            # we judge content emptiness.
+            await asyncio.sleep(4.0)
             text = await page.evaluate(
                 """() => {
-                const main = document.querySelector('main, [class*="content"], [class*="event"]') || document.body;
-                return (main.innerText || '').substring(0, 3000).toLowerCase();
+                // Pull text from the bookmaker widget's shadow root only —
+                // not every shadow on the page. Searching all shadows risks
+                // false positives ("avslutat" can appear in nav menus / live
+                // match indicators on unrelated events). The WSDK widget
+                // mounts under `stb-sportsbook > div`.
+                const stb = document.querySelector('stb-sportsbook');
+                const inner = stb && stb.querySelector('div');
+                const root = inner && inner.shadowRoot;
+                if (!root) return '';
+                return (root.textContent || '').substring(0, 8000).toLowerCase();
             }"""
             )
+            # Use FULL phrases to avoid false positives. Bare "avslutat" alone
+            # appears in far too many widget contexts (e.g. settled-bet rows
+            # in account history overlays); the closed-event banner uses the
+            # full sentence.
             closed_phrases = [
-                "avslutat",
-                "avslutad",
+                "detta evenemang är avslutat",
+                "evenemanget är avslutat",
+                "denna match är avslutad",
+                "matchen är avslutad",
+                "matchen är slut",
                 "event has ended",
                 "event is over",
-                "event closed",
+                "event has finished",
+                "this event is closed",
                 "market closed",
                 "market suspended",
                 "no longer available",
-                "inte tillgänglig",
+                "spel stängt",
             ]
-            return any(phrase in text for phrase in closed_phrases)
+            if any(phrase in text for phrase in closed_phrases):
+                return True
+
+            # Lock-state heuristic: count outcome buttons. If the page has
+            # outcome rows but ≥80% are disabled/locked, the event is dead.
+            # Detects lock icons via common CSS class fragments + aria-disabled
+            # + the disabled attribute. 80% threshold (not 100%) because the
+            # WSDK can briefly render a mix during widget swap.
+            stats = await page.evaluate(
+                """() => {
+                // Collect every shadow root reachable from the document. The
+                // Altenar / STB sportsbook widget renders its odds buttons +
+                // outcome text inside a shadow DOM hosted under
+                // STB-SPORTSBOOK > DIV — `document.querySelectorAll` won't
+                // see them. Without piercing we'd false-positive every live
+                // event as 'closed'.
+                const roots = [document];
+                const visit = (r) => {
+                    for (const el of r.querySelectorAll('*')) {
+                        if (el.shadowRoot) {
+                            roots.push(el.shadowRoot);
+                            visit(el.shadowRoot);
+                        }
+                    }
+                };
+                visit(document);
+
+                const buttonSel = [
+                    'button[class*="OddValue"]',
+                    'button[class*="Odd"]',
+                    'button[class*="odd"]',
+                    'button[class*="market-btn"]',
+                    'button[class*="outcome"]',
+                    '[role="button"][class*="odd"]',
+                    '[role="button"][class*="OddValue"]',
+                    'button',  // last-resort: count all buttons inside shadow roots
+                ].join(',');
+                const btnSet = new Set();
+                for (const r of roots) {
+                    for (const el of r.querySelectorAll(buttonSel)) btnSet.add(el);
+                }
+                // Filter to "looks like an odds button": text is a price OR
+                // contains a price-shaped child. Avoids counting nav buttons.
+                const btns = Array.from(btnSet).filter(b => {
+                    const t = (b.textContent || '').trim();
+                    return /[0-9]+\\.[0-9]{1,3}/.test(t) && t.length < 80;
+                });
+                let locked = 0;
+                for (const b of btns) {
+                    const d = b.disabled
+                              || b.getAttribute('aria-disabled') === 'true'
+                              || b.getAttribute('data-disabled') === 'true';
+                    const cn = (b.className || '').toString().toLowerCase();
+                    const hasLockClass = cn.match(/lock|disabled|suspend/);
+                    const lockChild = b.querySelector('[class*="lock" i], svg[class*="lock" i], [class*="suspend" i]');
+                    if (d || hasLockClass || lockChild) locked++;
+                }
+                // Price-shaped leaf text — pierce shadows too.
+                let priceTexts = 0;
+                for (const r of roots) {
+                    for (const el of r.querySelectorAll('div, span, td, p')) {
+                        if (el.children.length > 0) continue;
+                        const t = (el.textContent || '').trim();
+                        if (/^[0-9]+\\.[0-9]{1,3}$/.test(t)) {
+                            const v = parseFloat(t);
+                            if (v >= 1.01 && v <= 100) priceTexts++;
+                        }
+                        if (priceTexts >= 4) break;
+                    }
+                    if (priceTexts >= 4) break;
+                }
+                // STB shell-only: top-level innerHTML small AND no shadow
+                // descendants either. Was a false positive on live events
+                // (the widget mounts its real content into a shadow root,
+                // leaving the host's light DOM nearly empty).
+                const stb = document.querySelector('stb-sportsbook, [id="STB_SPORTSBOOK"]');
+                let stbShadowContentLen = 0;
+                if (stb) {
+                    const inner = stb.querySelector('div');
+                    if (inner && inner.shadowRoot) {
+                        stbShadowContentLen = (inner.shadowRoot.innerHTML || '').length;
+                    }
+                }
+                const stbContentLen = stb ? (stb.innerHTML || '').length : 0;
+                const stbShellOnly = !!stb && stbContentLen < 200 && stbShadowContentLen < 200;
+                return {total: btns.length, locked, priceTexts, stbShellOnly, shadowRoots: roots.length - 1};
+            }"""
+            )
+            total = int(stats.get("total") or 0)
+            locked = int(stats.get("locked") or 0)
+            price_texts = int(stats.get("priceTexts") or 0)
+            stb_shell_only = bool(stats.get("stbShellOnly") or False)
+            # All buttons locked → suspended/finished
+            if total >= 2 and (locked / total) >= 0.8:
+                return True
+            # No outcome buttons AND no price-shaped text AND STB shell-only
+            # AND no shadow content either → widget didn't load.
+            if total == 0 and price_texts == 0 and stb_shell_only:
+                return True
+            return False
         except Exception:
             return False
 
@@ -1445,14 +1592,15 @@ class ProviderRunner:
             self.state = STATE_SETTLING
             self._broadcaster.publish("settling_pending", {"provider_id": provider_id})
             try:
-                # Navigate to portfolio positions page
+                # Do NOT auto-navigate to /portfolio. User wants manual control
+                # over polymarket tab navigation — auto-nav was clobbering
+                # whatever page they had open. scrape_portfolio + redeem_all
+                # already no-op when the tab isn't on the right URL, and the
+                # passive PendingLoop scrapes on its 60s tick once the user
+                # lands there. So if they're not on /portfolio, settle is a
+                # no-op this cycle and they pick up next time.
                 if "/portfolio" not in (page.url or "") or "tab=history" in (page.url or ""):
-                    await page.goto(
-                        "https://polymarket.com/portfolio?tab=positions",
-                        wait_until="domcontentloaded",
-                        timeout=15000,
-                    )
-                    await asyncio.sleep(4)
+                    logger.info(f"[Runner:{provider_id}] tab not on /portfolio — skipping settle (manual nav required)")
 
                 # Scrape positions BEFORE redeeming (status visible: WON/LOST)
                 positions = await strat.scrape_portfolio(page, intel)
@@ -1684,11 +1832,21 @@ class ProviderRunner:
             return 0
 
         pending = await self._fetch_pending(provider_id)
+        if pending is None:
+            # DB state unknown — skip rather than emit false "unrecognized bet"
+            # alerts for bets that are actually already tracked.
+            logger.warning(f"[Runner:{provider_id}] _reconcile_open_bets skipped — pending fetch failed")
+            return 0
         cluster = _PROVIDER_TO_CLUSTER.get(provider_id)
         if cluster:
             for sibling in _CLUSTER_MEMBERS.get(cluster, []):
                 if sibling != provider_id:
                     sib_pending = await self._fetch_pending(sibling)
+                    if sib_pending is None:
+                        logger.warning(
+                            f"[Runner:{provider_id}] _reconcile_open_bets skipped — sibling {sibling} fetch failed"
+                        )
+                        return 0
                     pending.extend(sib_pending)
 
         known_keys = {(round(b["odds"], 2), round(b["stake"], 1)) for b in pending}
@@ -1716,12 +1874,24 @@ class ProviderRunner:
                 known_keys.discard(key)
         return new_count
 
-    async def _record_unknown_open_bets(self, provider_id: str, history: list[dict], db_pending: list[dict]) -> None:
+    async def _record_unknown_open_bets(
+        self, provider_id: str, history: list[dict], db_pending: list[dict] | None
+    ) -> None:
         """Record open bets from provider history that aren't in the DB.
 
         Provider is source of truth — DB may be missing bets placed manually
         or before the mirror existed. Records them so settlement works later.
+
+        FAIL-CLOSED: db_pending None (or a sibling fetch failing) means the DB
+        state is unknown — abort rather than blindly insert every open bet as
+        a duplicate.
         """
+        if db_pending is None:
+            logger.warning(
+                f"[Runner:{provider_id}] _record_unknown_open_bets aborted — "
+                "db_pending unknown (fetch failed); refusing to insert"
+            )
+            return
         # Build set of known (odds, stake) pairs from DB pending (including cluster siblings)
         known_keys: set[tuple[float, float]] = set()
         for b in db_pending:
@@ -1732,6 +1902,12 @@ class ProviderRunner:
             for sibling in _CLUSTER_MEMBERS.get(cluster, []):
                 if sibling != provider_id:
                     sib_pending = await self._fetch_pending(sibling)
+                    if sib_pending is None:
+                        logger.warning(
+                            f"[Runner:{provider_id}] _record_unknown_open_bets aborted — "
+                            f"sibling {sibling} fetch failed; refusing to insert"
+                        )
+                        return
                     for b in sib_pending:
                         known_keys.add(
                             (round(float(b.get("odds", 0) or 0), 2), round(float(b.get("stake", 0) or 0), 1))
@@ -1781,15 +1957,20 @@ class ProviderRunner:
                 {"provider_id": provider_id, "count": recorded},
             )
 
-    async def _fetch_pending(self, provider_id: str) -> list[dict]:
+    async def _fetch_pending(self, provider_id: str) -> list[dict] | None:
+        """Fetch pending bets for a provider. Returns None on fetch failure
+        (distinct from [] = genuinely no pending bets). Callers fail-closed on
+        None: a silent [] made _record_unknown_open_bets re-insert every open
+        bet as a duplicate (BETINIA ×3 dup bug, 2026-05-12)."""
         from arnold.http_client import tunnel_client as _tc
 
         try:
             resp = await _tc().get("/api/opportunities/play/pending-bets", timeout=30.0)
             resp.raise_for_status()
             data = resp.json()
-        except Exception:
-            return []
+        except Exception as e:
+            logger.warning(f"[Runner:{provider_id}] _fetch_pending failed: {e!r}")
+            return None
         for prov in data.get("providers", []):
             if prov.get("provider_id") == provider_id:
                 return prov.get("bets", [])

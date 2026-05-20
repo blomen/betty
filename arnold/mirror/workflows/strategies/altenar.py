@@ -13,8 +13,8 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from . import Strategy
 from ..base import HistoryEntry, PlacementResult
+from . import Strategy
 
 if TYPE_CHECKING:
     from playwright.async_api import Page
@@ -23,18 +23,34 @@ logger = logging.getLogger(__name__)
 
 # Altenar market typeId → canonical market type
 _MARKET_TYPE_MAP = {
-    1: "1x2", 186: "moneyline", 219: "moneyline", 251: "moneyline",
-    406: "moneyline", 30001: "moneyline",
-    18: "total", 189: "total", 225: "total", 238: "total",
-    258: "total", 412: "total",
-    16: "spread", 187: "spread", 223: "spread", 237: "spread",
-    256: "spread", 410: "spread",
+    1: "1x2",
+    186: "moneyline",
+    219: "moneyline",
+    251: "moneyline",
+    406: "moneyline",
+    30001: "moneyline",
+    18: "total",
+    189: "total",
+    225: "total",
+    238: "total",
+    258: "total",
+    412: "total",
+    16: "spread",
+    187: "spread",
+    223: "spread",
+    237: "spread",
+    256: "spread",
+    410: "spread",
 }
 
 _ODD_TYPE_MAP = {
-    1: "home", 2: "draw", 3: "away",
-    1714: "home", 1715: "away",
-    12: "over", 13: "under",
+    1: "home",
+    2: "draw",
+    3: "away",
+    1714: "home",
+    1715: "away",
+    12: "over",
+    13: "under",
 }
 
 # Cached GetEventDetails responses per event_id
@@ -59,9 +75,9 @@ def _get_shadow_root_js() -> str:
 # Strategy functions
 # ---------------------------------------------------------------------------
 
-async def _check_login(page: "Page", intel: dict | None) -> bool:
+
+async def _check_login(page: Page, intel: dict | None) -> bool:
     """Check login via balance API — same-origin fetch."""
-    from ..base import ProviderWorkflow
     url = (intel or {}).get("balance", {}).get("api", {}).get("url", "")
     if not url:
         return True
@@ -82,7 +98,7 @@ async def _check_login(page: "Page", intel: dict | None) -> bool:
         return False
 
 
-async def _sync_balance(page: "Page", intel: dict | None) -> float:
+async def _sync_balance(page: Page, intel: dict | None) -> float:
     """Read balance from Altenar account API."""
     url = (intel or {}).get("balance", {}).get("api", {}).get("url", "")
     path = (intel or {}).get("balance", {}).get("api", {}).get("path", "result.cash.total")
@@ -112,7 +128,7 @@ async def _sync_balance(page: "Page", intel: dict | None) -> float:
         return -1.0
 
 
-async def _sync_history(page: "Page", intel: dict | None) -> list[HistoryEntry]:
+async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
     """Full bet history sync: navigate to MINA SPEL, scan open + settled tabs."""
     hist = (intel or {}).get("history", {})
     nav = hist.get("navigation", {})
@@ -125,7 +141,11 @@ async def _sync_history(page: "Page", intel: dict | None) -> list[HistoryEntry]:
     try:
         current = page.url or ""
         if "betHistory" not in current:
-            await page.goto(history_url, wait_until="domcontentloaded", timeout=15000)
+            # Passive: don't auto-navigate. Mirror only auto-navs for arb
+            # event clicks. When the user opens MINA SPEL themselves, the
+            # next PendingLoop tick scrapes + records.
+            logger.debug(f"[{pid}] _sync_history: tab on {current[:60]} (not betHistory) — skipping")
+            return []
 
         # Step 1: ÖPPET (open) loads by default — wait for interceptor to catch API
         await asyncio.sleep(3)
@@ -149,7 +169,7 @@ async def _sync_history(page: "Page", intel: dict | None) -> list[HistoryEntry]:
     return []
 
 
-async def _click_history_tab(page: "Page", tab_name: str) -> bool:
+async def _click_history_tab(page: Page, tab_name: str) -> bool:
     """Click a bet history tab by name in the Altenar shadow DOM."""
     return await page.evaluate(f"""
         () => {{
@@ -169,7 +189,7 @@ async def _click_history_tab(page: "Page", tab_name: str) -> bool:
     """)
 
 
-async def _navigate_to_event(page: "Page", bet: Any, intel: dict | None) -> bool:
+async def _navigate_to_event(page: Page, bet: Any, intel: dict | None) -> bool:
     """Navigate via sportRoutingParams URL."""
     nav = (intel or {}).get("navigation", {})
     template = nav.get("event_url_template", "")
@@ -177,7 +197,7 @@ async def _navigate_to_event(page: "Page", bet: Any, intel: dict | None) -> bool
 
     eid = getattr(bet, "altenar_event_id", None) or getattr(bet, "provider_event_id", "")
     if not eid:
-        logger.warning(f"[altenar] No event_id for navigation")
+        logger.warning("[altenar] No event_id for navigation")
         return False
 
     sid = getattr(bet, "altenar_sport_id", "")
@@ -185,11 +205,12 @@ async def _navigate_to_event(page: "Page", bet: Any, intel: dict | None) -> bool
     chid = getattr(bet, "altenar_championship_id", "")
 
     if template and sid:
-        url = (template
-               .replace("{event_id}", str(eid))
-               .replace("{sport_id}", str(sid))
-               .replace("{category_id}", str(cid))
-               .replace("{championship_id}", str(chid)))
+        url = (
+            template.replace("{event_id}", str(eid))
+            .replace("{sport_id}", str(sid))
+            .replace("{category_id}", str(cid))
+            .replace("{championship_id}", str(chid))
+        )
     elif minimal:
         url = minimal.replace("{event_id}", str(eid))
     else:
@@ -207,7 +228,7 @@ async def _navigate_to_event(page: "Page", bet: Any, intel: dict | None) -> bool
         return False
 
 
-async def _place_bet(page: "Page", bet: Any, stake: float, intel: dict | None) -> PlacementResult:
+async def _place_bet(page: Page, bet: Any, stake: float, intel: dict | None) -> PlacementResult:
     """Auto-select odds + fill stake in Altenar betslip shadow DOM."""
     target_outcome = getattr(bet, "outcome", "")
     display_home = (getattr(bet, "display_home", "") or "").lower()
@@ -243,7 +264,8 @@ async def _place_bet(page: "Page", bet: Any, stake: float, intel: dict | None) -
         f"[{pid}] Autofill: market={target_market} outcome={target_outcome} "
         f"home={display_home[:20]} away={display_away[:20]}"
     )
-    clicked = await page.evaluate("""
+    clicked = await page.evaluate(
+        """
         (args) => {
             const stb = document.querySelector('STB-SPORTSBOOK');
             if (!stb || !stb.firstElementChild) return { error: 'no_stb' };
@@ -293,8 +315,15 @@ async def _place_bet(page: "Page", bet: Any, stake: float, intel: dict | None) -
             }
             return { clicked: false, count: odds.length, debug: debug.slice(0, 10) };
         }
-    """, {"outcome": target_outcome, "market": target_market,
-          "home": display_home, "away": display_away, "keywords": keywords})
+    """,
+        {
+            "outcome": target_outcome,
+            "market": target_market,
+            "home": display_home,
+            "away": display_away,
+            "keywords": keywords,
+        },
+    )
 
     if clicked and not clicked.get("clicked") and not clicked.get("error"):
         logger.warning(f"[{pid}] No match in {clicked.get('count', 0)} odds. Debug: {clicked.get('debug', [])}")
@@ -348,7 +377,7 @@ async def _place_bet(page: "Page", bet: Any, stake: float, intel: dict | None) -
     )
 
 
-async def _check_live_price(page: "Page", bet: Any, intel: dict | None) -> float | None:
+async def _check_live_price(page: Page, bet: Any, intel: dict | None) -> float | None:
     """Read live odds from cached GetEventDetails response."""
     try:
         from ....analysis.value import compute_edge
@@ -384,8 +413,9 @@ async def _check_live_price(page: "Page", bet: Any, intel: dict | None) -> float
         if our_market != target_market and not ({our_market, target_market} <= {"1x2", "moneyline"}):
             continue
 
-        flat_ids = [oid for group in m.get("desktopOddIds", [])
-                    for oid in (group if isinstance(group, list) else [group])]
+        flat_ids = [
+            oid for group in m.get("desktopOddIds", []) for oid in (group if isinstance(group, list) else [group])
+        ]
 
         for oid in flat_ids:
             odd = odds_by_id.get(oid)
@@ -397,7 +427,8 @@ async def _check_live_price(page: "Page", bet: Any, intel: dict | None) -> float
 
             if target_market in ("spread", "total") and target_point is not None:
                 import re
-                match = re.search(r'[(\s]([+-]?\d+\.?\d*)\)?$', odd.get("name", "").strip())
+
+                match = re.search(r"[(\s]([+-]?\d+\.?\d*)\)?$", odd.get("name", "").strip())
                 if match:
                     odd_point = abs(float(match.group(1)))
                     if abs(odd_point - abs(target_point)) > 0.01:

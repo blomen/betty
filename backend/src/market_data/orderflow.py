@@ -283,10 +283,33 @@ def compute_signals(
     total_delta = sum(c.delta for c in recent)
     delta_aligned = (total_delta > 0 and direction == "long") or (total_delta < 0 and direction == "short")
 
-    # Delta divergence: price making new extreme but delta not confirming
-    price_up = last.close > prev.close
-    delta_positive = last.delta > 0
-    delta_divergence = (price_up and not delta_positive) or (not price_up and delta_positive)
+    # Delta divergence: multi-bar cumulative-delta divergence at a price
+    # extreme. The old single-candle definition (price_up & !delta_positive)
+    # fired on noise and was neutral in the 2026-05-18 audit despite firing
+    # 47%. Per Fabio + Flowhorse methodology, true divergence requires:
+    #   - bull div: price makes a NEW HIGHER HIGH over the last 5 bars
+    #     AND cumulative delta does NOT confirm the higher-high
+    #   - bear div: price makes a NEW LOWER LOW over the last 5 bars
+    #     AND cumulative delta does NOT confirm the lower-low
+    # The proper multi-bar logic was previously only in the no-signals
+    # fallback path of orderflow_features.py — never executed when signals
+    # were available. Moving it here makes the signal path authoritative.
+    delta_divergence = False
+    if len(recent) >= 5:
+        last5 = recent[-5:]
+        prices_recent = [c.close for c in last5]
+        cum_delta = 0.0
+        deltas_cum = []
+        for c in last5:
+            cum_delta += c.delta
+            deltas_cum.append(cum_delta)
+        price_higher_high = prices_recent[-1] > max(prices_recent[:-1])
+        delta_lower_high = deltas_cum[-1] < max(deltas_cum[:-1])
+        price_lower_low = prices_recent[-1] < min(prices_recent[:-1])
+        delta_higher_low = deltas_cum[-1] > min(deltas_cum[:-1])
+        bull_div = price_higher_high and delta_lower_high
+        bear_div = price_lower_low and delta_higher_low
+        delta_divergence = bull_div or bear_div
 
     # Delta unwind: sign flipped from previous candle + magnitude > 50% of prev
     delta_unwind = (last.delta > 0 and prev.delta < 0 and abs(last.delta) > abs(prev.delta) * 0.5) or (
@@ -308,19 +331,19 @@ def compute_signals(
         cvd_trend = "flat"
 
     # VSA absorption: high volume + narrow body + close at range extreme.
-    # Bugs fixed 2026-05-18 (audit_gbt_orderflow):
-    #   1. Baseline volume EXCLUDES `last` itself (was self-inflating)
-    #   2. Added range_pos check — true absorption has price held AT the
-    #      extreme (close near high = buying absorbed selling; close near
-    #      low = sellers absorbed buying). Narrow body + mid-range close
-    #      is just compression, not absorption.
+    # Bugs fixed 2026-05-18 (audit_gbt_orderflow): self-inflation + range_pos.
+    # Thresholds relaxed 2026-05-18 (PROFILE follow-up) — the prior version
+    # (vol > prior_avg × 1.5, body < 0.3, range_pos > 0.7|<0.3) fired only
+    # 1.9% of the time, too rare for the model to learn from. Per Fabio +
+    # Flowhorse methodology, ANY clear absorption candle qualifies; we're
+    # not gating on a textbook example.
     prior_candles_for_vol = recent[:-1] if len(recent) > 1 else recent
     prior_avg_volume = sum(c.volume for c in prior_candles_for_vol) / max(len(prior_candles_for_vol), 1)
     avg_volume = sum(c.volume for c in recent) / len(recent)  # kept for downstream usage below
-    if last.volume > prior_avg_volume * 1.5 and last.body_ratio < 0.3:
+    if last.volume > prior_avg_volume * 1.3 and last.body_ratio < 0.4:
         last_range = max(last.high - last.low, 1e-6)
         range_pos = (last.close - last.low) / last_range
-        vsa_absorption = range_pos > 0.7 or range_pos < 0.3
+        vsa_absorption = range_pos > 0.65 or range_pos < 0.35
     else:
         vsa_absorption = False
 
@@ -351,39 +374,50 @@ def compute_signals(
     # strong reversal candle + spike on high volume. The classic Fabio /
     # Ryan stop-run pattern: sweep liquidity below/above a level then
     # close back inside it, trapping breakout traders.
-    # Bugs fixed 2026-05-18 (audit_gbt_orderflow):
-    #   1. Added reclaim check (reversal.close must close BACK INSIDE the
-    #      prior range — not just above the spike close). Without this the
-    #      detector flagged failed-continuation moves as stop runs.
-    #   2. Added reversal.body_ratio > 0.4 (strong directional reversal
-    #      candle, not a doji or weak bounce).
-    #   3. avg_volume baseline now EXCLUDES the spike + reversal bars
-    #      (was including spike in its own comparison, masking spike-vol)
+    # Bugs fixed 2026-05-18 (audit_gbt_orderflow): reclaim check + body
+    # ratio + self-inflation baseline.
+    # Thresholds relaxed 2026-05-18 (PROFILE follow-up) — prior version
+    # (body > 0.4, vol > prior_avg × 1.5, 2-bar only) fired only 2.6% of
+    # the time. It is the BEST runner predictor when it does fire (+3.4pt
+    # runner, +0.049R vel), so giving the model more samples is high-value.
+    # Added 3-bar sweep variant: spike + doji + reversal (common pattern).
     stop_run_detected = False
-    if len(recent) >= 4:
-        prior_candles = recent[:-2]
+
+    def _check_stop_run(prior_candles, spike, reversal) -> bool:
+        if not prior_candles:
+            return False
         prior_high = max(c.high for c in prior_candles)
         prior_low = min(c.low for c in prior_candles)
-        prior_avg_volume = sum(c.volume for c in prior_candles) / max(len(prior_candles), 1)
-        spike = recent[-2]
-        reversal = recent[-1]
-        # Bullish stop run
-        if (
+        prior_avg_vol = sum(c.volume for c in prior_candles) / max(len(prior_candles), 1)
+        vol_threshold = prior_avg_vol * 1.3
+        body_threshold = 0.3
+        # Bullish: spike low broke prior_low, reversal reclaimed
+        bull = (
             spike.low < prior_low
-            and reversal.close > prior_low  # RECLAIM
+            and reversal.close > prior_low
             and reversal.close > spike.close
-            and spike.volume > prior_avg_volume * 1.5
-            and reversal.body_ratio > 0.4
-        ):
-            stop_run_detected = True
-        # Bearish stop run
-        if (
+            and spike.volume > vol_threshold
+            and reversal.body_ratio > body_threshold
+        )
+        # Bearish: spike high broke prior_high, reversal reclaimed
+        bear = (
             spike.high > prior_high
-            and reversal.close < prior_high  # RECLAIM
+            and reversal.close < prior_high
             and reversal.close < spike.close
-            and spike.volume > prior_avg_volume * 1.5
-            and reversal.body_ratio > 0.4
-        ):
+            and spike.volume > vol_threshold
+            and reversal.body_ratio > body_threshold
+        )
+        return bull or bear
+
+    if len(recent) >= 4:
+        # 2-bar variant: spike + reversal back-to-back.
+        if _check_stop_run(recent[:-2], recent[-2], recent[-1]):
+            stop_run_detected = True
+    if not stop_run_detected and len(recent) >= 5:
+        # 3-bar variant: spike + doji/inside-bar + reversal.
+        # Common when the sweep doesn't immediately reverse but consolidates
+        # for one bar before the directional reaction.
+        if _check_stop_run(recent[:-3], recent[-3], recent[-1]):
             stop_run_detected = True
 
     # Imbalance stacking: consecutive candles with same-direction imbalance (>0.65 buy or <0.35 sell)
