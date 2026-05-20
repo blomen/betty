@@ -383,6 +383,18 @@ async def create_bet(bet: BetCreate, db: Session = Depends(get_db_writer)):
     raise HTTPException(503, "Database busy — please try again")
 
 
+@router.get("/recorded-ids")
+def recorded_ids(provider_id: str, db: Session = Depends(get_db)):
+    """All provider_bet_id values ever recorded for a provider (any result).
+
+    The position recorders (polymarket/kalshi) dedup against this set so a
+    settled position still lingering in the provider feed is never re-inserted.
+    """
+    profile = ProfileRepo(db).get_active()
+    ids = BetRepo(db).recorded_provider_bet_ids(profile.id, provider_id)
+    return {"provider_bet_ids": sorted(ids)}
+
+
 @router.get("/analytics")
 def get_analytics(
     provider_id: str | None = None,
