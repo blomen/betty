@@ -437,6 +437,28 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None) -> Pl
     )
 
 
+def _bet_is_no_side(bet) -> bool:
+    """True when the bet's outcome maps to the NO side of the Kalshi contract.
+
+    A Kalshi binary market quotes a single YES contract; the other outcome is
+    its complement. `_check_live_price` reads that contract's `yes_ask`, so a
+    NO-side bet must invert the price (``100 - yes_ask``) — otherwise the live
+    re-check compares the YES price against the NO outcome's fair odds and the
+    edge collapses sharply negative, dropping the row from the value table.
+
+    Side resolution mirrors the extractor (backend/src/providers/kalshi.py):
+      - moneyline: each side is its own YES contract  → always YES
+      - total:     the YES contract is always "Over N.5" → "under" is NO
+      - spread:    provider_meta carries ``yes_side``  → outcome != yes_side is NO
+    """
+    outcome = str(getattr(bet, "outcome", "") or "").lower().strip()
+    meta = getattr(bet, "provider_meta", None) or {}
+    yes_side = str(getattr(bet, "yes_side", None) or meta.get("yes_side") or "").lower().strip()
+    if yes_side:  # spread — meta tells us which side the YES contract favours
+        return outcome != yes_side
+    return outcome == "under"  # total — "under" is the NO complement of "Over N.5"
+
+
 async def _check_live_price(page: Page, bet, intel: dict | None):
     event_ticker = _pending.get("event_ticker") or _ticker_from_bet(bet)
     market_ticker = _pending.get("market_ticker")
@@ -450,7 +472,14 @@ async def _check_live_price(page: Page, bet, intel: dict | None):
     yes_ask_cents = _market_yes_ask(markets or [], market_ticker)
     if not yes_ask_cents:
         return None, None
-    live_odds = round(100.0 / yes_ask_cents, 4)
+    # NO-side outcomes (total "under", spread non-yes_side) trade at the
+    # complement of the YES contract. Invert so the live odds are on the same
+    # basis as the scanner edge — the extractor prices NO as 1 - yes_ask
+    # (kalshi.py:_no_side_odds), so 100 - yes_ask keeps the re-check honest.
+    ask_cents = (100 - yes_ask_cents) if _bet_is_no_side(bet) else yes_ask_cents
+    if ask_cents <= 0:
+        return None, None
+    live_odds = round(100.0 / ask_cents, 4)
     fair = getattr(bet, "fair_odds", None)
     live_edge = round((live_odds / float(fair) - 1.0) * 100.0, 2) if fair else None
     return live_odds, live_edge

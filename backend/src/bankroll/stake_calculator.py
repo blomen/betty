@@ -97,7 +97,11 @@ class ProviderStakeProfile:
 # Polymarket: fee in odds. Polygon gas ~$0.01-0.05 per trade → $1 USDC min
 #             gives 5% × $1 = $0.05 EV, covers typical gas with margin.
 # Kalshi:     fee in odds, no gas. Tracking overhead minimal → $1 USD min
-#             (smallest meaningfully sized contract bet).
+#             (smallest meaningfully sized contract bet). min_edge_pct=3.0:
+#             contracts price in whole cents, so one cent of ask uncertainty
+#             is ~1.4-3.8% of decimal odds (price-dependent). Sub-3% "edges"
+#             on thin totals/spreads sit inside that quantisation noise — they
+#             evaporate the moment the live price is re-read on click.
 # Cloudbet:   no commission, 20 kr click overhead → 20 kr min.
 # Rainbet:    signal-only, no playable path — included for completeness.
 PROVIDER_STAKE_PROFILES: dict[str, ProviderStakeProfile] = {
@@ -107,7 +111,7 @@ PROVIDER_STAKE_PROFILES: dict[str, ProviderStakeProfile] = {
     # is the slightly-tolerant cutoff that keeps total expected growth positive
     # in the gas-aware MC while not throwing away nearly all polymarket volume.
     "polymarket": ProviderStakeProfile(fee_rate=0.0, min_stake_native=1.0, currency="USDC", min_edge_pct=5.0),
-    "kalshi": ProviderStakeProfile(fee_rate=0.0, min_stake_native=1.0, currency="USD", min_edge_pct=1.0),
+    "kalshi": ProviderStakeProfile(fee_rate=0.0, min_stake_native=1.0, currency="USD", min_edge_pct=3.0),
     "cloudbet": ProviderStakeProfile(fee_rate=0.0, min_stake_native=20.0, currency="SEK", min_edge_pct=1.0),
     "rainbet": ProviderStakeProfile(fee_rate=0.0, min_stake_native=20.0, currency="SEK", min_edge_pct=1.0),
 }
