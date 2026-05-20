@@ -728,6 +728,10 @@ class OpportunityScanner:
         # All valid soft candidates per outcome (ranked by odds desc) for conflict resolution
         soft_candidates = {}  # {outcome: [(odds, provider), ...]}
         fair_odds_map = {}  # {outcome: fair_odds}
+        # Handicap/total line per outcome — same value across providers within
+        # one (market, point) scan. Carried onto each leg so the UI can show
+        # "Over 2.5" / "Team -1.5" and the user can verify both legs share a line.
+        point_by_outcome = {out: (lst[0].get("point") if lst else None) for out, lst in odds_by_outcome.items()}
 
         for outcome, provider_odds_list in odds_by_outcome.items():
             fair_result = self._get_fair_odds(
@@ -900,6 +904,7 @@ class OpportunityScanner:
                     "fair_odds": data["fair_odds"],
                     "stake_pct": stake_pct,
                     "is_sharp": data["is_sharp"],
+                    "point": point_by_outcome.get(out),
                 }
             )
 
@@ -944,6 +949,7 @@ class OpportunityScanner:
                                         "fair_odds": sdata["fair_odds"],
                                         "stake_pct": arb_stake_pct,
                                         "is_sharp": False,
+                                        "point": point_by_outcome.get(out),
                                     }
                                 )
                             arb_legs.sort(key=lambda x: x["edge_pct"], reverse=True)

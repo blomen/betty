@@ -2664,12 +2664,23 @@ export default function PlayPage() {
                                 const resolveLegOutcome = (leg: any): string => {
                                   const o = leg?.outcome
                                   if (!o) return '—'
-                                  if (o === 'home') return opp.display_home || 'Home'
-                                  if (o === 'away') return opp.display_away || 'Away'
+                                  const mkt = (opp.market ?? '').toLowerCase()
+                                  // home/away: plain team name, except spread which shows the
+                                  // signed handicap line so the user can verify both legs are
+                                  // on the same line. per-leg point preferred; else derive
+                                  // from opp.point (home = opp.point, away = its complement).
+                                  if (o === 'home' || o === 'away') {
+                                    const name = o === 'home' ? (opp.display_home || 'Home') : (opp.display_away || 'Away')
+                                    if (mkt !== 'spread') return name
+                                    let pt = leg.point
+                                    if (pt == null) pt = o === 'home' ? opp.point : (opp.point != null ? -opp.point : null)
+                                    return pt != null ? `${name} ${pt > 0 ? '+' : ''}${pt}` : name
+                                  }
                                   if (o === 'draw') return 'Draw'
-                                  if (o === 'over' && leg.point != null) return `Over ${leg.point}`
-                                  if (o === 'under' && leg.point != null) return `Under ${leg.point}`
-                                  if (leg.point != null) return `${o} ${leg.point}`
+                                  const pt = leg.point ?? opp.point
+                                  if (o === 'over' && pt != null) return `Over ${pt}`
+                                  if (o === 'under' && pt != null) return `Under ${pt}`
+                                  if (pt != null) return `${o} ${pt}`
                                   return o
                                 }
                                 const anchorLeg =
@@ -3279,12 +3290,23 @@ export default function PlayPage() {
                                       const resolveOutcome = (leg: any): string => {
                                         const o = leg?.outcome
                                         if (!o) return '—'
-                                        if (o === 'home') return opp.display_home || 'Home'
-                                        if (o === 'away') return opp.display_away || 'Away'
+                                        const mkt = (opp.market ?? '').toLowerCase()
+                                        // home/away: plain team name, except spread which shows the
+                                        // signed handicap line so the user can verify both legs are
+                                        // on the same line. per-leg point preferred; else derive
+                                        // from opp.point (home = opp.point, away = its complement).
+                                        if (o === 'home' || o === 'away') {
+                                          const name = o === 'home' ? (opp.display_home || 'Home') : (opp.display_away || 'Away')
+                                          if (mkt !== 'spread') return name
+                                          let pt = leg.point
+                                          if (pt == null) pt = o === 'home' ? opp.point : (opp.point != null ? -opp.point : null)
+                                          return pt != null ? `${name} ${pt > 0 ? '+' : ''}${pt}` : name
+                                        }
                                         if (o === 'draw') return 'Draw'
-                                        if (o === 'over' && leg.point != null) return `Over ${leg.point}`
-                                        if (o === 'under' && leg.point != null) return `Under ${leg.point}`
-                                        if (leg.point != null) return `${o} ${leg.point}`
+                                        const pt = leg.point ?? opp.point
+                                        if (o === 'over' && pt != null) return `Over ${pt}`
+                                        if (o === 'under' && pt != null) return `Under ${pt}`
+                                        if (pt != null) return `${o} ${pt}`
                                         return o
                                       }
                                       // Anchor: prefer the leg for THIS provider, fall back to any sibling
