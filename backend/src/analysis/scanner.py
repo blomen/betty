@@ -45,6 +45,19 @@ MAX_ODDS_RATIO_SPREAD = 1.55
 # (wrong event match, stale odds, prediction market divergence).
 MAX_EDGE_PCT = 50.0
 
+# Arb sanity ceiling — a *guaranteed* profit above this never reflects a real
+# cross-book arbitrage; it means a leg is mispriced (e.g. a Polymarket outcome
+# priced off the wrong side of the order book). Surfacing such an "arb" as
+# placeable produces fake "ALL GREEN" bets. Real arbs are low single digits.
+MAX_PLAUSIBLE_ARB_PCT = 15.0
+
+
+def _implausible_arb_profit(*profit_pcts: float | None) -> bool:
+    """True if any profit % exceeds MAX_PLAUSIBLE_ARB_PCT — i.e. a leg is
+    mispriced and the opportunity must not be surfaced as a real arb."""
+    return any((p or 0) > MAX_PLAUSIBLE_ARB_PCT for p in profit_pcts)
+
+
 # Sports where Pinnacle uses SET handicaps but soft providers use GAME handicaps.
 # Comparing spread markets across providers would produce phantom edges because
 # e.g. "+1.5 sets" (Pinnacle) ≠ "+1.5 games" (Kambi/Altenar/VBet).
@@ -934,6 +947,17 @@ class OpportunityScanner:
                                     }
                                 )
                             arb_legs.sort(key=lambda x: x["edge_pct"], reverse=True)
+
+        # Sanity guard: a guaranteed profit this large is always a mispriced
+        # leg (e.g. a Polymarket outcome priced off the wrong side of the
+        # book), never a real arb. Drop the whole opportunity — its legs are
+        # built on the same corrupt odds.
+        if _implausible_arb_profit(guaranteed_profit_pct, arb_profit_pct):
+            logger.debug(
+                f"[arb] Dropping {event.id} {market}: implausible profit "
+                f"(guaranteed={guaranteed_profit_pct}%, arb={arb_profit_pct}%) — mispriced leg"
+            )
+            return None
 
         return ArbOpportunity(
             event_id=event.id,
