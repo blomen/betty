@@ -212,7 +212,9 @@ class PolymarketRetriever(Retriever):
         """Walk the ask side of the order book to calculate depth-adjusted VWAP.
 
         Args:
-            asks: List of {"price": "0.46", "size": "150"} sorted ascending by price.
+            asks: List of {"price": "0.46", "size": "150"}. Polymarket's CLOB
+                /books returns these DESCENDING by price; we re-sort ascending
+                below so the walk fills from the best (lowest) ask first.
             fill_size_usd: Target fill amount in USD.
 
         Returns:
@@ -223,7 +225,16 @@ class PolymarketRetriever(Retriever):
         total_shares = 0.0
         total_depth_usd = 0.0
 
-        for level in asks:
+        # Polymarket /books returns asks highest-price-first. Walking that
+        # order fills the depth target from the most expensive asks, producing
+        # a wildly wrong VWAP. Sort ascending so the walk starts at the best ask.
+        def _ask_price(level: dict) -> float:
+            try:
+                return float(level["price"])
+            except (ValueError, TypeError, KeyError):
+                return float("inf")
+
+        for level in sorted(asks, key=_ask_price):
             try:
                 price = float(level["price"])
                 size = float(level["size"])
