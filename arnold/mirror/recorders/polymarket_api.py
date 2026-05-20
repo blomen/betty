@@ -195,6 +195,8 @@ async def sync(
     fetch_db_pending,  # async callable() -> list[{provider_bet_id, event_id, outcome, odds, stake}]
     api_patch=None,  # async callable(bet_id: int, payload: dict) -> response — used to
     #                 backfill provider_bet_id onto rows recorded without one
+    fetch_known_ids=None,  # async callable() -> list[str] | None — ALL recorded conditionIds
+    #                        (any result). None return = fetch failed → skip insert (fail-closed).
 ) -> RecorderResult:
     """Full sync: fetch poly positions, dedup against DB, insert new ones.
 
@@ -213,10 +215,23 @@ async def sync(
     events = await fetch_events() or []
     db_pending = await fetch_db_pending() or []
 
-    # Index pending bets by normalized conditionId so a truncated 60-char DB
-    # cid matches a 66-char position cid. Slugs (`athletics-vs-...`) are
-    # filtered out by _is_condition_id — they must never collide.
-    known_ids = {_cid_key(b.get("provider_bet_id")) for b in db_pending if _is_condition_id(b.get("provider_bet_id"))}
+    # Dedup against ALL recorded conditionIds (any result), not just pending.
+    # A losing Polymarket position lingers in the /positions feed forever; if
+    # dedup only knows pending bets, a settled position re-inserts every sync
+    # → the duplication death spiral (70 rows for 28 real positions, audit
+    # 2026-05-20). fetch_known_ids returns every recorded cid; None = the
+    # lookup failed and we must NOT insert against an unknown dedup state.
+    if fetch_known_ids is not None:
+        recorded = await fetch_known_ids()
+        if recorded is None:
+            logger.warning("[polymarket_api] fetch_known_ids failed — skipping insert pass (fail-closed)")
+            result.errors.append("fetch_known_ids unavailable — insert skipped")
+            return result
+        known_ids = {_cid_key(c) for c in recorded if _is_condition_id(c)}
+    else:
+        known_ids = {
+            _cid_key(b.get("provider_bet_id")) for b in db_pending if _is_condition_id(b.get("provider_bet_id"))
+        }
     known_sigs = {
         (b.get("event_id"), b.get("outcome")): b for b in db_pending if b.get("event_id") and b.get("outcome")
     }
