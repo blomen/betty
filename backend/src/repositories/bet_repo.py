@@ -81,6 +81,24 @@ class BetRepo:
             .all()
         )
 
+    def recorded_provider_bet_ids(self, profile_id: int, provider_id: str) -> set[str]:
+        """All non-null provider_bet_id values for a provider, ANY result.
+
+        The position-based recorders (polymarket/kalshi) dedup against this so
+        a settled-and-lingering position is never re-inserted. Deduping on
+        pending-only rows re-inserts a position every sync once it settles.
+        """
+        rows = (
+            self.db.query(Bet.provider_bet_id)
+            .filter(
+                Bet.profile_id == profile_id,
+                Bet.provider_id == provider_id,
+                Bet.provider_bet_id.isnot(None),
+            )
+            .all()
+        )
+        return {r[0] for r in rows if r[0]}
+
     def list_for_profile(
         self,
         profile_id: int,

@@ -60,3 +60,32 @@ def test_list_for_profile_includes_bonus_by_default(db):
     bets = repo.list_for_profile(profile_id=1)
     assert len(bets) == 1
     assert bets[0].is_bonus is True
+
+
+def test_recorded_provider_bet_ids_includes_settled(db):
+    """Dedup must see settled bets, not just pending — otherwise a settled
+    Polymarket position re-inserts every sync (the duplication death spiral)."""
+    repo = BetRepo(db)
+    db.add(
+        Bet(
+            profile_id=1, provider_id="polymarket", odds=2.0, stake=10.0, result="lost", provider_bet_id="0xCID_SETTLED"
+        )
+    )
+    db.add(
+        Bet(
+            profile_id=1,
+            provider_id="polymarket",
+            odds=2.0,
+            stake=10.0,
+            result="pending",
+            provider_bet_id="0xCID_PENDING",
+        )
+    )
+    db.add(Bet(profile_id=1, provider_id="polymarket", odds=2.0, stake=10.0, result="lost", provider_bet_id=None))
+    db.add(
+        Bet(profile_id=1, provider_id="betinia", odds=2.0, stake=10.0, result="lost", provider_bet_id="OTHER_PROVIDER")
+    )
+    db.commit()
+
+    ids = repo.recorded_provider_bet_ids(profile_id=1, provider_id="polymarket")
+    assert ids == {"0xCID_SETTLED", "0xCID_PENDING"}
