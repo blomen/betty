@@ -232,10 +232,86 @@ def match_event_and_outcome(
     return (best[1], best[2]) if best else (None, None)
 
 
+async def fetch_settled_positions() -> list[dict]:
+    """Return raw settled position rows.
+
+    Each row carries `ticker`, `realized_pnl` (cents — positive = won, negative
+    or zero = lost), `total_traded`, etc. The settlement_status=settled filter
+    captures only positions where the market resolved.
+    """
+    data = await _get(
+        "/portfolio/positions",
+        params={"limit": 200, "settlement_status": "settled"},
+    )
+    if not data:
+        return []
+    return data.get("market_positions") or []
+
+
+async def settle(
+    api_settle,  # async callable(bet_id, result, payout) -> response
+    fetch_db_pending,
+) -> dict:
+    """Settle DB pending kalshi bets using settled positions endpoint.
+
+    For each pending bet, match by ticker (provider_bet_id). Read realized_pnl
+    from the settled position:
+      - realized_pnl > 0 → WON, payout = stake + realized_pnl
+      - realized_pnl ≤ 0 → LOST, payout = 0
+    Skips bets without provider_bet_id (legacy rows recorded pre-API path).
+    """
+    out = {"won": 0, "lost": 0, "skipped": 0, "errors": []}
+
+    pending = await fetch_db_pending() or []
+    if not pending:
+        return out
+
+    settled_rows = await fetch_settled_positions()
+    by_ticker = {(r.get("ticker") or "").strip(): r for r in settled_rows if r.get("ticker")}
+
+    for bet in pending:
+        bet_id = bet.get("id")
+        ticker = (bet.get("provider_bet_id") or "").strip()
+        stake = float(bet.get("stake") or 0)
+        if not bet_id or not ticker:
+            out["skipped"] += 1
+            continue
+
+        row = by_ticker.get(ticker)
+        if row is None:
+            # Not in settled set — still open or market hasn't resolved yet
+            continue
+
+        realized_pnl_cents = int(row.get("realized_pnl") or 0)
+        if realized_pnl_cents > 0:
+            result = "won"
+            payout = round(stake + realized_pnl_cents / 100.0, 2)
+        else:
+            result = "lost"
+            payout = 0.0
+
+        try:
+            resp = await api_settle(bet_id, result, payout)
+            if resp.status_code in (200, 201):
+                if result == "won":
+                    out["won"] += 1
+                else:
+                    out["lost"] += 1
+                logger.info(f"[kalshi_api] settled bet {bet_id} ticker={ticker[:30]} → {result} payout=${payout:.2f}")
+            else:
+                msg = f"{resp.status_code}: {(resp.text or '')[:200]}"
+                out["errors"].append(f"bet {bet_id}: {msg}")
+        except Exception as e:
+            out["errors"].append(f"bet {bet_id}: {type(e).__name__}: {e}")
+
+    return out
+
+
 async def sync(
     api_post,
     fetch_events,
     fetch_db_pending,
+    fetch_known_ids=None,  # async callable() -> list[str] | None — ALL recorded tickers
 ) -> RecorderResult:
     """Fetch kalshi positions, dedup, insert. Mirror of polymarket sync."""
     result = RecorderResult(provider_id="kalshi")
@@ -247,7 +323,17 @@ async def sync(
 
     events = await fetch_events() or []
     db_pending = await fetch_db_pending() or []
-    known_ids = {b.get("provider_bet_id") for b in db_pending if b.get("provider_bet_id")}
+    # Dedup against ALL recorded tickers (any result), not just pending —
+    # mirror of the polymarket fix. None = lookup failed → skip insert.
+    if fetch_known_ids is not None:
+        recorded = await fetch_known_ids()
+        if recorded is None:
+            logger.warning("[kalshi_api] fetch_known_ids failed — skipping insert pass (fail-closed)")
+            result.errors.append("fetch_known_ids unavailable — insert skipped")
+            return result
+        known_ids = {c for c in recorded if c}
+    else:
+        known_ids = {b.get("provider_bet_id") for b in db_pending if b.get("provider_bet_id")}
 
     for pos in positions:
         if pos.provider_bet_id and pos.provider_bet_id in known_ids:
