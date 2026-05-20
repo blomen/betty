@@ -288,6 +288,10 @@ class Bet(Base):
     # Without this column the BetCreate schema field would crash bet_repo.create
     # with TypeError — schema accepts it, repo unpacks **kwargs into Bet().
     provider_bet_id = Column(String, nullable=True, index=True)
+    # arb_group_id: shared id across the two+ legs of one arbitrage position
+    # (soft-book anchor + Polymarket/Kalshi counter). NULL until the
+    # arb_correlation pass pairs the legs. See 2026-05-20 dedup+linkage spec.
+    arb_group_id = Column(String, nullable=True, index=True)
     placement_status = Column(String, default="manual")  # Legacy — always "manual"
     actual_odds_at_placement = Column(Float, nullable=True)  # Odds user confirmed at placement
     placement_latency_ms = Column(Float, nullable=True)  # Legacy — no longer populated
@@ -2387,6 +2391,9 @@ def _run_pg_migrations(engine) -> None:
         # final stop while keeping the original stop_price band visible
         # for the R:R label. NULL on legacy rows.
         ("broker_trades", "final_stop_price", "DOUBLE PRECISION"),
+        # 2026-05-20 — arb leg linkage. Pairs the soft anchor + Polymarket
+        # counter of one arbitrage so per-arb guaranteed profit is verifiable.
+        ("bets", "arb_group_id", "VARCHAR"),
     ]
     with engine.begin() as conn:
         # Each ALTER runs inside its own SAVEPOINT so a single failure
