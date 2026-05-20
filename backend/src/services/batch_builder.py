@@ -28,7 +28,7 @@ from ..bankroll.stake_calculator import (
     provider_min_edge_pct,
     provider_min_stake_sek,
 )
-from ..constants import PLATFORM_GROUPS, PROVIDER_CANONICAL
+from ..constants import PLATFORM_GROUPS, PROVIDER_CANONICAL, UNLIMITED_PROVIDERS
 from ..repositories.opportunity_repo import OpportunityRepo
 from ..repositories.profile_repo import ProfileRepo
 from ..services.play_service import derive_lifecycle
