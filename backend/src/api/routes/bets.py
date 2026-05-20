@@ -395,6 +395,14 @@ def recorded_ids(provider_id: str, db: Session = Depends(get_db)):
     return {"provider_bet_ids": sorted(ids)}
 
 
+@router.post("/correlate-arbs")
+def correlate_arbs_endpoint(db: Session = Depends(get_db_writer)):
+    """Link ungrouped arb legs (soft anchor <-> Polymarket/Kalshi counter)."""
+    from src.services.arb_correlation import correlate_arbs
+
+    return correlate_arbs(db)
+
+
 @router.get("/analytics")
 def get_analytics(
     provider_id: str | None = None,
