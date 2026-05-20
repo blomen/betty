@@ -16,7 +16,6 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..bankroll.stake_calculator import (
@@ -219,50 +218,21 @@ class BatchBuilder:
         profile = self.profile_repo.get_active()
         total_bankroll = self.profile_repo.get_stake_bankroll(profile_id)
 
-        # Per-provider Kelly: each provider/cluster's stake is sized to its
-        # OWN balance, not the combined bankroll. Prevents over-leveraging.
-        # Cluster siblings (altenar_main, kambi, etc.) share odds — they're
-        # interchangeable bet venues — so their Kelly bankroll is the
-        # cluster's SUM, not any single sibling's. This lets the allocator
-        # spill bets across siblings (quickcasino→betinia, etc.) within the
-        # cluster's combined funds.
+        # Sizing model:
+        #   - Unlimited providers (pinnacle/cloudbet/kalshi/polymarket) share
+        #     ONE pooled bankroll = total_bankroll (get_stake_bankroll). The
+        #     user arbs cash freely between them, so a value bet at any one is
+        #     sized off the combined unlimited pool. See _make_candidate.
+        #   - Soft books size per-provider / per-cluster off their own balance.
+        #
+        # No open-position augmentation: polymarket's synced balance is its
+        # Portfolio (cash + open-position value), so pending bets are already
+        # counted. Adding pending stakes back double-counted positions and
+        # inflated stakes (~$110 portfolio + ~$76 pending → bogus ~$186 basis).
         from ..config import get_exchange_rate
 
         raw_balances = self.profile_repo.get_all_balances(profile_id)
         provider_bankroll_sek = {pid: bal * get_exchange_rate(pid) for pid, bal in raw_balances.items()}
-
-        # Open-position augmentation for all value-bet providers (pinnacle,
-        # polymarket, kalshi, cloudbet). Cash alone under-sizes Kelly here:
-        # bets placed on these providers lock part of the bankroll into
-        # short-duration positions that resolve to cash within hours/days.
-        # For a binary-outcome contract with decimal odds X, expected
-        # redemption = stake (stake × prob_win × shares_on_win = stake ×
-        # (1/X) × (X×stake/stake) = stake). So sum(pending_stake) is a fair
-        # approximation of unredeemed-position value without needing live
-        # marks. Kelly here is about NOT going bust + compounding the WHOLE
-        # bankroll — treating locked positions as 0 leaks edge.
-        #
-        # We don't apply this to soft books because their bets go through
-        # ArbRunner (max-stake-to-balance, not Kelly), so the soft-book
-        # provider_bankroll_sek values aren't actually consumed for sizing.
-        from ..db.models import Bet as _Bet
-
-        _VALUE_BET_PROVIDERS = ("pinnacle", "polymarket", "kalshi", "cloudbet")
-        for _pid in _VALUE_BET_PROVIDERS:
-            pending_total_native = (
-                self.db.query(func.coalesce(func.sum(_Bet.stake), 0.0))
-                .filter(
-                    _Bet.profile_id == profile_id,
-                    _Bet.provider_id == _pid,
-                    _Bet.result == "pending",
-                )
-                .scalar()
-                or 0.0
-            )
-            if pending_total_native > 0:
-                provider_bankroll_sek[_pid] = provider_bankroll_sek.get(
-                    _pid, 0.0
-                ) + pending_total_native * get_exchange_rate(_pid)
 
         # Cluster bankroll = sum of all sibling balances. Used when the
         # opp's provider has 0 balance but a sibling in the same cluster
@@ -532,17 +502,23 @@ class BatchBuilder:
         if (opp.edge_pct or 0.0) < prov_min_edge_pct:
             return None
 
-        # Per-provider Kelly with cluster fallback. Order:
-        #   1. Provider's own balance (e.g. Pinnacle, Polymarket — standalone).
-        #   2. Cluster's combined balance (altenar_main tenants, kambi tenants
-        #      etc. — siblings share odds and are interchangeable for placement,
-        #      so the cluster's total funds are the right bankroll for sizing).
-        #   3. None → calculate_stake will return stake=0 with skip_reason +
-        #      bankroll_needed so the UI shows a "deposit to unlock" hint.
-        own = provider_bankroll_sek.get(provider_id, 0.0)
-        cluster = _provider_to_cluster(provider_id)
-        cluster_sum = cluster_bankroll_sek.get(cluster, 0.0)
-        kelly_bankroll = own if own > 0 else cluster_sum
+        # Kelly bankroll:
+        #   - Unlimited providers (pinnacle/cloudbet/kalshi/polymarket) share
+        #     ONE pooled bankroll — total_bankroll (the unlimited-only sum from
+        #     get_stake_bankroll). Cash moves freely between them, so a value
+        #     bet at any one is sized off the combined pool.
+        #   - Soft books: per-provider own balance, with cluster fallback when
+        #     the opp's provider has 0 balance but a sibling does (siblings
+        #     share odds + are interchangeable for placement).
+        #   - 0 → calculate_stake returns stake=0 with skip_reason +
+        #     bankroll_needed so the UI shows a "deposit to unlock" hint.
+        if provider_id in UNLIMITED_PROVIDERS:
+            kelly_bankroll = total_bankroll
+        else:
+            own = provider_bankroll_sek.get(provider_id, 0.0)
+            cluster = _provider_to_cluster(provider_id)
+            cluster_sum = cluster_bankroll_sek.get(cluster, 0.0)
+            kelly_bankroll = own if own > 0 else cluster_sum
 
         # Fee-aware edge: subtract round-trip provider fees before Kelly so
         # we don't over-stake bets whose +EV gets eaten by the cost.
