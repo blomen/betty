@@ -48,9 +48,10 @@ class ProviderConfig(BaseModel):
     sharp: bool | None = False
     site_url: str | None = None
 
-    # Currency (default SEK for Swedish sportsbooks, USDC for Polymarket)
+    # Currency (default SEK for Swedish sportsbooks, USDC for Polymarket).
+    # The SEK/USD rate is NOT per-provider — see `currency.sek_per_usd` in
+    # providers.yaml, exposed via get_sek_per_usd().
     currency: str | None = "SEK"
-    exchange_rate_sek: float | None = 1.0  # 1 unit of currency = X SEK
 
     # Secondary URL (e.g., Polymarket CLOB API)
     clob_url: str | None = None
@@ -236,6 +237,7 @@ class ConfigLoader:
         self._sport_aliases: dict[str, list[str]] = {}  # Sport key -> list of aliases
         self._loaded = False
         self.orchestrator_config: OrchestratorConfig | None = None
+        self._sek_per_usd: float = 10.5  # overwritten by _load_providers
 
     @classmethod
     def get_instance(cls) -> "ConfigLoader":
@@ -329,6 +331,17 @@ class ConfigLoader:
             self.orchestrator_config = OrchestratorConfig()  # Use defaults
             logger.info("No orchestrator config found, using defaults")
 
+        # Load the single SEK/USD FX rate — the one source of truth.
+        currency_cfg = config.get("currency") or {}
+        rate = currency_cfg.get("sek_per_usd")
+        if isinstance(rate, (int, float)) and rate > 0:
+            self._sek_per_usd = float(rate)
+        else:
+            logger.warning(
+                "currency.sek_per_usd missing/invalid in providers.yaml — using default %.2f",
+                self._sek_per_usd,
+            )
+
         # Get active providers list
         active_providers = set(config.get("active", []))
 
@@ -387,13 +400,12 @@ def load_config() -> ConfigLoader:
     return ConfigLoader.get_instance()
 
 
-def get_exchange_rate(provider_id: str) -> float:
-    """Get exchange rate to SEK for a provider. Returns 1.0 for SEK providers."""
-    config = load_config()
-    provider = config.get_provider(provider_id)
-    if provider and provider.exchange_rate_sek:
-        return provider.exchange_rate_sek
-    return 1.0
+def get_sek_per_usd() -> float:
+    """SEK value of one USD — the single configured FX rate.
+
+    Source of truth: `currency.sek_per_usd` in providers.yaml.
+    """
+    return load_config()._sek_per_usd
 
 
 def get_provider_currency(provider_id: str) -> str:
@@ -405,11 +417,12 @@ def get_provider_currency(provider_id: str) -> str:
     return "SEK"
 
 
-def get_all_exchange_rates() -> dict[str, float]:
-    """Get exchange rates for all providers (only non-SEK providers included)."""
-    config = load_config()
-    rates = {}
-    for pid, pconfig in config.providers.items():
-        if pconfig.currency and pconfig.currency != "SEK":
-            rates[pid] = pconfig.exchange_rate_sek or 1.0
-    return rates
+def get_exchange_rate(provider_id: str) -> float:
+    """SEK value of one unit of a provider's native currency.
+
+    Derives from the single `currency.sek_per_usd` rate — no longer a
+    per-provider config value. SEK providers return 1.0; USD/USDC providers
+    return the configured rate. GBP providers (smarkets — signal-only, never
+    holds a balance) also return 1.0; no GBP money flows through the system.
+    """
+    return get_sek_per_usd() if get_provider_currency(provider_id) in ("USD", "USDC") else 1.0

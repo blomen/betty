@@ -206,11 +206,23 @@ spectate_tournaments: &spectate_tournaments
     - league-of-legends/lec
 
 # ============================================================================
+# Currency / FX
+# ============================================================================
+# SINGLE SOURCE OF TRUTH for the SEK/USD exchange rate. Every cross-currency
+# conversion (bankroll, stats, arb sizing) derives from this one number.
+# Refresh periodically — it is a hand-set rate, not a live feed.
+currency:
+  sek_per_usd: 10.5
+
 # Provider definitions
 # ============================================================================
 # Only providers with bonuses are included. No-bonus providers (ATG, Paf,
 # Svenska Spel, FrankFred) are excluded — they add extraction load without
 # bankroll value.
+#
+# Each provider's `currency:` field declares its native settlement currency
+# (defaults to SEK). The per-provider `exchange_rate_sek` field was removed —
+# the rate now lives once, above, under `currency.sek_per_usd`.
 #
 # Validation status: PRODUCTION_READY = tested in full pipeline with metrics validated
 providers:
@@ -244,7 +256,6 @@ providers:
     base_url: https://gamma-api.polymarket.com
     clob_url: https://clob.polymarket.com
     currency: USDC
-    exchange_rate_sek: 10.50
     params:
       game_bets_tag_id: 100639
       # Spread buffer (cents) added to price for slippage. 0 = no buffer.
@@ -820,7 +831,6 @@ providers:
     retriever_type: kalshi
     base_url: https://api.elections.kalshi.com/trade-api/v2
     currency: USD
-    exchange_rate_sek: 10.5   # refresh periodically; rough 2026-04 FX
     params:
       min_volume_usd: 100
     supported_sports:
@@ -860,7 +870,6 @@ providers:
     retriever_type: smarkets
     base_url: https://api.smarkets.com/v3
     currency: GBP
-    exchange_rate_sek: 13.3   # rough 2026-04 FX
     params:
       min_trades_24h: 1
       # Smarkets geoblocks datacenter + most residential IPs with a 403

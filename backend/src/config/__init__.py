@@ -8,9 +8,9 @@ from .loader import (
     ConfigLoader,
     ProviderConfig,
     SportConfig,
-    get_all_exchange_rates,
     get_exchange_rate,
     get_provider_currency,
+    get_sek_per_usd,
     load_config,
 )
 
@@ -21,5 +21,5 @@ __all__ = [
     "load_config",
     "get_exchange_rate",
     "get_provider_currency",
-    "get_all_exchange_rates",
+    "get_sek_per_usd",
 ]
