@@ -10,7 +10,6 @@ class Currency(Enum):
 
     SEK = "SEK"
     USD = "USD"
-    GBP = "GBP"
 
     @classmethod
     def parse(cls, raw: str) -> Currency:

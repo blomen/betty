@@ -3,14 +3,13 @@ import pytest
 from money.currency import Currency
 
 
-def test_currency_has_three_members():
-    assert {c.name for c in Currency} == {"SEK", "USD", "GBP"}
+def test_currency_has_two_members():
+    assert {c.name for c in Currency} == {"SEK", "USD"}
 
 
 def test_parse_plain_codes():
     assert Currency.parse("SEK") is Currency.SEK
     assert Currency.parse("USD") is Currency.USD
-    assert Currency.parse("GBP") is Currency.GBP
 
 
 def test_parse_usdc_normalizes_to_usd():
