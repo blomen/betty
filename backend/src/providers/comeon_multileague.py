@@ -16,7 +16,6 @@ import time
 from typing import Any
 
 from ..core import BrowserRetriever, BrowserTransport, StandardEvent
-from ..core.camoufox_utils import capture_camoufox_driver_pid, force_kill_camoufox_tree
 from ..core.exceptions import RetryableError
 from ..core.transport import get_proxy_dict
 from . import comeon_dom_js as JS
@@ -81,112 +80,119 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         "football",
     ]
 
-    _camoufox_unavailable = False  # Class-level flag to avoid repeated ImportError
-
     def __init__(self, config: dict[str, Any], transport: BrowserTransport | None = None):
         super().__init__(config, transport)
         raw_site_url = config.get("site_url", f"https://www.{config.get('domain')}")
         self.site_url: str = raw_site_url.rstrip("/")
-        self._camoufox_browser = None
-        self._camoufox_page = None
-        self._camoufox_driver_pid: int | None = None
+        self._pw = None
+        self._browser = None
+        self._context = None
+        self._page = None
 
     # ------------------------------------------------------------------
-    # Camoufox anti-detect browser (Cloudflare bypass)
+    # patchright Chromium anti-detect browser (Imperva bypass)
     # ------------------------------------------------------------------
 
-    async def _ensure_camoufox(self):
-        """Launch Camoufox anti-detect browser if not already running."""
-        if self._camoufox_page is not None:
+    async def _ensure_browser(self):
+        """Launch patchright Chromium if not running; recover a dead page.
+
+        ComeOn is Imperva-protected. patchright (Chromium with anti-detect
+        patches) clears Imperva on the first homepage load without the
+        crash-recover thrashing the previous Camoufox/Firefox stack suffered.
+        Pages are created from a shared context so the Imperva session
+        cookie set during warm-up survives page recycling between sports.
+        """
+        if self._page is not None:
             try:
-                await self._camoufox_page.evaluate("() => true", timeout=5000)
-                return self._camoufox_page
+                await self._page.evaluate("() => true", timeout=5000)
+                return self._page
             except Exception:
-                logger.warning(f"[{self.provider_id}] Camoufox page died, recovering...")
-                if self._camoufox_browser:
+                logger.warning(f"[{self.provider_id}] page died, recovering...")
+                if self._context:
                     try:
-                        self._camoufox_page = await self._camoufox_browser.new_page()
+                        self._page = await self._context.new_page()
                         self._warmed_up = False  # Force re-warmup on new page
                         self._cookie_dismissed = False
-                        logger.info(f"[{self.provider_id}] Recovered with new page (browser alive)")
-                        return self._camoufox_page
+                        logger.info(f"[{self.provider_id}] Recovered with new page (context alive)")
+                        return self._page
                     except Exception:
-                        logger.warning(f"[{self.provider_id}] Browser also dead, full relaunch")
-                await self._cleanup_camoufox()
-
-        if ComeOnMultiLeagueRetriever._camoufox_unavailable:
-            return None
+                        logger.warning(f"[{self.provider_id}] Context also dead, full relaunch")
+                await self._cleanup_browser()
 
         try:
-            from camoufox.async_api import AsyncCamoufox
+            from patchright.async_api import async_playwright
         except ImportError:
-            ComeOnMultiLeagueRetriever._camoufox_unavailable = True
-            logger.error(
-                f"[{self.provider_id}] camoufox not installed. "
-                f"Install with: pip install camoufox[geoip] && python -m camoufox fetch"
-            )
+            logger.error(f"[{self.provider_id}] patchright not installed (pip install patchright)")
             return None
 
-        logger.info(f"[{self.provider_id}] Launching Camoufox anti-detect browser...")
+        logger.info(f"[{self.provider_id}] Launching patchright Chromium...")
         t0 = time.time()
         try:
             proxy = get_proxy_dict()
-            self._camoufox_browser = await AsyncCamoufox(
+            self._pw = await async_playwright().start()
+            self._browser = await self._pw.chromium.launch(
                 headless=True,
-                geoip=False,
-                humanize=0.2,
-                os="windows",
+                args=["--disable-http2", "--disable-quic"],
                 proxy=proxy,
-            ).__aenter__()
-            self._camoufox_driver_pid = capture_camoufox_driver_pid(self._camoufox_browser)
-
-            self._camoufox_page = await self._camoufox_browser.new_page()
+            )
+            self._context = await self._browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 720},
+            )
+            self._context.set_default_timeout(60_000)
+            self._page = await self._context.new_page()
             proxy_msg = " with residential proxy" if proxy else ""
-            logger.info(f"[{self.provider_id}] Camoufox browser ready{proxy_msg} in {time.time() - t0:.1f}s")
-            return self._camoufox_page
+            logger.info(f"[{self.provider_id}] patchright Chromium ready{proxy_msg} in {time.time() - t0:.1f}s")
+            return self._page
         except Exception as e:
-            logger.error(f"[{self.provider_id}] Failed to launch Camoufox: {e}")
-            force_kill_camoufox_tree(self._camoufox_driver_pid, self.provider_id)
-            self._camoufox_browser = None
-            self._camoufox_page = None
-            self._camoufox_driver_pid = None
+            logger.error(f"[{self.provider_id}] Failed to launch patchright: {e}")
+            await self._cleanup_browser()
             return None
 
-    async def _cleanup_camoufox(self):
-        """Close camoufox; force-kill the subprocess tree if graceful close hangs.
+    async def _cleanup_browser(self):
+        """Tear down patchright resources (page -> context -> browser -> driver).
 
-        Without the kill fallback, hung __aexit__ leaks driver + camoufox-bin
-        + tab subprocesses indefinitely until the watchdog OOM-kills the
-        container. The orchestrator's outer 10s timeout fires the asyncio
-        task but never reaps the children.
+        Playwright owns the Chromium subprocess lifecycle, so no force-kill
+        fallback is needed — unlike the previous Camoufox stack whose hung
+        __aexit__ leaked subprocesses until the watchdog OOM-killed the box.
         """
-        if not self._camoufox_browser:
-            return
-        try:
-            await asyncio.wait_for(
-                self._camoufox_browser.__aexit__(None, None, None),
-                timeout=8,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(f"[{self.provider_id}] camoufox graceful close timed out — force-killing")
-            force_kill_camoufox_tree(self._camoufox_driver_pid, self.provider_id)
-        except (Exception, OSError, ValueError) as e:
-            logger.debug(f"[{self.provider_id}] camoufox close raised {type(e).__name__}: {e}")
-            force_kill_camoufox_tree(self._camoufox_driver_pid, self.provider_id)
-        else:
-            force_kill_camoufox_tree(self._camoufox_driver_pid, self.provider_id)
-        finally:
-            self._camoufox_browser = None
-            self._camoufox_page = None
-            self._camoufox_driver_pid = None
+        for attr, method in (
+            ("_page", "close"),
+            ("_context", "close"),
+            ("_browser", "close"),
+            ("_pw", "stop"),
+        ):
+            obj = getattr(self, attr, None)
+            if obj is None:
+                continue
+            try:
+                result = getattr(obj, method)()
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception:
+                pass
+            setattr(self, attr, None)
+        # Any teardown invalidates the warmed-up Imperva session.
+        self._warmed_up = False
+        self._cookie_dismissed = False
+
+    async def close(self) -> None:
+        """Tear down the patchright browser at end of run, then the base transport."""
+        await self._cleanup_browser()
+        with contextlib.suppress(Exception):
+            await super().close()
 
     async def _get_page(self):
-        """Get a browser page — Camoufox for Cloudflare bypass, Playwright fallback."""
-        page = await self._ensure_camoufox()
+        """Get a browser page — patchright Chromium for Imperva bypass."""
+        page = await self._ensure_browser()
         if page:
             return page
 
-        # Fallback to regular Playwright transport
+        # Fallback to regular Playwright transport (won't clear Imperva, but
+        # keeps the _get_page contract of returning a page or None).
         try:
             await self.transport._ensure_browser()
             return self.transport.page
@@ -207,26 +213,26 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         page = await self._get_page()
         if not page:
             raise RetryableError(
-                "No browser available (camoufox not installed?)",
+                "No browser available (patchright not installed?)",
                 provider_id=self.provider_id,
             )
         self._page = page
         self._cookie_dismissed = False
 
-        # Warm up: load homepage to pass Cloudflare + dismiss cookies
-        if self._camoufox_page and not getattr(self, "_warmed_up", False):
+        # Warm up: load homepage to clear Imperva + dismiss cookies
+        if self._page and not getattr(self, "_warmed_up", False):
             try:
                 await page.goto(f"{self.site_url}/sv", wait_until="domcontentloaded", timeout=30000)
                 await asyncio.sleep(3)
                 await self._dismiss_cookie_overlay(page)
                 self._warmed_up = True
-                logger.info(f"[{self.provider_id}] Camoufox session warmed up")
+                logger.info(f"[{self.provider_id}] patchright session warmed up")
             except Exception as e:
                 logger.warning(f"[{self.provider_id}] Warm-up failed: {e}")
                 # Proxy/network error — kill browser so next run gets a fresh one
-                if "NS_ERROR" in str(e) or "PROXY" in str(e) or "net::" in str(e):
+                if "net::" in str(e) or "ERR_" in str(e) or "PROXY" in str(e):
                     logger.warning(f"[{self.provider_id}] Network error on warm-up — restarting browser")
-                    await self._cleanup_camoufox()
+                    await self._cleanup_browser()
                     raise RetryableError(
                         f"Warm-up network error: {e}",
                         provider_id=self.provider_id,
@@ -243,22 +249,21 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         )
 
         for sport_idx, sport_key in enumerate(sports_to_extract):
-            # Proactively recycle the Camoufox page between sports.
+            # Proactively recycle the browser page between sports.
             # After 20+ page.goto() calls per sport, the page accumulates SPA state
             # and memory until it crashes. Recycling prevents the crash entirely
             # and keeps the API league discovery working (faster than DOM fallback).
-            if sport_idx > 0 and self._camoufox_browser:
+            if sport_idx > 0 and self._context:
                 # Close old page (may already be dead — that's fine)
-                if self._camoufox_page:
+                if self._page:
                     with contextlib.suppress(Exception):
-                        await self._camoufox_page.close()
-                    self._camoufox_page = None
+                        await self._page.close()
+                    self._page = None
 
-                # Create fresh page from existing browser
+                # Create fresh page from the existing context (keeps Imperva cookies)
                 try:
-                    self._camoufox_page = await self._camoufox_browser.new_page()
-                    self._page = self._camoufox_page
-                    # Re-warm: visit homepage to pass Cloudflare + set cookies
+                    self._page = await self._context.new_page()
+                    # Re-warm: visit homepage to clear Imperva + set cookies
                     await self._page.goto(f"{self.site_url}/sv", wait_until="domcontentloaded", timeout=30000)
                     await asyncio.sleep(2)
                     await self._dismiss_cookie_overlay(self._page)
@@ -266,8 +271,8 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
                     logger.debug(f"[{self.provider_id}] Recycled page before {sport_key}")
                 except Exception as e:
                     logger.warning(f"[{self.provider_id}] Page recycle failed ({e}), full relaunch...")
-                    await self._cleanup_camoufox()
-                    page = await self._ensure_camoufox()
+                    await self._cleanup_browser()
+                    page = await self._ensure_browser()
                     if page:
                         self._page = page
                         try:
@@ -343,7 +348,10 @@ class ComeOnMultiLeagueRetriever(BrowserRetriever):
         if not sport_id:
             return []
 
-        url = f"{self.site_url}{self.API_BASE}/leagues?sportId={sport_id}&{self.API_PARAMS}"
+        # v2/leagues: the unversioned /leagues?sportId= endpoint was retired
+        # (404). v2 filters by `filter.sportId` and paginates — pageSize=200
+        # covers the largest sport (football ~170 leagues).
+        url = f"{self.site_url}{self.API_BASE}/v2/leagues?filter.sportId={sport_id}&{self.API_PARAMS}&pageSize=200"
         try:
             leagues_raw = await asyncio.wait_for(
                 page.evaluate(f"""async () => {{
