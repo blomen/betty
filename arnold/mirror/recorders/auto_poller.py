@@ -5,8 +5,9 @@ for each provider in PROVIDERS. Each tick does the full insert + settle pass.
 
 This replaces the need for the user to manually click "Sync" — pending bets
 and settlements stay current without user action, and without a Playwright
-browser tab being open. All transports are pure HTTP (Polymarket data-api,
-Kalshi authenticated REST).
+browser tab being open. All transports are pure HTTP (Kalshi authenticated
+REST; Pinnacle/Cloudbet via page.evaluate(fetch)). Polymarket recording moved
+server-side — see backend/src/recorders/server_poller.py.
 
 Started from arnold/server.py:startup as an asyncio task. Crashes are
 logged but the loop keeps going.
@@ -22,10 +23,13 @@ import httpx
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_SEC = 300.0  # 5 min — fast enough that settled bets clear within ~10 min of market resolution
-# Polymarket + Kalshi: pure HTTP, work whether or not the browser is running.
+# Kalshi: pure HTTP, works whether or not the browser is running.
 # Pinnacle + Cloudbet: also HTTP (page.evaluate(fetch)) but cookies live in
 # the Playwright context — they're no-ops when no provider tab is open.
-PROVIDERS = ("polymarket", "kalshi", "pinnacle", "cloudbet")
+# Polymarket is NOT here — it moved to a server-side 24/7 recorder
+# (backend/src/recorders/server_poller.py) so it records whether or not this
+# local client is running.
+PROVIDERS = ("kalshi", "pinnacle", "cloudbet")
 
 
 async def _tick_one(client: httpx.AsyncClient, local_url: str, provider_id: str) -> None:

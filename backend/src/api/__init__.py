@@ -380,6 +380,25 @@ async def lifespan(app: FastAPI):
         _background_tasks.add(_scheduler_task)
         _scheduler_task.add_done_callback(_background_tasks.discard)
 
+        # Auto-start the server-side Polymarket position recorder. Pure HTTP
+        # (public data-api, wallet-keyed) — runs 24/7 independent of the local
+        # arnold.bat client so manually-placed Polymarket bets are recorded
+        # within ~1.5 min instead of waiting on the local 5-min auto-poller.
+        async def _start_position_recorder():
+            try:
+                from ..recorders.server_poller import run_position_recorder
+
+                await run_position_recorder()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("[Startup] position recorder crashed")
+
+        _position_recorder_task = asyncio.create_task(_start_position_recorder())
+        _position_recorder_task.set_name("position-recorder")
+        _background_tasks.add(_position_recorder_task)
+        _position_recorder_task.add_done_callback(_background_tasks.discard)
+
         # Auto-start RL training daemon (server only, runs at nice 19)
         def _start_rl_daemon():
             import subprocess as _sp

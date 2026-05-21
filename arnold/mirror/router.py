@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any
@@ -601,18 +600,19 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
 
     @router.post("/sync-positions/{provider_id}")
     async def sync_positions(provider_id: str):
-        """API-based bet recorder — replaces DOM scraping for poly / kalshi.
+        """API-based bet recorder for kalshi + cookie-based pinnacle/cloudbet.
 
-        - polymarket: public data-api.polymarket.com/positions (wallet-keyed)
-        - kalshi:     authenticated trade-api.kalshi.com/portfolio/positions
-                      (requires KALSHI_API_KEY + KALSHI_PRIVATE_KEY env vars)
+        - kalshi:            authenticated trade-api.kalshi.com/portfolio/positions
+                             (requires KALSHI_API_KEY + KALSHI_PRIVATE_KEY env vars)
+        - pinnacle/cloudbet: reuse the browser session via page.evaluate(fetch)
+
+        Polymarket is recorded server-side 24/7 (backend/src/recorders/
+        server_poller.py) — it is no longer handled here.
 
         Idempotent — dedup against existing DB rows via provider_bet_id +
         (event_id, outcome). Safe to call repeatedly.
         """
         from arnold.http_client import tunnel_client
-
-        from .recorders import polymarket_api  # local import: avoid module-load cost
 
         async def api_post(payload: dict):
             return await tunnel_client().post("/api/bets", json=payload, timeout=10.0)
@@ -658,23 +658,7 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 f"/api/bets/{bet_id}", json={"result": res, "payout": payout}, timeout=10.0
             )
 
-        async def api_patch(bet_id: int, payload: dict):
-            return await tunnel_client().patch(f"/api/bets/{bet_id}", json=payload, timeout=10.0)
-
-        if provider_id == "polymarket":
-            # Polymarket proxy-wallet address — keyed by data-api /positions +
-            # /trades. Override via POLYMARKET_WALLET env; fallback is the
-            # default account so the recorder works without extra config.
-            wallet = os.environ.get("POLYMARKET_WALLET", "").strip() or "0x71fca29E6B31a93d262D2972C9b361Af371D426d"
-            result = await polymarket_api.sync(
-                wallet, api_post, fetch_events, fetch_db_pending, api_patch=api_patch, fetch_known_ids=fetch_known_ids
-            )
-            try:
-                settle_summary = await polymarket_api.settle(wallet, api_settle, fetch_db_pending)
-            except Exception as exc:
-                print(f"[sync-positions] polymarket settle raised: {exc!r}", flush=True)
-                settle_summary = {"won": 0, "lost": 0, "errors": [repr(exc)]}
-        elif provider_id == "kalshi":
+        if provider_id == "kalshi":
             from .recorders import kalshi_api
 
             result = await kalshi_api.sync(api_post, fetch_events, fetch_db_pending, fetch_known_ids=fetch_known_ids)

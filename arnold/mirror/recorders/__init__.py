@@ -1,8 +1,9 @@
-"""API-based bet recorders.
+"""API-based bet recorders (local client).
 
 Replaces DOM-scraping for providers that expose proper user portfolio APIs:
-- Polymarket: public data-api.polymarket.com/positions (wallet-keyed, no auth)
-- Kalshi:    authenticated trade-api.kalshi.com/portfolio/positions (RSA-signed)
+- Kalshi: authenticated trade-api.kalshi.com/portfolio/positions (RSA-signed)
+
+Polymarket recording moved server-side — see backend/src/recorders/.
 
 Each recorder produces RecorderResult{fetched, inserted, skipped, errors} and
 inserts via /api/bets with external_placement=True. Idempotent — provider_bet_id

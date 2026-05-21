@@ -150,11 +150,12 @@ async def startup():
     # every 30s and broadcasts live_price SSE so PlayPage rows stay fresh.
     asyncio.create_task(run_poly_live_poller(), name="poly-live-poll")
 
-    # Periodic auto-poller for ALL API-based recorders (polymarket + kalshi):
-    # every 5 min, hits /mirror/sync-positions for each, which runs the full
-    # insert + settle cycle. Replaces the need for user to click "sync" — open
-    # positions enter the DB and settled ones close themselves continuously,
-    # no Playwright tab required.
+    # Periodic auto-poller for the local API-based recorders (kalshi +
+    # cookie-based pinnacle/cloudbet): every 5 min, hits /mirror/sync-positions
+    # for each, which runs the full insert + settle cycle. Replaces the need
+    # for user to click "sync". Polymarket is NOT polled here — it moved to a
+    # server-side 24/7 recorder (backend/src/recorders/server_poller.py) so it
+    # records whether or not this local client is open.
     from mirror.recorders.auto_poller import run_auto_poller as _run_auto_poller
 
     asyncio.create_task(_run_auto_poller(), name="recorder-auto-poll")
