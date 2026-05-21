@@ -41,15 +41,20 @@ def extract_orderflow_features(
      10  stacked_direction   — -1 sell / 0 neutral / 1 buy
      11  big_trades_count    — number of big-volume candles (capped at 10)
      12  big_trades_net_delta — net delta of big trades, normalised by avg volume
-     13  vsa_absorption      — 0/1 bool from signals
-     14  stop_run_detected   — 0/1 bool from signals
+     13  realized_range      — lookback-avg 1m candle range, ticks [0,1]
+     14  stop_run_detected   — continuous stop-run / sweep strength [0,1]
      -- NEW: temporal dynamics (what the GRU was supposed to learn) --
      15  delta_acceleration  — delta change rate (last 3 vs prev 3 candles)
      16  absorption_strength — high volume + narrow body over last 3 candles (0-1)
      17  initiative_momentum — delta * body_ratio of last candle (strong = high both)
      18  volume_climax       — last candle vol / max vol in lookback (0-1)
-     19  delta_divergence    — price making new extreme but delta weakening (0/1)
+     19  delta_divergence    — continuous price-vs-CVD position gap [0,1]
      20  flow_shift          — sign change in 3-candle delta vs prior 3 (0/1)
+
+    Dims 13/14/19 were 0/1 flags until 2026-05-21; the phase19/22 audit
+    found them firing on 1-21% of touches — too rare to carry graded
+    information. Restructured to continuous measures (computed from
+    candles, independent of the signals object).
 
     When l1_snapshot is provided, dims 6 (spread_ticks) and 7
     (passive_active_ratio) are recomputed from true bid/ask + Lee-Ready
@@ -126,8 +131,6 @@ def extract_orderflow_features(
         stacked_dir = {"buy": 1.0, "neutral": 0.0, "sell": -1.0}.get(signals.stacked_imbalance_direction, 0.0)
         big_count = min(signals.big_trades_count, 10.0) / 10.0
         big_net = signals.big_trades_net_delta / max(avg_vol, 1.0)
-        vsa_abs = 1.0 if signals.vsa_absorption else 0.0
-        stop_run = 1.0 if signals.stop_run_detected else 0.0
     else:
         # Derive from raw candle data
         total_vol_sum = sum(c.volume for c in recent)
@@ -156,16 +159,36 @@ def extract_orderflow_features(
         big_net_raw = sum(c.delta for c in big_candles)
         big_net = big_net_raw / max(avg_vol, 1.0)
 
-        # vsa_absorption (no-signals fallback) — mirrors orderflow.py.
-        # Relaxed 2026-05-18 (PROFILE follow-up): same thresholds as signal
-        # path so the no-signals and with-signals paths agree.
-        if last.volume > avg_vol * 1.3 and last.body_ratio < 0.4:
-            _last_range = max(last.high - last.low, 1e-6)
-            _range_pos = (last.close - last.low) / _last_range
-            vsa_abs = 1.0 if (_range_pos > 0.65 or _range_pos < 0.35) else 0.0
-        else:
-            vsa_abs = 0.0
-        stop_run = 0.0  # Cannot reliably detect without signals
+    # --- continuous realized-range / stop-run (restructured 2026-05-22
+    #     from 0/1 flags — phase19/22/23 audit; computed from candles,
+    #     signal-independent so signals and no-signals paths agree) ---
+
+    # 13: realized_range — average 1-minute candle range over the lookback,
+    #   in ticks (capped/normalised). The volatility REGIME: recent realized
+    #   range predicts near-future range (volatility clustering). Absolute,
+    #   NOT a ratio — a ratio cancels the regime signal. Distinct from dim 6
+    #   spread_ticks (the single partial last bar). Replaces the old
+    #   vsa_absorption 0/1 flag (1.4% fire, redundant). Continuous [0,1].
+    _avg_range_ticks = sum(max(c.high - c.low, 0.0) for c in recent) / len(recent) / TICK_SIZE
+    realized_range = min(_avg_range_ticks / 40.0, 1.0)
+
+    # 14: stop_run — sweep-and-reclaim strength. Reversal probability
+    #   scales with sweep volume x poke depth x reclaim-candle body.
+    #   0 when there is no sweep pattern.
+    stop_run = 0.0
+    if len(recent) >= 4:
+        _prior = recent[:-2]
+        _p_hi = max(c.high for c in _prior)
+        _p_lo = min(c.low for c in _prior)
+        _p_av = sum(c.volume for c in _prior) / max(len(_prior), 1)
+        _spike, _rev = recent[-2], recent[-1]
+        _vol_f = min(_spike.volume / max(_p_av, 1.0) / 3.0, 1.0)
+        if _spike.low < _p_lo and _rev.close > _p_lo:  # bullish sweep + reclaim
+            _depth = min((_p_lo - _spike.low) / TICK_SIZE / 8.0, 1.0)
+            stop_run = _vol_f * _depth * min(_rev.body_ratio / 0.5, 1.0)
+        elif _spike.high > _p_hi and _rev.close < _p_hi:  # bearish sweep + reclaim
+            _depth = min((_spike.high - _p_hi) / TICK_SIZE / 8.0, 1.0)
+            stop_run = _vol_f * _depth * min(_rev.body_ratio / 0.5, 1.0)
 
     # --- NEW: temporal dynamics features ---
 
@@ -196,24 +219,18 @@ def extract_orderflow_features(
     max_vol = max(c.volume for c in recent) if recent else 1
     vol_climax = last.volume / max(max_vol, 1)
 
-    # 19: delta_divergence — classic multi-bar divergence where price
-    # makes a new extreme but CUMULATIVE delta fails to confirm.
-    # Bug fixed 2026-05-18 (audit_gbt_orderflow):
-    #   Old definition used abs(delta) < abs(sum/4) which checks
-    #   MAGNITUDE weakening, not DIRECTIONAL divergence. Fired on noise.
-    #   New definition uses cumulative delta vs price direction —
-    #   bull div = price higher-high + cum-delta NOT making higher-high,
-    #   bear div = price lower-low + cum-delta NOT making lower-low.
+    # 19: delta_divergence — continuous (restructured 2026-05-21 from 0/1).
+    # The gap between where price sits in its 5-bar range and where
+    # CUMULATIVE delta sits in its own range. Aligned (both extended the
+    # same way) -> ~0; price extended but CVD lagging -> large. [0,1].
+    # This is the methodology's "effort vs result" — a continuous read
+    # of how far CVD failed to confirm the price move, with no threshold.
     if len(recent) >= 5:
-        prices_recent = [c.close for c in recent[-5:]]
-        deltas_cum = np.cumsum([c.delta for c in recent[-5:]])
-        price_higher_high = prices_recent[-1] > max(prices_recent[:-1])
-        delta_lower_high = deltas_cum[-1] < max(deltas_cum[:-1])
-        price_lower_low = prices_recent[-1] < min(prices_recent[:-1])
-        delta_higher_low = deltas_cum[-1] > min(deltas_cum[:-1])
-        bull_div = price_higher_high and delta_lower_high
-        bear_div = price_lower_low and delta_higher_low
-        delta_div = 1.0 if (bull_div or bear_div) else 0.0
+        _p5 = np.array([c.close for c in recent[-5:]], dtype=np.float64)
+        _c5 = np.cumsum([c.delta for c in recent[-5:]]).astype(np.float64)
+        _p_pos = (_p5[-1] - _p5.min()) / max(_p5.max() - _p5.min(), 1e-9)
+        _c_pos = (_c5[-1] - _c5.min()) / max(_c5.max() - _c5.min(), 1e-9)
+        delta_div = float(abs(_p_pos - _c_pos))
     else:
         delta_div = 0.0
 
@@ -240,7 +257,7 @@ def extract_orderflow_features(
             stacked_dir,
             big_count,
             big_net,
-            vsa_abs,
+            realized_range,
             stop_run,
             float(delta_accel),
             float(absorption_str),

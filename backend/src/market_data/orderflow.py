@@ -223,8 +223,14 @@ def build_candle_flow(ticks: list[dict], period_seconds: int = 60) -> list[Candl
 
 def _aggregate_candle(ticks: list[dict], ts: datetime) -> CandleFlow:
     prices = [t["price"] for t in ticks]
-    buy_vol = sum(t["size"] for t in ticks if t["side"] == "A")
-    sell_vol = sum(t["size"] for t in ticks if t["side"] == "B")
+    # market_trades.side: "A" = aggressive SELL, "B" = aggressive BUY.
+    # Verified empirically 2026-05-21 (phase18 audit): signed CVD with A=+1
+    # correlates -0.58 with price across all 10M NQ trades, every week. The
+    # TopstepX `type`->side mapping in topstepx_stream.py produces this; the
+    # old "A = ask aggressor = buy" comments here and in db/models.py were a
+    # wrong assumption. Do NOT revert without re-running the sign check.
+    buy_vol = sum(t["size"] for t in ticks if t["side"] == "B")
+    sell_vol = sum(t["size"] for t in ticks if t["side"] == "A")
 
     # Build per-price-level footprint
     level_map: dict[float, PriceLevelFlow] = defaultdict(lambda: PriceLevelFlow(price=0.0))
@@ -233,7 +239,7 @@ def _aggregate_candle(ticks: list[dict], ts: datetime) -> CandleFlow:
         px = round(t["price"] / TICK_SIZE) * TICK_SIZE
         if level_map[px].price == 0.0:
             level_map[px] = PriceLevelFlow(price=px)
-        if t["side"] == "A":
+        if t["side"] == "B":  # B = aggressive buy (see note above)
             level_map[px].buy_volume += t["size"]
         else:
             level_map[px].sell_volume += t["size"]

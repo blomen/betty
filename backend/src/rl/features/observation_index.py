@@ -25,13 +25,19 @@ from ..config import LevelType
 from .narrative_features import NARRATIVE_NAMES
 from .observation import OBSERVATION_DIM
 
-SCHEMA_VERSION = 5  # 2026-05-19: structure segment grew 64 → 73 with 9 new
-# d/w/m VP distance dims (dist_to_{poc,vah,val}_{daily,weekly,monthly}).
-# Total obs dim count: 313 → 322. Validated_baseline_dims.json needs
-# regeneration to include / re-bless the 9 new dims before any RL retrain.
-# Prior schema v4 (2026-05-17): OF dims 6/7 became L1-quote-derived from
-# TopstepX GatewayQuote bestBid/bestAsk + Lee-Ready aggressor classification.
-# Episodes recorded before 2026-05-17 have those candle-derived.
+SCHEMA_VERSION = 6  # 2026-05-22: OF audit (phase18-23). (a) A/B aggressor sign
+# corrected — "B" = aggressive buy (was treated as sell); every delta/CVD/
+# footprint dim flipped to the right sign. (b) OF dims 13/14/19 changed from
+# rare 0/1 flags to continuous [0,1] measures: dim 13 vsa_absorption (1.4%
+# fire, redundant) -> realized_range; dim 14 -> stop_run_strength; dim 19
+# delta_divergence -> continuous. Dim count unchanged at 322. Episodes
+# recorded before this date have inverted-sign delta dims + 0/1 flags —
+# stale; a full retrain on corrected data is required.
+# Prior v5 (2026-05-19): structure segment grew 64 → 73 with 9 d/w/m VP
+# distance dims (dist_to_{poc,vah,val}_{daily,weekly,monthly}); obs 313 → 322.
+# v4 (2026-05-17): OF dims 6/7 (spread_ticks, passive_active_ratio) are
+# L1-quote-derived when LevelMonitor.l1_state holds a snapshot; else
+# candle-derived.
 
 # Methodology group taxonomy (2026-05-17, per Fabio Valentini AMT + Ryan/
 # blockroots OF + Cimitan + VSA fondamenti — 12 sources read).
@@ -99,8 +105,8 @@ _ORDERFLOW_LABELS: list[str] = [
     "stacked_direction",
     "big_trades_count",
     "big_trades_net_delta",
-    "vsa_absorption",
-    "stop_run_detected",
+    "realized_range",
+    "stop_run_strength",
     "delta_acceleration",
     "absorption_strength",
     "initiative_momentum",

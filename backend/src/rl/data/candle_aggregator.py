@@ -2,7 +2,8 @@
 
 Processes raw ticks and builds 1m and 30m OHLCV candles in real time.
 Ticks have format: {"ts": datetime, "price": float, "size": int, "side": "A"|"B"}
-Side "A" = ask (buy aggressor), "B" = bid (sell aggressor).
+Side "B" = aggressive BUY, "A" = aggressive SELL. Verified empirically
+2026-05-21 (phase18): signed CVD with A=+1 correlates -0.58 with price.
 """
 
 from __future__ import annotations
@@ -23,8 +24,8 @@ def _thirty_min_bucket(ts: datetime) -> datetime:
 
 
 def _new_candle(ts: datetime, price: float, size: int, side: str) -> dict[str, Any]:
-    buy_vol = size if side == "A" else 0
-    sell_vol = size if side == "B" else 0
+    buy_vol = size if side == "B" else 0  # "B" = aggressive buy (see module docstring)
+    sell_vol = size if side == "A" else 0
     return {
         "ts": ts,
         "open": price,
@@ -44,7 +45,7 @@ def _update_candle(candle: dict[str, Any], price: float, size: int, side: str) -
     candle["low"] = min(candle["low"], price)
     candle["close"] = price
     candle["volume"] += size
-    if side == "A":
+    if side == "B":  # "B" = aggressive buy (see module docstring)
         candle["buy_volume"] += size
     else:
         candle["sell_volume"] += size

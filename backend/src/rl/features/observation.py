@@ -265,16 +265,15 @@ def build_observation(state: dict) -> np.ndarray:
                 sz = t.get("size", 0) if isinstance(t, dict) else getattr(t, "size", 0)
                 if sz >= 25:
                     big_count += 1
-                    side = t.get("side", "A") if isinstance(t, dict) else getattr(t, "side", "A")
-                    # topstepx_stream convention (topstepx_stream.py:290-291):
-                    #   type=0 (bid hit, SELL aggressor) -> side = "B"
-                    #   type=1 (ask lift, BUY aggressor) -> side = "A"
-                    # So "A" = buy aggressor (+), "B" = sell aggressor (-).
-                    # Previous code inverted this and big_abs_net carried the
-                    # WRONG SIGN for every autonomous-mode tick — model saw
-                    # "buy flow" when it was sell flow and vice versa.
-                    # Dead-dims audit fix 2026-05-15.
-                    big_net += sz if side == "A" else -sz
+                    side = t.get("side", "B") if isinstance(t, dict) else getattr(t, "side", "B")
+                    # A/B aggressor side — verified empirically 2026-05-21
+                    # (phase18 audit): "B" = aggressive BUY, "A" = aggressive
+                    # SELL. Signed CVD with A=+1 correlates -0.58 with price
+                    # across all 10M NQ trades, every week. The old comment
+                    # here claimed "A" = buy aggressor — that was a wrong
+                    # assumption (the 2026-05-15 "fix" corrected to the wrong
+                    # convention). Do NOT revert without re-running phase18.
+                    big_net += sz if side == "B" else -sz
             big_abs_count = float(big_count / tot)
             big_abs_net = float(np.clip(big_net / 100.0, -1.0, 1.0))
     seg_big_abs = np.array([big_abs_count, big_abs_net], dtype=np.float32)

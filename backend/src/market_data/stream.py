@@ -126,7 +126,9 @@ class TickBuffer:
 
     def add(self, ts: datetime, price: float, size: int, side: str):
         self.ticks.append({"ts": ts, "price": price, "size": size, "side": side})
-        delta = size if side == "A" else -size
+        # side "B" = aggressive BUY, "A" = aggressive SELL (verified phase18
+        # 2026-05-21: signed CVD with A=+1 correlates -0.58 with price).
+        delta = size if side == "B" else -size
         self.cvd += delta
         self.delta_1m += delta
 
