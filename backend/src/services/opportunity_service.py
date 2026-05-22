@@ -59,6 +59,27 @@ def _get_arb_data(outcomes) -> tuple:
     return None, None
 
 
+def _resolve_leg_provider_meta(provider_meta_map: dict[tuple, dict], event_id: str, market: str, leg: dict) -> dict:
+    """Per-leg provider_meta lookup, keyed on outcome (+ point).
+
+    provider_meta carries PER-OUTCOME data — Polymarket `token_id`, Altenar/
+    Kambi `outcome_id` — so each leg of a 2-way arb MUST get its own side's
+    metadata. A key without `outcome` handed both legs the first-seen side's
+    token, which priced + placed the hedge on the wrong outcome (the home/away
+    swap). `provider_meta_map` is keyed (event_id, canonical_provider, market,
+    outcome, point).
+    """
+    canonical = PROVIDER_CANONICAL.get(leg["provider"], leg["provider"])
+    outcome = leg.get("outcome")
+    point = leg.get("point")
+    meta = provider_meta_map.get((event_id, canonical, market, outcome, point))
+    if meta is None and market == "spread" and point:
+        # Spread: home -1.5 vs away +1.5 — the odds row may carry the opposite
+        # sign (mirrors OpportunityService._batch_lookup_provider_meta).
+        meta = provider_meta_map.get((event_id, canonical, market, outcome, -point))
+    return meta or {}
+
+
 class OpportunityService:
     """Business logic for opportunities: listing, stake calculation, hedging."""
 
@@ -468,7 +489,10 @@ class OpportunityService:
         event_ids = list({r["event_id"] for r in results[:limit]})
         events_map: dict[str, Event] = {}
         prov_names_map: dict[tuple[str, str], tuple[str | None, str | None]] = {}  # (event_id, provider_id) → names
-        provider_meta_map: dict[tuple[str, str], dict] = {}  # (event_id, provider_id) → full meta dict
+        # Keyed by (event_id, provider_id, market, outcome, point). provider_meta
+        # carries PER-OUTCOME data (Polymarket token_id, Altenar/Kambi outcome_id),
+        # so an (event, provider)-only key handed every leg one side's metadata.
+        provider_meta_map: dict[tuple, dict] = {}
         if event_ids:
             events_list = self.db.query(Event).filter(Event.id.in_(event_ids)).all()
             events_map = {e.id: e for e in events_list}
@@ -484,7 +508,14 @@ class OpportunityService:
                 leg_event_ids = list({p[0] for p in leg_pairs})
                 leg_provider_ids = list({p[1] for p in leg_pairs})
                 odds_rows = (
-                    self.db.query(Odds.event_id, Odds.provider_id, Odds.provider_meta)
+                    self.db.query(
+                        Odds.event_id,
+                        Odds.provider_id,
+                        Odds.market,
+                        Odds.outcome,
+                        Odds.point,
+                        Odds.provider_meta,
+                    )
                     .filter(
                         Odds.event_id.in_(leg_event_ids),
                         Odds.provider_id.in_(leg_provider_ids),
@@ -492,16 +523,19 @@ class OpportunityService:
                     )
                     .all()
                 )
-                for eid, pid, meta in odds_rows:
+                for eid, pid, market, outcome, point, meta in odds_rows:
                     if not isinstance(meta, dict):
                         continue
-                    key = (eid, pid)
-                    # Keep first-seen meta per (event, provider) — sufficient because
-                    # matchup_id / period / line_id are event-level, not market-level.
-                    if key not in provider_meta_map:
-                        provider_meta_map[key] = meta
-                    if (meta.get("prov_home") or meta.get("prov_away")) and key not in prov_names_map:
-                        prov_names_map[key] = (meta.get("prov_home"), meta.get("prov_away"))
+                    # Per-outcome key: token_id (Polymarket) / outcome_id (Altenar,
+                    # Kambi) differ per side. An (event, provider)-only key handed
+                    # both legs of a 2-way arb the first-seen outcome's token — the
+                    # Polymarket hedge ended up priced + placed on the wrong side
+                    # (the home/away swap).
+                    provider_meta_map[(eid, pid, market, outcome, point)] = meta
+                    # prov_home / prov_away ARE event-level — first-seen is fine.
+                    nkey = (eid, pid)
+                    if (meta.get("prov_home") or meta.get("prov_away")) and nkey not in prov_names_map:
+                        prov_names_map[nkey] = (meta.get("prov_home"), meta.get("prov_away"))
 
         # Format for API response (ArbOpp-compatible)
         formatted = []
@@ -530,21 +564,27 @@ class OpportunityService:
                         prov_home, prov_away = names
                     break
 
-            # Attach per-leg provider_meta (matchup_id etc.) so mirror workflows
-            # can navigate without an additional lookup. ArbRunner._opp_to_bet
-            # propagates this through to the bet dict.
-            enriched_legs = []
-            for leg in r.get("legs", []):
-                canonical = PROVIDER_CANONICAL.get(leg["provider"], leg["provider"])
-                meta = provider_meta_map.get((r["event_id"], canonical), {})
-                enriched_legs.append({**leg, "provider_meta": meta})
+            # Attach per-leg provider_meta (token_id, outcome_id, matchup_id …)
+            # so mirror workflows navigate + price without another lookup.
+            # ArbRunner._opp_to_bet propagates this through to the bet dict.
+            enriched_legs = [
+                {
+                    **leg,
+                    "provider_meta": _resolve_leg_provider_meta(provider_meta_map, r["event_id"], clean_market, leg),
+                }
+                for leg in r.get("legs", [])
+            ]
             enriched_arb_legs = None
             if r.get("arb_legs"):
-                enriched_arb_legs = []
-                for leg in r["arb_legs"]:
-                    canonical = PROVIDER_CANONICAL.get(leg["provider"], leg["provider"])
-                    meta = provider_meta_map.get((r["event_id"], canonical), {})
-                    enriched_arb_legs.append({**leg, "provider_meta": meta})
+                enriched_arb_legs = [
+                    {
+                        **leg,
+                        "provider_meta": _resolve_leg_provider_meta(
+                            provider_meta_map, r["event_id"], clean_market, leg
+                        ),
+                    }
+                    for leg in r["arb_legs"]
+                ]
 
             formatted.append(
                 {
