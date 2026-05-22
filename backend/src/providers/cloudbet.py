@@ -62,6 +62,17 @@ _NO_DRAW_SPORTS = frozenset(
     }
 )
 
+# Combat sports expose a genuine 2-way `*.winner` market (= the moneyline,
+# "To Win Fight") AND a separate 3-way `*.1x2`/`*.match_odds`. The 3-way is a
+# DIFFERENT proposition — its draw is a real outcome and it carries its own
+# vig, so de-drawing it (drop the draw, keep the prices) yields a moneyline
+# that is materially mispriced vs the real 2-way (observed: boxing.1x2 away
+# 3.00 vs the true boxing.winner away ~2.30). Comparing that against a 2-way
+# Pinnacle line manufactures false +EV. So for these sports the moneyline
+# comes ONLY from `*.winner`; the 3-way is skipped entirely (see parse_event).
+_COMBAT_SPORTS = frozenset({"boxing", "mma"})
+_THREE_WAY_SUFFIXES = frozenset({"1x2", "match_odds", "matchOdds"})
+
 # Sport key mapping: internal → Cloudbet
 _SPORT_MAP = {
     "football": "soccer",
@@ -267,6 +278,10 @@ def parse_event(
     markets_data = event.get("markets") or {}
     markets = []
     for market_key, market_obj in markets_data.items():
+        # Combat sports: never derive moneyline from the 3-way market — the
+        # real 2-way `*.winner` is the moneyline. See _COMBAT_SPORTS above.
+        if sport in _COMBAT_SPORTS and market_key.split(".")[-1] in _THREE_WAY_SUFFIXES:
+            continue
         submarkets = (market_obj or {}).get("submarkets") or {}
         for _subkey, submarket in submarkets.items():
             selections = (submarket or {}).get("selections") or []

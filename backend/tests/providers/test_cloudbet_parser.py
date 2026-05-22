@@ -434,7 +434,10 @@ class TestNoDrawSportNormalization:
         assert m["type"] == "moneyline"
         assert {o["name"] for o in m["outcomes"]} == {"home", "away"}
 
-    @pytest.mark.parametrize("sport", ["ice_hockey", "american_football", "baseball", "mma", "boxing", "tennis"])
+    # Combat sports (boxing, mma) are intentionally NOT in this list — they
+    # keep a genuine 2-way `winner` market, so their 3-way is skipped, not
+    # normalized. See TestCombatSportMoneyline below.
+    @pytest.mark.parametrize("sport", ["ice_hockey", "american_football", "baseball", "tennis"])
     def test_other_no_draw_sports_normalize(self, sport):
         ev = parse_event(self._basketball_3way_event(), sport, "cloudbet")
         assert ev is not None
@@ -446,6 +449,84 @@ class TestNoDrawSportNormalization:
         assert ev is not None
         assert ev.markets[0]["type"] == "1x2"
         assert {o["name"] for o in ev.markets[0]["outcomes"]} == {"home", "draw", "away"}
+
+
+class TestCombatSportMoneyline:
+    """Combat sports: moneyline comes ONLY from the 2-way `*.winner` market.
+
+    Cloudbet exposes both a genuine 2-way `boxing.winner` ("To Win Fight")
+    and a 3-way `boxing.1x2`. De-drawing the 3-way produces a mispriced
+    moneyline (its draw is real + it carries its own vig), so it must be
+    skipped — never folded into moneyline.
+    """
+
+    @staticmethod
+    def _boxing_event(with_winner: bool):
+        markets = {
+            # 3-way — must be skipped for combat sports.
+            "boxing.1x2": {
+                "submarkets": {
+                    "period=default": {
+                        "selections": [
+                            {"outcome": "home", "params": "", "price": 1.45, "status": "SELECTION_ENABLED"},
+                            {"outcome": "draw", "params": "", "price": 17.12, "status": "SELECTION_ENABLED"},
+                            {"outcome": "away", "params": "", "price": 3.0, "status": "SELECTION_ENABLED"},
+                        ]
+                    }
+                }
+            },
+            "boxing.totals": {
+                "submarkets": {
+                    "period=default": {
+                        "selections": [
+                            {"outcome": "over", "params": "total=10.5", "price": 1.16, "status": "SELECTION_ENABLED"},
+                            {"outcome": "under", "params": "total=10.5", "price": 5.07, "status": "SELECTION_ENABLED"},
+                        ]
+                    }
+                }
+            },
+        }
+        if with_winner:
+            # Genuine 2-way moneyline ("To Win Fight").
+            markets["boxing.winner"] = {
+                "submarkets": {
+                    "period=default": {
+                        "selections": [
+                            {"outcome": "home", "params": "", "price": 1.59, "status": "SELECTION_ENABLED"},
+                            {"outcome": "away", "params": "", "price": 2.30, "status": "SELECTION_ENABLED"},
+                        ]
+                    }
+                }
+            }
+        return {
+            "id": 34577436,
+            "status": "TRADING",
+            "home": {"name": "Jack Catterall"},
+            "away": {"name": "Shakhram Giyasov"},
+            "markets": markets,
+        }
+
+    def test_3way_never_becomes_moneyline(self):
+        # boxing.winner absent (disabled upstream) — the 3-way boxing.1x2 must
+        # NOT be de-drawn into a fake moneyline. Event still extracts via totals.
+        ev = parse_event(self._boxing_event(with_winner=False), "boxing", "cloudbet", "boxing", "boxing-intl")
+        assert ev is not None
+        types = {m["type"] for m in ev.markets}
+        assert types == {"total"}, f"3-way leaked into {types}"
+
+    def test_moneyline_comes_from_winner_market(self):
+        ev = parse_event(self._boxing_event(with_winner=True), "boxing", "cloudbet", "boxing", "boxing-intl")
+        assert ev is not None
+        ml = [m for m in ev.markets if m["type"] == "moneyline"]
+        assert len(ml) == 1
+        odds = {o["name"]: o["odds"] for o in ml[0]["outcomes"]}
+        # the real 2-way prices from boxing.winner — NOT the 3-way 1x2 (1.45 / 3.0)
+        assert odds == {"home": 1.59, "away": 2.30}
+
+    def test_mma_3way_also_skipped(self):
+        ev = parse_event(self._boxing_event(with_winner=False), "mma", "cloudbet", "mma", "mma-ufc")
+        assert ev is not None
+        assert all(m["type"] != "moneyline" for m in ev.markets)
 
 
 class TestEventUrl:
