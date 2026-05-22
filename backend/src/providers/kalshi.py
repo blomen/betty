@@ -694,14 +694,33 @@ _TOTAL_SUB_RE = re.compile(
 )
 
 
-def _no_side_odds(yes_price: float, fee_rate: float) -> float:
-    """Implied NO-side decimal odds given the YES contract's ask price.
+def _market_no_price_dollars(m: dict) -> float:
+    """The NO contract's ask price ($0–1) — what you PAY to buy NO.
 
-    NO_ask = 1 - YES_ask (Kalshi quotes both sides symmetrically), with the
-    same per-trade fee on entry. Returns 0 on degenerate input.
+    Mirror of _market_price_dollars (yes_ask). Live schema uses string values
+    ("0.2500"), tests use floats — cast both. 0 if unquoted/degenerate.
     """
-    no_price = 1.0 - yes_price
-    if no_price <= 0.0:
+    val = m.get("no_ask_dollars")
+    if val is None or val == "":
+        return 0.0
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _no_side_odds(m: dict, fee_rate: float) -> float:
+    """Decimal odds for BUYING the NO contract, priced off its no_ask.
+
+    The NO ask is ``1 - yes_BID`` — NOT ``1 - yes_ask``. Deriving the NO price
+    from yes_ask yields the NO *bid* (the sell price) and overstates every
+    under/away value bet by the full bid-ask spread (a ~5¢ phantom edge on a
+    typical Kalshi soccer total). Always price the NO side off the published
+    ``no_ask_dollars``. Returns 0 if there is no NO ask quoted or it is
+    degenerate (≤0 or ≥1) — the caller then drops the market.
+    """
+    no_price = _market_no_price_dollars(m)
+    if not (0.0 < no_price < 1.0):
         return 0.0
     return _price_to_odds(no_price, fee_rate)
 
@@ -799,7 +818,7 @@ def parse_spread_event(
     if yes_price <= 0.0 or yes_price >= 1.0:
         return None
     yes_odds = _price_to_odds(yes_price, fee_rate)
-    no_odds = _no_side_odds(yes_price, fee_rate)
+    no_odds = _no_side_odds(mkt, fee_rate)
     if no_odds <= 0.0:
         return None
     if yes_side == "home":
@@ -857,7 +876,7 @@ def parse_total_event(
     if yes_price <= 0.0 or yes_price >= 1.0:
         return None
     over_odds = _price_to_odds(yes_price, fee_rate)
-    under_odds = _no_side_odds(yes_price, fee_rate)
+    under_odds = _no_side_odds(mkt, fee_rate)
     if under_odds <= 0.0:
         return None
     meta = {"ticker": mkt.get("ticker"), "volume": _market_volume_usd(mkt)}

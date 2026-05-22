@@ -314,15 +314,22 @@ class TestRungParsers:
 
 
 class TestNoSideOdds:
-    def test_complementary(self):
-        # YES at 0.45 (no fee) → NO implied at 1.0/0.55 = 1.818 before fee.
-        # With fee_rate=0, _price_to_odds(0.55) = 1/0.55 = 1.818.
-        odds = _no_side_odds(0.45, 0.0)
+    def test_prices_off_no_ask(self):
+        # NO ask 0.55 (no fee) → _price_to_odds(0.55) = 1/0.55 = 1.818.
+        odds = _no_side_odds({"no_ask_dollars": 0.55}, 0.0)
         assert abs(odds - 1.818) < 0.001
 
+    def test_not_derived_from_yes_ask(self):
+        # 5¢ spread: yes_ask 0.80, no_ask 0.25. The NO side MUST price off the
+        # no_ask (1/0.25 = 4.0), never 1 - yes_ask = 0.20 (1/0.20 = 5.0) — the
+        # latter is the NO bid and inflates every under/away bet.
+        odds = _no_side_odds({"yes_ask_dollars": 0.80, "no_ask_dollars": 0.25}, 0.0)
+        assert abs(odds - 4.0) < 0.001
+
     def test_degenerate_returns_zero(self):
-        assert _no_side_odds(1.0, 0.02) == 0.0
-        assert _no_side_odds(1.5, 0.02) == 0.0
+        assert _no_side_odds({"no_ask_dollars": 1.0}, 0.02) == 0.0
+        assert _no_side_odds({"no_ask_dollars": 0.0}, 0.02) == 0.0
+        assert _no_side_odds({}, 0.02) == 0.0  # no NO quote at all
 
 
 class TestParseSpreadEvent:
@@ -333,6 +340,7 @@ class TestParseSpreadEvent:
                 "ticker": "X-NYK29",
                 "status": "active",
                 "yes_ask_dollars": 0.08,
+                "no_ask_dollars": 0.92,
                 "volume_fp": 1000,
             },
             {
@@ -340,6 +348,7 @@ class TestParseSpreadEvent:
                 "ticker": "X-NYK7",
                 "status": "active",
                 "yes_ask_dollars": 0.55,
+                "no_ask_dollars": 0.45,
                 "volume_fp": 5000,
             },
             {
@@ -347,6 +356,7 @@ class TestParseSpreadEvent:
                 "ticker": "X-NYK12",
                 "status": "active",
                 "yes_ask_dollars": 0.30,
+                "no_ask_dollars": 0.70,
                 "volume_fp": 3000,
             },
         ]
@@ -412,6 +422,7 @@ class TestParseTotalEvent:
                     "ticker": "X-195",
                     "status": "active",
                     "yes_ask_dollars": 0.85,
+                    "no_ask_dollars": 0.15,
                     "volume_fp": 2000,
                 },
                 {
@@ -419,6 +430,7 @@ class TestParseTotalEvent:
                     "ticker": "X-209",
                     "status": "active",
                     "yes_ask_dollars": 0.50,
+                    "no_ask_dollars": 0.50,
                     "volume_fp": 8000,
                 },
                 {
@@ -426,6 +438,7 @@ class TestParseTotalEvent:
                     "ticker": "X-225",
                     "status": "active",
                     "yes_ask_dollars": 0.15,
+                    "no_ask_dollars": 0.85,
                     "volume_fp": 2000,
                 },
             ],
