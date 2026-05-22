@@ -17,6 +17,10 @@ class RecoveredPosition:
     stake: float  # native currency (USDC for poly, USD for kalshi)
     currency: str  # "USDC" / "USD"
     raw: dict  # original API payload for debugging
+    # Point-based markets (kalshi total-goals etc.). Defaults keep the
+    # moneyline recorders (polymarket) unchanged.
+    market_kind: str = "moneyline"  # "moneyline" | "total"
+    point: float | None = None  # total/spread line, e.g. 1.5
 
 
 @dataclass

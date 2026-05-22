@@ -58,6 +58,10 @@ dependencies = [
     # Process management — used by BrowserTransport.close() to force-kill
     # leaked chrome processes when Playwright's graceful close hangs
     "psutil>=5.9",
+
+    # RSA-PSS request signing for the Kalshi authenticated trade-api recorder
+    # (arnold/mirror/recorders/kalshi_api.py)
+    "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]

@@ -1,14 +1,17 @@
 """Kalshi bet recorder via authenticated trade-api.
 
-Hits https://api.elections.kalshi.com/trade-api/v2/portfolio/positions and /fills
-with RSA-PSS-signed headers (KALSHI-ACCESS-KEY + KALSHI-ACCESS-SIGNATURE +
-KALSHI-ACCESS-TIMESTAMP).
+Hits https://api.elections.kalshi.com/trade-api/v2/portfolio/positions and
+/markets /events with RSA-PSS-signed headers (KALSHI-ACCESS-KEY +
+KALSHI-ACCESS-SIGNATURE + KALSHI-ACCESS-TIMESTAMP).
 
 Required env vars (backend/.env):
 - KALSHI_API_KEY: UUID-format access key from kalshi.com → Settings → API Keys
-- KALSHI_PRIVATE_KEY: full PEM-encoded RSA private key (with BEGIN/END markers)
+- KALSHI_PRIVATE_KEY: full PEM-encoded RSA private key. A multi-line PEM MUST
+  be double-quoted in .env, otherwise python-dotenv reads only the first line.
 
-Auth message: f"{timestamp_ms}{method}{path}" — no body, only path (no query).
+Auth message: f"{timestamp_ms}{method}{path}" where `path` is the FULL request
+path INCLUDING the /trade-api/v2 prefix — no body, no query string. Signing
+only the bare path yields a 401 INCORRECT_API_KEY_SIGNATURE.
 """
 
 from __future__ import annotations
@@ -25,7 +28,9 @@ from .types import RecorderResult, RecoveredPosition
 
 logger = logging.getLogger(__name__)
 
-KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2"
+_API_PREFIX = "/trade-api/v2"
+KALSHI_BASE = "https://api.elections.kalshi.com" + _API_PREFIX
+_FEE_RATE = 0.07  # matches constants.KALSHI_FEE_RATE
 
 
 def _load_private_key():
@@ -80,13 +85,18 @@ def _sign_message(msg: str) -> str | None:
 
 
 def _auth_headers(method: str, path: str) -> dict[str, str] | None:
-    """Build the 3 required auth headers. Returns None if creds missing."""
+    """Build the 3 required auth headers. Returns None if creds missing.
+
+    `path` is the trade-api path WITHOUT the /trade-api/v2 prefix (e.g.
+    "/portfolio/positions"); the prefix is added here because Kalshi signs the
+    full URL path.
+    """
     api_key = os.environ.get("KALSHI_API_KEY", "").strip()
     if not api_key:
         logger.warning("[kalshi_api] KALSHI_API_KEY env not set")
         return None
     ts_ms = str(int(time.time() * 1000))
-    msg = ts_ms + method.upper() + path
+    msg = ts_ms + method.upper() + _API_PREFIX + path
     sig = _sign_message(msg)
     if sig is None:
         return None
@@ -99,7 +109,7 @@ def _auth_headers(method: str, path: str) -> dict[str, str] | None:
 
 
 async def _get(path: str, params: dict[str, Any] | None = None) -> dict | None:
-    """Authenticated GET. Returns parsed JSON or None on failure."""
+    """Authenticated GET. `path` excludes the /trade-api/v2 prefix. None on failure."""
     headers = _auth_headers("GET", path)
     if headers is None:
         return None
@@ -119,84 +129,139 @@ async def _get(path: str, params: dict[str, Any] | None = None) -> dict | None:
 # ── Position fetch + parse ──
 
 
-def _kalshi_position_to_recovered(p: dict, ticker_meta: dict | None) -> RecoveredPosition | None:
-    """Convert a /portfolio/positions row to RecoveredPosition.
+def _kalshi_position_to_recovered(
+    p: dict, market_meta: dict | None, event_meta: dict | None
+) -> RecoveredPosition | None:
+    """Convert a /portfolio/positions market_position row to RecoveredPosition.
 
-    Kalshi position fields:
-      ticker: market ticker (e.g. "KXNBA-26MAY17PHILA-DAL")
-      position: signed share count (positive = YES, negative = NO)
-      market_exposure: cost basis in cents
-      total_traded: total volume traded
-      fees_paid: cents
+    Current trade-api v2 position fields (all decimal strings):
+      ticker:                  market ticker, e.g. "KXEREDIVISIETOTAL-...-1"
+      position_fp:             signed fractional share count (+ = YES, - = NO)
+      market_exposure_dollars: cost basis in dollars
+
+    `market_meta` (/markets/{ticker}.market) supplies floor_strike + strike_type
+    for total markets and the yes/no subtitles for moneyline. `event_meta`
+    (/events/{ticker}.event) supplies the "Home vs Away: ..." title used for
+    event matching.
     """
-    ticker = p.get("ticker") or ""
-    shares = abs(int(p.get("position") or 0))
-    exposure_cents = int(p.get("market_exposure") or 0)
-    if shares <= 0 or exposure_cents <= 0:
-        return None
+    market_meta = market_meta or {}
+    event_meta = event_meta or {}
 
-    # Side: YES if position > 0, NO if < 0
-    raw_pos = int(p.get("position") or 0)
+    ticker = p.get("ticker") or ""
+    try:
+        raw_pos = float(p.get("position_fp") or 0)
+        exposure = float(p.get("market_exposure_dollars") or 0)
+    except (TypeError, ValueError):
+        return None
+    shares = abs(raw_pos)
+    if shares <= 0 or exposure <= 0:
+        return None  # closed / settled / empty position
+
     side = "YES" if raw_pos > 0 else "NO"
 
-    # avg_price (in dollars) = exposure / shares / 100
-    avg_price = exposure_cents / shares / 100.0
-    if avg_price <= 0 or avg_price >= 1:
+    # avg_price (dollars per share) = cost basis / shares.
+    avg_price = exposure / shares
+    if not (0.0 < avg_price < 1.0):
         return None
 
-    # Fee-adjusted odds (same formula as kalshi extractor)
-    fee_rate = 0.07  # matches constants.KALSHI_FEE_RATE
-    effective = avg_price + fee_rate * avg_price * (1.0 - avg_price)
+    # Fee-adjusted decimal odds (same formula as the kalshi extractor).
+    effective = avg_price + _FEE_RATE * avg_price * (1.0 - avg_price)
     odds = round(1.0 / effective, 4) if effective > 0 else 1.01
+    stake = round(exposure, 2)
 
-    # Stake in USD = exposure_cents / 100
-    stake = round(exposure_cents / 100.0, 2)
+    # Event title for matching — prefer the /events title ("Ajax vs Groningen:
+    # Total Goals"); fall back to the market title.
+    event_title = (event_meta.get("title") or market_meta.get("title") or ticker).strip()
 
-    # Event/outcome name from ticker_meta if available
-    title = (ticker_meta or {}).get("title") or ticker
-    yes_subtitle = (ticker_meta or {}).get("yes_sub_title") or ""
-    no_subtitle = (ticker_meta or {}).get("no_sub_title") or ""
-    outcome_name = yes_subtitle if side == "YES" else no_subtitle
-    if not outcome_name:
-        outcome_name = side  # fallback: literal "YES"/"NO"
+    floor_strike = market_meta.get("floor_strike")
+    strike_type = (market_meta.get("strike_type") or "").strip().lower()
 
+    if floor_strike is not None and strike_type in ("greater", "less"):
+        # Total market. strike_type "greater" → YES resolves if total > strike
+        # (YES = over, NO = under); "less" → the inverse.
+        try:
+            point = float(floor_strike)
+        except (TypeError, ValueError):
+            return None
+        if strike_type == "greater":
+            outcome = "over" if side == "YES" else "under"
+        else:
+            outcome = "under" if side == "YES" else "over"
+        return RecoveredPosition(
+            provider_id="kalshi",
+            provider_bet_id=ticker[:60],
+            event_name=event_title[:120],
+            outcome_name=outcome,
+            odds=odds,
+            stake=stake,
+            currency="USD",
+            raw=p,
+            market_kind="total",
+            point=point,
+        )
+
+    # Moneyline market — outcome is the team subtitle for the held side.
+    yes_sub = market_meta.get("yes_sub_title") or ""
+    no_sub = market_meta.get("no_sub_title") or ""
+    outcome_name = (yes_sub if side == "YES" else no_sub) or side
     return RecoveredPosition(
         provider_id="kalshi",
-        provider_bet_id=ticker[:60],  # use ticker as stable id
-        event_name=title[:120],
+        provider_bet_id=ticker[:60],
+        event_name=event_title[:120],
         outcome_name=outcome_name,
         odds=odds,
         stake=stake,
         currency="USD",
         raw=p,
+        market_kind="moneyline",
     )
 
 
 async def fetch_open_positions() -> list[RecoveredPosition]:
-    """Fetch all open positions, enrich with market metadata for outcome names."""
-    data = await _get("/portfolio/positions", params={"limit": 100, "settlement_status": "unsettled"})
+    """Fetch open positions, enrich each with market + event metadata."""
+    data = await _get(
+        "/portfolio/positions",
+        params={"limit": 100, "settlement_status": "unsettled"},
+    )
     if not data:
         return []
     positions = data.get("market_positions") or []
     if not positions:
         return []
 
-    # Enrich each with /markets/{ticker} for the yes/no subtitle (real team names)
+    event_cache: dict[str, dict] = {}
     out: list[RecoveredPosition] = []
     for p in positions:
         ticker = p.get("ticker") or ""
-        meta = None
-        if ticker:
-            meta_resp = await _get(f"/markets/{ticker}")
-            if meta_resp:
-                meta = meta_resp.get("market") or {}
-        rp = _kalshi_position_to_recovered(p, meta)
+        if not ticker:
+            continue
+        # Skip closed/zero positions before spending two API calls on them.
+        try:
+            if abs(float(p.get("position_fp") or 0)) <= 0:
+                continue
+        except (TypeError, ValueError):
+            continue
+
+        market_meta: dict = {}
+        m_resp = await _get(f"/markets/{ticker}")
+        if m_resp:
+            market_meta = m_resp.get("market") or {}
+
+        event_meta: dict = {}
+        event_ticker = market_meta.get("event_ticker") or ""
+        if event_ticker:
+            if event_ticker not in event_cache:
+                e_resp = await _get(f"/events/{event_ticker}")
+                event_cache[event_ticker] = (e_resp or {}).get("event") or {}
+            event_meta = event_cache[event_ticker]
+
+        rp = _kalshi_position_to_recovered(p, market_meta, event_meta)
         if rp:
             out.append(rp)
     return out
 
 
-# ── Event matching ── (reuse polymarket's by string fuzzy) ──
+# ── Event matching ── (reuse polymarket's name-substring helper) ──
 
 from .polymarket_api import _match_outcome  # noqa: E402
 
@@ -205,17 +270,35 @@ def match_event_and_outcome(
     position: RecoveredPosition,
     events: list[dict],
 ) -> tuple[str | None, str | None]:
-    """Find best matching event_id + side. Same algorithm as polymarket.
+    """Find the best matching event_id + outcome for this position.
 
-    Kalshi titles look like 'Will the Philadelphia 76ers beat the Dallas Mavericks?'
-    or 'Miomir Kecmanovic to win match'. We try BOTH the title and the outcome
-    name (yes_sub_title) for team-name matches.
+    Total markets: match the event by team names (BOTH home and away must
+    appear in the title — "ajax" alone also matches "Ajax Sarkkiranta"), and
+    the outcome is the already-resolved "over"/"under".
+
+    Moneyline markets: match a team name then map it to home/away via
+    _match_outcome (polymarket's shared algorithm).
     """
     haystack = f"{position.event_name} {position.outcome_name}".lower()
     if not haystack.strip():
         return None, None
 
-    best: tuple[int, str, str] | None = None
+    if position.market_kind == "total":
+        best: tuple[int, str] | None = None
+        for ev in events:
+            home = (ev.get("home_team") or "").lower()
+            away = (ev.get("away_team") or "").lower()
+            if not home or not away:
+                continue
+            if home not in haystack or away not in haystack:
+                continue
+            score = len(home) + len(away)
+            if best is None or score > best[0]:
+                best = (score, ev["id"])
+        return (best[1], position.outcome_name) if best else (None, None)
+
+    # Moneyline
+    best_ml: tuple[int, str, str] | None = None
     for ev in events:
         home = (ev.get("home_team") or "").lower()
         away = (ev.get("away_team") or "").lower()
@@ -227,16 +310,16 @@ def match_event_and_outcome(
         if not side:
             continue
         score = len(home) + len(away)
-        if best is None or score > best[0]:
-            best = (score, ev["id"], side)
-    return (best[1], best[2]) if best else (None, None)
+        if best_ml is None or score > best_ml[0]:
+            best_ml = (score, ev["id"], side)
+    return (best_ml[1], best_ml[2]) if best_ml else (None, None)
 
 
 async def fetch_settled_positions() -> list[dict]:
-    """Return raw settled position rows.
+    """Return raw settled market_position rows.
 
-    Each row carries `ticker`, `realized_pnl` (cents — positive = won, negative
-    or zero = lost), `total_traded`, etc. The settlement_status=settled filter
+    Each row carries `ticker` and `realized_pnl_dollars` (decimal-dollar
+    string — positive = won, ≤ 0 = lost). The settlement_status=settled filter
     captures only positions where the market resolved.
     """
     data = await _get(
@@ -252,15 +335,15 @@ async def settle(
     api_settle,  # async callable(bet_id, result, payout) -> response
     fetch_db_pending,
 ) -> dict:
-    """Settle DB pending kalshi bets using settled positions endpoint.
+    """Settle DB pending kalshi bets using the settled-positions endpoint.
 
-    For each pending bet, match by ticker (provider_bet_id). Read realized_pnl
-    from the settled position:
+    For each pending bet, match by ticker (provider_bet_id) and read
+    realized_pnl_dollars from the settled position:
       - realized_pnl > 0 → WON, payout = stake + realized_pnl
       - realized_pnl ≤ 0 → LOST, payout = 0
-    Skips bets without provider_bet_id (legacy rows recorded pre-API path).
+    Skips bets without a provider_bet_id (legacy rows recorded pre-API path).
     """
-    out = {"won": 0, "lost": 0, "skipped": 0, "errors": []}
+    out: dict[str, Any] = {"won": 0, "lost": 0, "skipped": 0, "errors": []}
 
     pending = await fetch_db_pending() or []
     if not pending:
@@ -279,13 +362,16 @@ async def settle(
 
         row = by_ticker.get(ticker)
         if row is None:
-            # Not in settled set — still open or market hasn't resolved yet
+            # Not in the settled set — still open or market hasn't resolved.
             continue
 
-        realized_pnl_cents = int(row.get("realized_pnl") or 0)
-        if realized_pnl_cents > 0:
+        try:
+            realized_pnl = float(row.get("realized_pnl_dollars") or 0)
+        except (TypeError, ValueError):
+            realized_pnl = 0.0
+        if realized_pnl > 0:
             result = "won"
-            payout = round(stake + realized_pnl_cents / 100.0, 2)
+            payout = round(stake + realized_pnl, 2)
         else:
             result = "lost"
             payout = 0.0
@@ -313,8 +399,17 @@ async def sync(
     fetch_db_pending,
     fetch_known_ids=None,  # async callable() -> list[str] | None — ALL recorded tickers
 ) -> RecorderResult:
-    """Fetch kalshi positions, dedup, insert. Mirror of polymarket sync."""
+    """Fetch kalshi positions, dedup, insert. Mirror of the polymarket sync."""
     result = RecorderResult(provider_id="kalshi")
+
+    # Fail loudly on missing/invalid credentials. A silent fetched=0 is
+    # indistinguishable from "no open positions" and hid a fully broken
+    # recorder (0 bets ever) — surface it in result.errors instead.
+    if _auth_headers("GET", "/portfolio/positions") is None:
+        msg = "kalshi auth unavailable — KALSHI_API_KEY / KALSHI_PRIVATE_KEY missing or invalid"
+        logger.warning(f"[kalshi_api] {msg}")
+        result.errors.append(msg)
+        return result
 
     positions = await fetch_open_positions()
     result.fetched = len(positions)
@@ -339,15 +434,26 @@ async def sync(
         if pos.provider_bet_id and pos.provider_bet_id in known_ids:
             result.skipped_dup += 1
             continue
+
         event_id, outcome = match_event_and_outcome(pos, events)
         if not event_id or not outcome:
+            # No arnold-event match — but this is a REAL open position, so it
+            # MUST still be recorded (same fallback as the polymarket
+            # recorder). Gating the insert on a match silently drops bets the
+            # user placed. For totals the outcome is already known
+            # ("over"/"under"); an unmatched moneyline side stays blank.
             result.skipped_unmatched += 1
-            logger.info(f"[kalshi_api] unmatched: {pos.event_name[:60]} / outcome={pos.outcome_name} — skipping")
-            continue
-        payload = {
+            logger.info(
+                f"[kalshi_api] unmatched: {pos.event_name[:60]} / "
+                f"outcome={pos.outcome_name} — recording with null event_id"
+            )
+            event_id = ""
+            outcome = pos.outcome_name if pos.market_kind == "total" else ""
+
+        payload: dict[str, Any] = {
             "provider_id": "kalshi",
             "event_id": event_id or "",
-            "market": "moneyline",
+            "market": pos.market_kind,
             "outcome": outcome or "",
             "odds": pos.odds,
             "stake": pos.stake,
@@ -356,6 +462,8 @@ async def sync(
             "provider_bet_id": pos.provider_bet_id or None,
             "bet_type": "arb_counter",
         }
+        if pos.point is not None:
+            payload["point"] = pos.point
         try:
             resp = await api_post(payload)
             if resp.status_code in (200, 201):
