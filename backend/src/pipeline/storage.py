@@ -492,11 +492,9 @@ def store_polymarket_event(
     canonical_home = db_event.home_team
     canonical_away = db_event.away_team
 
-    # Store odds — also track moneyline home/away for post-storage validation
+    # Store odds
     odds_processed = 0
     odds_new = 0
-    poly_ml_home = None
-    poly_ml_away = None
 
     # Positional keywords: these map to home/away in normalize_outcome's fast
     # path and are RELATIVE to Polymarket's team order (e.g., spread parser
@@ -519,6 +517,51 @@ def store_polymarket_event(
             "nej",
         }
     )
+
+    # --- Inversion guard ---------------------------------------------------
+    # Polymarket's home/away normalization is heuristic and occasionally lands
+    # a moneyline market's odds on the wrong team — which makes the arb scanner
+    # pair the same physical team on both legs. Soft books are corrected by
+    # detect_and_fix_inversion() (see store_provider_event); Polymarket used to
+    # only LOG the mismatch. Pre-scan the moneyline market with the SAME
+    # normalization the store loop uses, then ask detect_and_fix_inversion()
+    # (Pinnacle-backed, with a DB fallback) whether the result is inverted. If
+    # so, every outcome is flipped on store.
+    def _poly_outcome_norm(raw_name: str) -> str | None:
+        """Normalize a Polymarket outcome name to a canonical label, applying
+        the teams_swapped positional flip. Shared by the pre-scan and the store
+        loop so the two never diverge."""
+        norm = normalize_outcome(raw_name, canonical_home, canonical_away)
+        if norm not in ("home", "away", "draw", "over", "under"):
+            return None
+        if teams_swapped and raw_name.lower().strip() in POSITIONAL_KEYWORDS and norm in ("home", "away"):
+            norm = "away" if norm == "home" else "home"
+        return norm
+
+    pre_ml_home = pre_ml_away = None
+    for _market in event.markets:
+        if not _market.get("is_active", True):
+            continue
+        if normalize_market(_market.get("question", "") or _market.get("type", "")) not in ("moneyline", "1x2"):
+            continue
+        for _outcome in _market.get("outcomes", []):
+            _odds = _outcome.get("odds", 0)
+            if _odds <= 1 or _odds > 100:
+                continue
+            _norm = _poly_outcome_norm(_outcome.get("name", ""))
+            if _norm == "home":
+                pre_ml_home = _odds
+            elif _norm == "away":
+                pre_ml_away = _odds
+    poly_inverted = bool(
+        pre_ml_home
+        and pre_ml_away
+        and detect_and_fix_inversion(
+            session, matched_id, "polymarket", pre_ml_home, pre_ml_away, sharp_odds_cache=sharp_odds_cache
+        )
+    )
+    if poly_inverted:
+        logger.warning(f"[polymarket] Inverted odds for {matched_id} — correcting home/away on store")
 
     for market in event.markets:
         if not market.get("is_active", True):  # Default to active if missing
@@ -549,33 +592,28 @@ def store_polymarket_event(
                 continue
 
             odds_processed += 1
-            outcome_norm = normalize_outcome(outcome_name, canonical_home, canonical_away)
+            outcome_norm = _poly_outcome_norm(outcome_name)
 
             # Skip outcomes that couldn't be normalized to home/away/draw/over/under
             # (e.g., player names from prop markets that slipped through parsing)
-            if outcome_norm not in ("home", "away", "draw", "over", "under"):
+            if outcome_norm is None:
                 continue
 
-            # Only swap positional-keyword outcomes when teams are in different
-            # order. The spread parser outputs "home"/"away" relative to PM's
-            # team listing — these need flipping to canonical order.
-            # Team-name outcomes (e.g., "Celtics") are already resolved against
-            # canonical teams by normalize_outcome — swapping would invert them.
-            raw_lower = outcome_name.lower().strip()
-            if teams_swapped and raw_lower in POSITIONAL_KEYWORDS and outcome_norm in ("home", "away"):
+            # Apply the inversion correction decided by the pre-scan above.
+            if poly_inverted and outcome_norm in ("home", "away"):
                 outcome_norm = "away" if outcome_norm == "home" else "home"
-
-            # Track moneyline home/away for post-storage validation
-            if market_type in ("moneyline", "1x2"):
-                if outcome_norm == "home":
-                    poly_ml_home = odds
-                elif outcome_norm == "away":
-                    poly_ml_away = odds
 
             outcome_meta = outcome.get("provider_meta", {})
             provider_meta = {**market_meta, **outcome_meta} if (market_meta or outcome_meta) else None
-            # Swap poly_home/poly_away in metadata to match canonical home/away
-            if teams_swapped and provider_meta and "poly_home" in provider_meta and "poly_away" in provider_meta:
+            # Swap poly_home/poly_away in metadata to match canonical home/away.
+            # teams_swapped flips it once (PM order -> canonical); poly_inverted
+            # flips it again (our canonical assignment was wrong) — net = XOR.
+            if (
+                (teams_swapped != poly_inverted)
+                and provider_meta
+                and "poly_home" in provider_meta
+                and "poly_away" in provider_meta
+            ):
                 provider_meta["poly_home"], provider_meta["poly_away"] = (
                     provider_meta["poly_away"],
                     provider_meta["poly_home"],
@@ -611,22 +649,6 @@ def store_polymarket_event(
                     bid=bid_value,
                     ask=ask_value,
                     depth_usd=depth_value,
-                )
-
-    # Safety net: compare stored Polymarket ML odds against Pinnacle.
-    # If favorites disagree with high confidence, odds are likely inverted.
-    if poly_ml_home and poly_ml_away and sharp_odds_cache is not None:
-        sharp = sharp_odds_cache.get(matched_id, {})
-        if "home" in sharp and "away" in sharp:
-            poly_fav = "home" if poly_ml_home < poly_ml_away else "away"
-            sharp_fav = "home" if sharp["home"] < sharp["away"] else "away"
-            sharp_ratio = max(sharp["home"], sharp["away"]) / min(sharp["home"], sharp["away"])
-            if poly_fav != sharp_fav and sharp_ratio > 1.2:
-                logger.warning(
-                    f"[polymarket] INVERSION DETECTED for {matched_id}: "
-                    f"Poly H={poly_ml_home:.3f}/A={poly_ml_away:.3f} (fav={poly_fav}) "
-                    f"vs Sharp H={sharp['home']:.3f}/A={sharp['away']:.3f} (fav={sharp_fav}, ratio={sharp_ratio:.2f}). "
-                    f"teams_swapped={teams_swapped}"
                 )
 
     return is_new_event, odds_processed, odds_new
