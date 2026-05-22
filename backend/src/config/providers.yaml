@@ -804,9 +804,11 @@ providers:
     api_key: ${CLOUDBET_API_KEY}
     # Cloudbet is a crypto book — /iam-balances reports the fiatAggregated
     # figure in USD (verified: fiatCurrency=USD regardless of display locale).
-    # Without this, get_provider_currency falls back to SEK and the bankroll
-    # under-counts cloudbet ~10x (balance_sek = balance * 1.0 instead of *rate).
+    # Without these, get_provider_currency falls back to SEK / get_exchange_rate
+    # to 1.0 and the bankroll under-counts cloudbet ~10x (balance_sek =
+    # balance * 1.0 instead of * rate). exchange_rate_sek mirrors kalshi/polymarket.
     currency: USD
+    exchange_rate_sek: 10.5  # refresh periodically; rough 2026-04 FX
     supported_sports:
       - football
       - basketball
