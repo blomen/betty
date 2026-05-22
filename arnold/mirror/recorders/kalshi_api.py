@@ -315,32 +315,36 @@ def match_event_and_outcome(
     return (best_ml[1], best_ml[2]) if best_ml else (None, None)
 
 
-async def fetch_settled_positions() -> list[dict]:
-    """Return raw settled market_position rows.
+async def fetch_settlements() -> list[dict]:
+    """Return resolved-market rows from /portfolio/settlements.
 
-    Each row carries `ticker` and `realized_pnl_dollars` (decimal-dollar
-    string — positive = won, ≤ 0 = lost). The settlement_status=settled filter
-    captures only positions where the market resolved.
+    This is the authoritative settlement source. /portfolio/positions
+    IGNORES the settlement_status filter — it returns open positions too, so
+    a 0 realized_pnl on an open bet was misread as a loss (it marked every
+    open kalshi bet "lost"). /settlements lists ONLY markets that actually
+    resolved.
+
+    Each row carries:
+      ticker:        market ticker (matches the bet's provider_bet_id)
+      revenue:       gross payout in cents — > 0 won, 0 lost
+      market_result: "yes" / "no" / "scalar" — the resolution
     """
-    data = await _get(
-        "/portfolio/positions",
-        params={"limit": 200, "settlement_status": "settled"},
-    )
+    data = await _get("/portfolio/settlements", params={"limit": 200})
     if not data:
         return []
-    return data.get("market_positions") or []
+    return data.get("settlements") or []
 
 
 async def settle(
     api_settle,  # async callable(bet_id, result, payout) -> response
     fetch_db_pending,
 ) -> dict:
-    """Settle DB pending kalshi bets using the settled-positions endpoint.
+    """Settle DB pending kalshi bets against /portfolio/settlements.
 
-    For each pending bet, match by ticker (provider_bet_id) and read
-    realized_pnl_dollars from the settled position:
-      - realized_pnl > 0 → WON, payout = stake + realized_pnl
-      - realized_pnl ≤ 0 → LOST, payout = 0
+    A bet is settled ONLY when its ticker appears in the settlements feed
+    (positive evidence the market resolved) — won if revenue > 0, lost if
+    revenue == 0. Absence from the feed leaves the bet pending; a loss is
+    NEVER inferred from a missing or zero value.
     Skips bets without a provider_bet_id (legacy rows recorded pre-API path).
     """
     out: dict[str, Any] = {"won": 0, "lost": 0, "skipped": 0, "errors": []}
@@ -349,29 +353,29 @@ async def settle(
     if not pending:
         return out
 
-    settled_rows = await fetch_settled_positions()
-    by_ticker = {(r.get("ticker") or "").strip(): r for r in settled_rows if r.get("ticker")}
+    settlements = await fetch_settlements()
+    by_ticker = {(r.get("ticker") or "").strip(): r for r in settlements if r.get("ticker")}
 
     for bet in pending:
         bet_id = bet.get("id")
         ticker = (bet.get("provider_bet_id") or "").strip()
-        stake = float(bet.get("stake") or 0)
         if not bet_id or not ticker:
             out["skipped"] += 1
             continue
 
         row = by_ticker.get(ticker)
         if row is None:
-            # Not in the settled set — still open or market hasn't resolved.
+            # Market hasn't resolved — leave the bet pending. Never infer a loss.
             continue
 
+        # `revenue` is the gross payout in cents: > 0 → won, 0 → lost.
         try:
-            realized_pnl = float(row.get("realized_pnl_dollars") or 0)
+            revenue_cents = float(row.get("revenue") or 0)
         except (TypeError, ValueError):
-            realized_pnl = 0.0
-        if realized_pnl > 0:
+            revenue_cents = 0.0
+        if revenue_cents > 0:
             result = "won"
-            payout = round(stake + realized_pnl, 2)
+            payout = round(revenue_cents / 100.0, 2)
         else:
             result = "lost"
             payout = 0.0
