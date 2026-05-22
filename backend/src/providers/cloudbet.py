@@ -231,8 +231,15 @@ def parse_event(
     event: dict,
     sport: str,
     provider_id: str,
+    sport_key: str = "",
+    comp_key: str = "",
 ) -> StandardEvent | None:
     """Parse a single Cloudbet event dict into a StandardEvent.
+
+    `sport_key` (Cloudbet's sport key, e.g. "ice-hockey") and `comp_key`
+    (the affiliate competition key, e.g. "boxing-international-matchups") are
+    used to build the playable web event URL. They default to empty for
+    callers that only need odds parsing (e.g. unit tests).
 
     Returns None for live/resulted/cancelled/suspended events, events
     without home/away teams, or events with no parseable markets.
@@ -277,13 +284,39 @@ def parse_event(
     if not markets:
         return None
 
+    # Cloudbet's playable web event URL is
+    #   /en/sports/{sportKey}/{competitionSlug}/{numericEventId}
+    # e.g. /en/sports/boxing/international-matchups/34591796 (verified live).
+    # - numericEventId IS `event.id` (the affiliate API returns the web id).
+    # - sportKey is Cloudbet's key ("ice-hockey"), NOT our internal name.
+    # - competitionSlug is the affiliate competition key minus its
+    #   "{sportKey}-" prefix ("boxing-international-matchups" -> "international-matchups").
+    # Falls back to a bare sport landing page when routing data is missing.
+    web_sport = sport_key or sport
+    if comp_key and web_sport and comp_key.startswith(f"{web_sport}-"):
+        competition_slug = comp_key[len(web_sport) + 1 :]
+    else:
+        competition_slug = comp_key
+    if competition_slug and event_id:
+        event_url = f"https://www.cloudbet.com/en/sports/{web_sport}/{competition_slug}/{event_id}"
+    else:
+        event_url = f"https://www.cloudbet.com/en/sports/{web_sport}"
+
+    # Stamp the routing URL onto every outcome's provider_meta. StandardEvent.url
+    # alone does not survive into the mirror's placement bet object — only
+    # Odds.provider_meta does (same channel Kalshi uses for its ticker). The
+    # mirror's _navigate_to_event reads `cloudbet_event_url` from there.
+    for market in markets:
+        for outcome in market.get("outcomes") or []:
+            outcome["provider_meta"] = {"cloudbet_event_url": event_url}
+
     return StandardEvent(
         id=f"{provider_id}_{event_id}",
         name=event_name,
         sport=sport,
         markets=markets,
         provider=provider_id,
-        url=f"https://www.cloudbet.com/en/sports/{sport}/event/{event_id}",
+        url=event_url,
         start_time=start_time,
         home_team=home_team,
         away_team=away_team,
@@ -385,7 +418,7 @@ class CloudbetRetriever(Retriever):
             comp_name = comp_data.get("name", "")
             raw_events = comp_data.get("events") or []
             for raw_event in raw_events:
-                event = parse_event(raw_event, sport, self.provider_id)
+                event = parse_event(raw_event, sport, self.provider_id, sport_key, comp_key)
                 if event:
                     event.league = comp_name
                     events.append(event)

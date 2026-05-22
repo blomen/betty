@@ -446,3 +446,67 @@ class TestNoDrawSportNormalization:
         assert ev is not None
         assert ev.markets[0]["type"] == "1x2"
         assert {o["name"] for o in ev.markets[0]["outcomes"]} == {"home", "draw", "away"}
+
+
+class TestEventUrl:
+    """parse_event builds the playable web URL and stamps it on provider_meta.
+
+    Cloudbet web event URL: /en/sports/{sportKey}/{competitionSlug}/{numericId}
+    — the numeric `event.id`, Cloudbet's sport key (not our internal name),
+    and the competition slug (affiliate key minus its "{sportKey}-" prefix).
+    """
+
+    @staticmethod
+    def _event():
+        return {
+            "id": 34591796,
+            "status": "TRADING",
+            "name": "Jack Catterall v Shakhram Giyasov",
+            "home": {"name": "Jack Catterall"},
+            "away": {"name": "Shakhram Giyasov"},
+            "startTime": "2026-05-23T19:00:00Z",
+            "markets": {
+                "boxing.winner": {
+                    "submarkets": {
+                        "period=ft": {
+                            "selections": [
+                                {"outcome": "home", "params": "", "price": 1.40, "status": "SELECTION_ENABLED"},
+                                {"outcome": "away", "params": "", "price": 3.00, "status": "SELECTION_ENABLED"},
+                            ]
+                        }
+                    }
+                }
+            },
+        }
+
+    def test_url_built_from_sport_and_competition_keys(self):
+        ev = parse_event(self._event(), "boxing", "cloudbet", "boxing", "boxing-international-matchups")
+        assert ev is not None
+        assert ev.url == "https://www.cloudbet.com/en/sports/boxing/international-matchups/34591796"
+
+    def test_url_uses_cloudbet_sport_key_not_internal_name(self):
+        # Internal sport "ice_hockey" → Cloudbet sport key "ice-hockey".
+        ev = parse_event(self._event(), "ice_hockey", "cloudbet", "ice-hockey", "ice-hockey-nhl")
+        assert ev is not None
+        assert ev.url == "https://www.cloudbet.com/en/sports/ice-hockey/nhl/34591796"
+
+    def test_event_url_stamped_on_every_outcome(self):
+        ev = parse_event(self._event(), "boxing", "cloudbet", "boxing", "boxing-international-matchups")
+        assert ev is not None
+        expected = "https://www.cloudbet.com/en/sports/boxing/international-matchups/34591796"
+        outcomes = [o for m in ev.markets for o in m["outcomes"]]
+        assert outcomes
+        for o in outcomes:
+            assert o["provider_meta"]["cloudbet_event_url"] == expected
+
+    def test_competition_key_without_sport_prefix_used_as_is(self):
+        ev = parse_event(self._event(), "boxing", "cloudbet", "boxing", "international-matchups")
+        assert ev is not None
+        assert ev.url == "https://www.cloudbet.com/en/sports/boxing/international-matchups/34591796"
+
+    def test_legacy_call_without_routing_keys_falls_back(self):
+        # 3-arg call (unit tests / legacy) must not crash; URL degrades to the
+        # sport landing page rather than a broken event link.
+        ev = parse_event(self._event(), "boxing", "cloudbet")
+        assert ev is not None
+        assert ev.url == "https://www.cloudbet.com/en/sports/boxing"

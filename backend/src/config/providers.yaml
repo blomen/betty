@@ -802,6 +802,11 @@ providers:
     retriever_type: cloudbet
     api_base: https://sports-api.cloudbet.com/pub/v2/odds
     api_key: ${CLOUDBET_API_KEY}
+    # Cloudbet is a crypto book — /iam-balances reports the fiatAggregated
+    # figure in USD (verified: fiatCurrency=USD regardless of display locale).
+    # Without this, get_provider_currency falls back to SEK and the bankroll
+    # under-counts cloudbet ~10x (balance_sek = balance * 1.0 instead of *rate).
+    currency: USD
     supported_sports:
       - football
       - basketball
