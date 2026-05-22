@@ -612,6 +612,18 @@ class BatchBuilder:
             bankroll_needed=getattr(result, "bankroll_needed", 0.0) or 0.0,
         )
 
+    @staticmethod
+    def _odds_row_point(market: str, outcome: str, point: float | None) -> float | None:
+        """Map an opportunity LINE to the matching Odds-row point.
+
+        Opportunities store a spread's `point` as the LINE (home-team handicap).
+        Odds rows store each side's OWN handicap: `home@line`, `away@-line`.
+        Totals (over/under) and 1x2 carry the same point on every outcome.
+        """
+        if market == "spread" and outcome == "away" and point is not None:
+            return -point
+        return point
+
     def _populate_odds_age(self, batch: list[BatchBet]) -> None:
         """Bulk-lookup Odds.updated_at to compute odds_age_minutes for each bet."""
         if not batch:
@@ -633,7 +645,8 @@ class BatchBuilder:
         for r in rows:
             lookup[(r.event_id, r.provider_id, r.market, r.outcome, r.point)] = r.updated_at
         for b in batch:
-            ts = lookup.get((b.event_id, b.provider_id, b.market, b.outcome, b.point))
+            row_point = self._odds_row_point(b.market, b.outcome, b.point)
+            ts = lookup.get((b.event_id, b.provider_id, b.market, b.outcome, row_point))
             if ts:
                 if ts.tzinfo is None:
                     ts = ts.replace(tzinfo=timezone.utc)
@@ -656,7 +669,7 @@ class BatchBuilder:
 
         keys = {(b.event_id, b.market, b.outcome) for b in batch}
         rows = (
-            self.db.query(Odds.event_id, Odds.provider_id, Odds.market, Odds.outcome, Odds.provider_meta)
+            self.db.query(Odds.event_id, Odds.provider_id, Odds.market, Odds.outcome, Odds.point, Odds.provider_meta)
             .filter(
                 Odds.event_id.in_(list({k[0] for k in keys})),
                 Odds.provider_id.in_(list(provider_ids)),
@@ -669,17 +682,23 @@ class BatchBuilder:
         for r in rows:
             if r.provider_meta:
                 meta = r.provider_meta if isinstance(r.provider_meta, dict) else {}
-                lookup[(r.event_id, r.provider_id, r.market, r.outcome)] = meta
+                # Key MUST include point: provider_meta carries per-outcome data
+                # (Polymarket token_id), and spread/total ladders share
+                # (market, outcome) across many lines. Without point, a -1.5
+                # spread bet latched onto the -11.5 rung's token. Mirrors the
+                # per-leg fix in opportunity_service._resolve_leg_provider_meta.
+                lookup[(r.event_id, r.provider_id, r.market, r.outcome, r.point)] = meta
                 # Keep first meta per event+provider for fallback navigation
                 if meta.get("event_id") and (r.event_id, r.provider_id) not in event_lookup:
                     event_lookup[(r.event_id, r.provider_id)] = meta
         for b in batch:
-            meta = lookup.get((b.event_id, b.provider_id, b.market, b.outcome))
+            row_point = self._odds_row_point(b.market, b.outcome, b.point)
+            meta = lookup.get((b.event_id, b.provider_id, b.market, b.outcome, row_point))
             # Fallback: look up via canonical provider (clone shares same odds/meta)
             if not meta:
                 canonical = PROVIDER_CANONICAL.get(b.provider_id)
                 if canonical:
-                    meta = lookup.get((b.event_id, canonical, b.market, b.outcome))
+                    meta = lookup.get((b.event_id, canonical, b.market, b.outcome, row_point))
             # Fallback: any meta for same event+provider (navigation IDs are event-level)
             if not meta:
                 meta = event_lookup.get((b.event_id, b.provider_id))

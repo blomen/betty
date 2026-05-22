@@ -10,7 +10,6 @@ Storage/persistence is handled by the caller (analyzer.py).
 """
 
 import logging
-import math
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -1159,9 +1158,6 @@ class OpportunityScanner:
                     )
                     continue
 
-            # Create market key (point field preserved for compatibility but not used for 1x2/moneyline)
-            market_key = f"{odds.market}_{odds.point}" if odds.point is not None else odds.market
-
             # Normalize outcome labels: 10bet stores "Home +4.5" / "Away -4.5"
             # and "Over 163.5" / "Under 163.5" instead of "home"/"away"/"over"/"under".
             outcome = odds.outcome
@@ -1176,6 +1172,26 @@ class OpportunityScanner:
                 outcome = "over"
             elif outcome_lower.startswith("under"):
                 outcome = "under"
+
+            # Create market key. Spread markets are keyed by the LINE — the
+            # home-team handicap — NOT the raw per-outcome point. A spread row
+            # stores its OWN side's handicap in `point`: `home@P` belongs to
+            # line P, `away@P` to line -P (the away team getting +P means the
+            # home team is at -P). Keying by raw point would file `home@-3.5`
+            # (e.g. Spurs -3.5) and another book's `away@-3.5` (Thunder -3.5 —
+            # which is the Spurs +3.5 line) under one key, letting the scanner
+            # value-compare two physically different bets. Keying by line keeps
+            # both sides of one line together and never merges two lines.
+            # (point preserved on each entry below; not used for 1x2/moneyline.)
+            if odds.point is None:
+                market_key = odds.market
+            elif odds.market == "spread" and outcome in ("home", "away"):
+                line = odds.point if outcome == "home" else -odds.point
+                if line == 0:
+                    line = 0.0  # normalise -0.0 so home@0 and away@0 share a key
+                market_key = f"spread_{line}"
+            else:
+                market_key = f"{odds.market}_{odds.point}"
 
             grouped[market_key][outcome].append(
                 {
@@ -1199,28 +1215,24 @@ class OpportunityScanner:
 
     def _fix_asian_spread_grouping(self, grouped: dict[str, dict[str, list[dict]]]) -> None:
         """
-        Normalize spread outcome labels to match Pinnacle's convention.
+        Drop 3-way European handicap providers from spread markets.
 
-        Providers use three different conventions for spread outcome labels:
-        1. Pinnacle/ComeOn: home@negative, away@positive (one outcome per point)
-        2. 888sport/Spectate: home@positive, away@negative (SWAPPED labels)
-        3. Betinia/Altenar: both outcomes at both points (labels = "which team")
+        group_odds keys spread odds by LINE (home handicap), so every provider's
+        home/away entries under one key already describe the same physical 2-way
+        line. No odds-proximity relabeling is needed — and it was actively
+        harmful: the old heuristic re-labeled a book's outcome to match
+        Pinnacle's by price closeness, which mis-filed Polymarket's genuine
+        opposite-team alternate lines (e.g. "Thunder -3.5") as the wrong team.
 
-        The old approach relocated by label, which broke when labels were swapped
-        or duplicated — creating huge odds ratios that killed the entire market.
-
-        New approach: use odds proximity to Pinnacle to determine which soft entry
-        matches Pinnacle's outcome, regardless of the provider's label convention.
+        European handicap (home/draw/away at integer points) IS a fundamentally
+        different market: the draw outcome absorbs probability, so comparing it
+        against 2-way Asian handicap produces false edges. Any provider quoting
+        a `draw` outcome in a spread market is removed.
 
         This mutates the grouped dict in-place.
         """
-        spread_keys = [k for k in grouped if k.startswith("spread_")]
-
-        # First pass: remove 3-way European handicap providers.
-        # European handicap has home/draw/away at integer points — fundamentally
-        # different from 2-way Asian handicap (Pinnacle). Comparing them produces
-        # false edges because the draw outcome absorbs probability.
-        for market_key in spread_keys:
+        # Remove 3-way European handicap providers.
+        for market_key in [k for k in grouped if k.startswith("spread_")]:
             odds_by_outcome = grouped[market_key]
             if "draw" in odds_by_outcome:
                 european_providers = {e["provider"] for e in odds_by_outcome["draw"]}
@@ -1231,119 +1243,6 @@ class OpportunityScanner:
                     if not odds_by_outcome[outcome_type]:
                         del odds_by_outcome[outcome_type]
                 logger.debug(f"Removed 3-way European handicap providers {european_providers} from {market_key}")
-
-        # Second pass: at each spread point where Pinnacle has an outcome,
-        # keep only the closest soft entry per provider (by odds proximity).
-        # Discard mismatched entries — the complement point will independently
-        # pick the right entries from its own Pinnacle reference.
-        # No cross-point relocation avoids bidirectional bounce issues.
-        for market_key in [k for k in grouped if k.startswith("spread_")]:
-            try:
-                point = float(market_key.split("_", 1)[1])
-            except (ValueError, IndexError):
-                continue
-
-            odds_by_outcome = grouped[market_key]
-
-            # Find Pinnacle's outcome and odds at this point
-            pin_outcome = None
-            pin_odds = None
-            for otype in ("home", "away"):
-                for entry in odds_by_outcome.get(otype, []):
-                    if entry["provider"] in SHARP_PROVIDERS:
-                        pin_outcome = otype
-                        pin_odds = entry["odds"]
-                        break
-                if pin_outcome:
-                    break
-
-            if not pin_outcome or not pin_odds:
-                continue
-
-            other_outcome = "away" if pin_outcome == "home" else "home"
-
-            # Find Pinnacle's complement odds at the opposite point.
-            # Used to reject soft entries that are actually on the wrong side
-            # (e.g., VBet stores home@-X when Pinnacle has away@-X for different teams).
-            pin_complement_odds = None
-            complement_key = f"spread_{-point}"
-            complement_data = grouped.get(complement_key, {})
-            for otype in ("home", "away"):
-                for entry in complement_data.get(otype, []):
-                    if entry["provider"] in SHARP_PROVIDERS:
-                        pin_complement_odds = entry["odds"]
-                        break
-                if pin_complement_odds:
-                    break
-
-            # Collect all soft entries at this point, grouped by provider
-            soft_by_provider: dict[str, list[tuple[str, dict]]] = defaultdict(list)
-            for otype in ("home", "away"):
-                for entry in odds_by_outcome.get(otype, []):
-                    if entry["provider"] not in SHARP_PROVIDERS:
-                        soft_by_provider[entry["provider"]].append((otype, entry))
-
-            keep_entries = []
-
-            for provider, entries in soft_by_provider.items():
-                # Keep only the entry closest to Pinnacle's odds (regardless of label).
-                # Discard all others — they belong to the complement side.
-                best_idx = min(
-                    range(len(entries)),
-                    key=lambda i: abs(entries[i][1]["odds"] / pin_odds - 1),
-                )
-                best_label, best_entry = entries[best_idx]
-                ratio = best_entry["odds"] / pin_odds
-                if not (0.65 < ratio < 1.55):
-                    continue
-
-                # Guard: if a provider has only ONE entry at this point and its
-                # outcome label differs from Pinnacle's, it's very likely a convention
-                # mismatch (e.g., Kambi betOfferType 7 stores away@-1.5 meaning
-                # "away team gives 1.5" while Pinnacle's home@-1.5 means "home
-                # team gives 1.5" — completely different bets). Apply a much
-                # tighter ratio to prevent cross-outcome false positives.
-                if len(entries) == 1 and best_label != pin_outcome and not (0.80 < ratio < 1.25):
-                    logger.debug(
-                        f"Rejected {provider} {market_key}: single entry with "
-                        f"label '{best_label}' != Pinnacle '{pin_outcome}', "
-                        f"ratio {ratio:.2f} outside tight range (0.80-1.25)"
-                    )
-                    continue
-
-                # Cross-check: if the complement Pinnacle odds exist, verify the
-                # soft entry is closer to THIS point's Pinnacle than to the complement.
-                # Providers like VBet always assign home@negative regardless of who's
-                # favored, which can place a "home -X" entry at the same market_key
-                # as Pinnacle's "away -X" — different bets on different teams.
-                # Using log ratio for symmetric distance comparison.
-                # Only reject when Pinnacle sides are far enough apart (>2%)
-                # to make the complement check reliable — near-identical sides
-                # (e.g., 1.90 vs 1.91) are too close for this heuristic.
-                if pin_complement_odds and pin_complement_odds > 1:
-                    pin_spread = abs(math.log(pin_odds / pin_complement_odds))
-                    if pin_spread > 0.02:
-                        dist_to_pin = abs(math.log(best_entry["odds"] / pin_odds))
-                        dist_to_complement = abs(math.log(best_entry["odds"] / pin_complement_odds))
-                        if dist_to_complement < dist_to_pin:
-                            logger.debug(
-                                f"Rejected {provider} {market_key} odds={best_entry['odds']:.2f}: "
-                                f"closer to complement Pinnacle {pin_complement_odds:.2f} "
-                                f"than to this side {pin_odds:.2f}"
-                            )
-                            continue
-
-                keep_entries.append(best_entry)
-
-            # Rebuild: sharp entries + correctly matched soft entries
-            sharp_at_pin = [e for e in odds_by_outcome.get(pin_outcome, []) if e["provider"] in SHARP_PROVIDERS]
-            sharp_at_other = [e for e in odds_by_outcome.get(other_outcome, []) if e["provider"] in SHARP_PROVIDERS]
-
-            odds_by_outcome.clear()
-            if sharp_at_pin or keep_entries:
-                odds_by_outcome[pin_outcome] = sharp_at_pin + keep_entries
-            if sharp_at_other:
-                odds_by_outcome[other_outcome] = sharp_at_other
 
     def _count_outcomes_per_provider(self, odds_by_outcome: dict[str, list[dict]]) -> dict[str, int]:
         """
@@ -1668,36 +1567,20 @@ class OpportunityScanner:
         market: str,
         all_markets: dict,
     ) -> tuple[dict, bool]:
+        """No-op: spread odds are keyed by LINE (home handicap) in group_odds.
+
+        Both sides of a physical line — Pinnacle's `home@L` and `away@-L` — now
+        co-locate under the same key (`spread_L`), so ``_build_pinnacle_market``
+        already yields the full 2-way market and there is nothing to reconstruct.
+
+        The old implementation pulled the missing outcome from `spread_{-L}` —
+        which, under line keying, is the OPPOSITE line. That cross-line pull is
+        exactly the bug that let a book's `away` odds on one handicap be
+        value-compared against Pinnacle's fair for a different handicap.
+        Kept as a stable hook for the call sites; returns ``pinnacle_market``
+        unchanged.
         """
-        For spread markets, find the complement point to build full 2-way Pinnacle market.
-
-        Pinnacle stores Asian handicap as home@-X, away@+X under different market keys.
-        This finds the complement point and merges the missing outcome into pinnacle_market.
-
-        Args:
-            pinnacle_market: Current {outcome: odds} dict for Pinnacle (mutated in place)
-            market: Market key (e.g. "spread_-6.5")
-            all_markets: Full odds_grouped dict for this event
-
-        Returns:
-            (pinnacle_market, enriched) where enriched is True if complement was found
-        """
-        if not (all_markets and market.startswith("spread_") and len(pinnacle_market) == 1):
-            return pinnacle_market, False
-
-        try:
-            point = float(market.split("_", 1)[1])
-            complement_key = f"spread_{-point}"
-            complement_data = all_markets.get(complement_key, {})
-            for out, providers in complement_data.items():
-                if out not in pinnacle_market:
-                    for p in providers:
-                        if p["provider"] == "pinnacle":
-                            pinnacle_market[out] = p["odds"]
-                            break
-            return pinnacle_market, True
-        except (ValueError, IndexError):
-            return pinnacle_market, False
+        return pinnacle_market, False
 
     def _has_odds_discrepancy(
         self,
