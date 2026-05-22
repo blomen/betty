@@ -16,15 +16,17 @@
 
 **Backend (server — needs rebuild deploy):**
 - `backend/src/db/models.py` — add `arb_group_id` column to `Bet` + migration entry
-- `backend/src/repositories/bet_repo.py` — add `recorded_provider_bet_ids()`
+- `backend/src/repositories/bet_repo.py` — add `recorded_provider_bet_ids()` + `recorded_signatures()` (Part 4)
 - `backend/src/services/arb_correlation.py` — **new** — `correlate_arbs()` pass
-- `backend/src/api/routes/bets.py` — add `GET /recorded-ids` + `POST /correlate-arbs`
+- `backend/src/api/routes/bets.py` — add `GET /recorded-ids` + `GET /recorded-signatures` (Part 4) + `POST /correlate-arbs`
 
 **Local client (arnold — needs `arnold.bat` restart):**
 - `arnold/mirror/recorders/polymarket_api.py` — `sync()` dedup against all recorded ids
 - `arnold/mirror/recorders/kalshi_api.py` — same
 - `arnold/mirror/router.py` — wire a fail-closed `fetch_known_ids` callable
 - `arnold/mirror/recorders/auto_poller.py` — call `correlate-arbs` after each cycle
+- `arnold/mirror/pending_loop.py` — `_record_unknown_open_bets` dedup against all recorded bets (Part 4)
+- `arnold/mirror/provider_runner.py` — same (sibling copy) (Part 4)
 
 **Tests:**
 - `backend/tests/test_bet_repo.py` — extend
@@ -1088,8 +1090,346 @@ Re-run the value-bet and arb P&L aggregates from the original audit and report t
 
 ---
 
+## Task 13: `BetRepo.recorded_signatures()`  *(Part 4 — added 2026-05-22)*
+
+> **Part 4 ordering:** do Tasks 13–15 **before** Task 10 so one backend rebuild +
+> `arnold.bat` restart ships Parts 1–4a together. Task 16 (cleanup) runs after the
+> deploy, alongside Task 11. If Parts 1–3 already deployed, Tasks 13–15 need their
+> own `server-deploy.sh rebuild backend` + local restart.
+
+**Files:**
+- Modify: `backend/src/repositories/bet_repo.py`
+- Test: `backend/tests/test_bet_repo.py`
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `backend/tests/test_bet_repo.py`:
+
+```python
+def test_recorded_signatures_spans_all_results_and_types(db):
+    """The reactive-sync dedup must see settled bets AND arb_counter rows —
+    a settled polymarket arb counter must not re-insert as a value row."""
+    repo = BetRepo(db)
+    db.add(Bet(profile_id=1, provider_id="polymarket", odds=6.6667, stake=3.83,
+               result="won", bet_type="arb_counter", provider_bet_id="0xAAA"))
+    db.add(Bet(profile_id=1, provider_id="polymarket", odds=2.05, stake=20.0,
+               result="lost", bet_type=None, provider_bet_id=None))
+    db.add(Bet(profile_id=1, provider_id="betinia", odds=2.0, stake=10.0,
+               result="won", bet_type="arb_anchor", provider_bet_id=None))
+    db.commit()
+
+    sigs = repo.recorded_signatures(profile_id=1, provider_id="polymarket")
+    assert (6.67, 3.8) in sigs        # settled arb_counter — must be visible
+    assert (2.05, 20.0) in sigs
+    assert (2.0, 10.0) not in sigs    # other provider excluded
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cd backend && pytest tests/test_bet_repo.py::test_recorded_signatures_spans_all_results_and_types -v`
+Expected: FAIL with `AttributeError: 'BetRepo' object has no attribute 'recorded_signatures'`
+
+- [ ] **Step 3: Implement the method**
+
+In `backend/src/repositories/bet_repo.py`, add to `class BetRepo` (after `recorded_provider_bet_ids`):
+
+```python
+    def recorded_signatures(self, profile_id: int, provider_id: str) -> set[tuple[float, float]]:
+        """(odds, stake) signatures of EVERY recorded bet for a provider —
+        any result, any bet_type. The reactive history sync dedups against
+        this so a settled arb_counter position is never re-inserted as a
+        NULL-typed value row.
+
+        Rounding matches pending_loop._sig: odds 2dp, stake 1dp (the 1dp on
+        stake absorbs CLOB-fill cent drift, e.g. 3.82 vs 3.83 -> 3.8).
+        """
+        rows = (
+            self.db.query(Bet.odds, Bet.stake)
+            .filter(Bet.profile_id == profile_id, Bet.provider_id == provider_id)
+            .all()
+        )
+        return {(round(float(o or 0), 2), round(float(s or 0), 1)) for o, s in rows}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `cd backend && pytest tests/test_bet_repo.py::test_recorded_signatures_spans_all_results_and_types -v`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/src/repositories/bet_repo.py backend/tests/test_bet_repo.py
+git commit -m "feat(bets): BetRepo.recorded_signatures for cross-path dedup"
+```
+
+---
+
+## Task 14: `GET /api/bets/recorded-signatures` endpoint  *(Part 4)*
+
+**Files:**
+- Modify: `backend/src/api/routes/bets.py` (next to `/recorded-ids` from Task 3)
+
+- [ ] **Step 1: Add the endpoint**
+
+In `backend/src/api/routes/bets.py`, immediately after the `recorded_ids` route (Task 3), add:
+
+```python
+@router.get("/recorded-signatures")
+def recorded_signatures(provider_id: str, db: Session = Depends(get_db)):
+    """(odds, stake) signatures of every recorded bet for a provider — any
+    result, any bet_type. The reactive history sync dedups against this so a
+    settled arb_counter position is not re-inserted as a NULL-typed value row.
+    """
+    profile = ProfileRepo(db).get_active()
+    sigs = BetRepo(db).recorded_signatures(profile.id, provider_id)
+    return {"signatures": sorted([list(s) for s in sigs])}
+```
+
+- [ ] **Step 2: Verify the route registers**
+
+Run: `cd backend && python -c "from src.api.routes.bets import router; print(sorted(r.path for r in router.routes if 'recorded' in r.path))"`
+Expected: prints `['/recorded-ids', '/recorded-signatures']`
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add backend/src/api/routes/bets.py
+git commit -m "feat(bets): GET /api/bets/recorded-signatures endpoint"
+```
+
+(End-to-end verification happens in Task 16 after deploy.)
+
+---
+
+## Task 15: Dedup `_record_unknown_open_bets` against all recorded bets  *(Part 4)*
+
+**Files:**
+- Modify: `arnold/mirror/pending_loop.py`
+- Modify: `arnold/mirror/provider_runner.py` (near-verbatim sibling copy)
+
+`_record_unknown_open_bets` seeds its dedup sets from `db_pending` (pending only).
+A settled `arb_counter` position is invisible to it, so the reactive sync
+re-inserts it as a `bet_type=NULL` value row. Fix: also seed from the all-status
+recorded sets, and fail closed if they cannot be fetched.
+
+- [ ] **Step 1: Add a recorded-sets fetch helper to `PendingLoop`**
+
+In `arnold/mirror/pending_loop.py`, add this method next to `_post_balance`:
+
+```python
+    async def _fetch_recorded(self, pid: str):
+        """Fetch the all-status dedup sets for a provider. Returns
+        (recorded_ids, recorded_sigs), or (None, None) on any failure — the
+        caller fails closed and skips insertion."""
+        from arnold.http_client import tunnel_client
+
+        try:
+            client = tunnel_client()
+            r1 = await client.get("/api/bets/recorded-ids", params={"provider_id": pid}, timeout=15.0)
+            r1.raise_for_status()
+            r2 = await client.get("/api/bets/recorded-signatures", params={"provider_id": pid}, timeout=15.0)
+            r2.raise_for_status()
+            ids = {str(x) for x in (r1.json().get("provider_bet_ids") or [])}
+            sigs = {(round(float(o), 2), round(float(s), 1)) for o, s in (r2.json().get("signatures") or [])}
+            return ids, sigs
+        except Exception:
+            logger.warning(f"[PendingLoop] _fetch_recorded({pid}) failed — reactive insert will skip")
+            return None, None
+```
+
+- [ ] **Step 2: Pass the recorded sets at the call site**
+
+In `_sync_provider`, replace the line:
+
+```python
+        await self._record_unknown_open_bets(pid, history, db_bets)
+```
+
+with:
+
+```python
+        recorded_ids, recorded_sigs = await self._fetch_recorded(pid)
+        await self._record_unknown_open_bets(pid, history, db_bets, recorded_ids, recorded_sigs)
+```
+
+- [ ] **Step 3: Widen the `_record_unknown_open_bets` signature**
+
+Change:
+
+```python
+    async def _record_unknown_open_bets(
+        self, provider_id: str, history: list[dict], db_pending: list[dict] | None
+    ) -> None:
+```
+
+to:
+
+```python
+    async def _record_unknown_open_bets(
+        self, provider_id: str, history: list[dict], db_pending: list[dict] | None,
+        recorded_ids: set[str] | None = None,
+        recorded_sigs: set[tuple[float, float]] | None = None,
+    ) -> None:
+```
+
+- [ ] **Step 4: Add the fail-closed guard**
+
+Immediately after the existing `if db_pending is None:` abort block, add:
+
+```python
+        if recorded_ids is None or recorded_sigs is None:
+            logger.warning(
+                f"[PendingLoop] _record_unknown_open_bets({provider_id}) aborted — "
+                "recorded ids/signatures unavailable; refusing to insert (would re-create phantoms)"
+            )
+            return
+```
+
+- [ ] **Step 5: Seed the dedup sets from the recorded sets**
+
+Replace the `db_pending` seeding loop:
+
+```python
+        for b in db_pending:
+            pid_id = str(b.get("provider_bet_id") or "")
+            if pid_id:
+                known_pids.add(pid_id)
+            known_sigs[_sig(b)] += 1
+```
+
+with:
+
+```python
+        # Seed from the all-status recorded sets — they span EVERY recorded bet
+        # for this provider (any result, any bet_type), so a settled arb_counter
+        # position is recognized and never re-inserted as a value row.
+        # recorded_sigs already includes the pending rows, so db_pending is NOT
+        # re-seeded into known_sigs (that would double-count and let a genuine
+        # duplicate slip past the count-based dedup).
+        known_pids |= {p for p in recorded_ids if p}
+        for sig in recorded_sigs:
+            known_sigs[sig] += 1
+        for b in db_pending:
+            pid_id = str(b.get("provider_bet_id") or "")
+            if pid_id:
+                known_pids.add(pid_id)
+```
+
+- [ ] **Step 6: Apply the identical change to `provider_runner.py`**
+
+`arnold/mirror/provider_runner.py` has a near-verbatim `_record_unknown_open_bets`
+(the `pending_loop` docstring says "Mirrors provider_runner._record_unknown_open_bets").
+Apply Steps 1–5 there: add the same `_fetch_recorded` helper, the two-line call-site
+change, the widened signature, the fail-closed guard, and the recorded-set seeding.
+
+- [ ] **Step 7: Smoke-check syntax + lint**
+
+```bash
+python -c "import ast; [ast.parse(open(f).read()) for f in ('arnold/mirror/pending_loop.py','arnold/mirror/provider_runner.py')]; print('ok')"
+python -m ruff check arnold/mirror/pending_loop.py arnold/mirror/provider_runner.py
+```
+Expected: prints `ok`; ruff clean.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add arnold/mirror/pending_loop.py arnold/mirror/provider_runner.py
+git commit -m "fix(mirror): dedup reactive sync against all recorded bets
+
+_record_unknown_open_bets seeded its dedup set from pending bets only,
+so a settled polymarket arb_counter position re-inserted as a NULL-typed
+value row. Seed from the all-status recorded-ids / recorded-signatures
+endpoints; fail closed if they are unavailable."
+```
+
+(End-to-end verification happens in Task 16 after deploy.)
+
+---
+
+## Task 16: Clean the value-row phantoms  *(Part 4b)*
+
+> **CHECKPOINT — show the keep/delete list to the user and get sign-off before any DELETE.** Run only AFTER the deploy (Task 10) so Task 15's fix is live and no new phantoms appear.
+
+**Files:** none (DB operation against `arnold-postgres-1`)
+
+- [ ] **Step 1: Show the value-row phantoms that would be deleted**
+
+```bash
+ssh root@148.251.40.251 "cd /opt/arnold && docker compose exec -T postgres psql -U arnold -d arnold -c \"
+SELECT v.id, v.odds, v.stake, v.result, v.event_id, left(v.boost_event,40) AS boost
+FROM bets v
+WHERE v.provider_id='polymarket' AND v.bet_type IS NULL AND v.provider_bet_id IS NULL
+  AND EXISTS (SELECT 1 FROM bets c
+    WHERE c.provider_id='polymarket' AND c.bet_type='arb_counter'
+      AND round(c.odds::numeric,2)=round(v.odds::numeric,2)
+      AND round(c.stake::numeric,1)=round(v.stake::numeric,1))
+ORDER BY v.id;\""
+```
+Expected: the value-row phantoms (the 2026-05-22 audit found ids 613, 614, 760, 761, 774 — verify the live set). Present this list to the user for sign-off.
+
+- [ ] **Step 2: Check FK children referencing the doomed rows**
+
+```bash
+ssh root@148.251.40.251 "cd /opt/arnold && docker compose exec -T postgres psql -U arnold -d arnold -c \"
+WITH doomed AS (
+  SELECT v.id FROM bets v
+  WHERE v.provider_id='polymarket' AND v.bet_type IS NULL AND v.provider_bet_id IS NULL
+    AND EXISTS (SELECT 1 FROM bets c WHERE c.provider_id='polymarket' AND c.bet_type='arb_counter'
+      AND round(c.odds::numeric,2)=round(v.odds::numeric,2)
+      AND round(c.stake::numeric,1)=round(v.stake::numeric,1)))
+SELECT 'bet_traces' tbl, count(*) FROM bet_traces WHERE bet_id IN (SELECT id FROM doomed)
+UNION ALL SELECT 'bet_postmortems', count(*) FROM bet_postmortems WHERE bet_id IN (SELECT id FROM doomed)
+UNION ALL SELECT 'settlement_queue', count(*) FROM settlement_queue WHERE bet_id IN (SELECT id FROM doomed);\""
+```
+Expected: counts per child table (likely 0 for phantom rows).
+
+- [ ] **Step 3: Delete children (if any) then the phantom rows, in one transaction**
+
+```bash
+ssh root@148.251.40.251 "cd /opt/arnold && docker compose exec -T postgres psql -U arnold -d arnold -c \"
+BEGIN;
+WITH doomed AS (
+  SELECT v.id FROM bets v WHERE v.provider_id='polymarket' AND v.bet_type IS NULL AND v.provider_bet_id IS NULL
+    AND EXISTS (SELECT 1 FROM bets c WHERE c.provider_id='polymarket' AND c.bet_type='arb_counter'
+      AND round(c.odds::numeric,2)=round(v.odds::numeric,2) AND round(c.stake::numeric,1)=round(v.stake::numeric,1)))
+DELETE FROM bet_traces WHERE bet_id IN (SELECT id FROM doomed);
+WITH doomed AS (
+  SELECT v.id FROM bets v WHERE v.provider_id='polymarket' AND v.bet_type IS NULL AND v.provider_bet_id IS NULL
+    AND EXISTS (SELECT 1 FROM bets c WHERE c.provider_id='polymarket' AND c.bet_type='arb_counter'
+      AND round(c.odds::numeric,2)=round(v.odds::numeric,2) AND round(c.stake::numeric,1)=round(v.stake::numeric,1)))
+DELETE FROM bet_postmortems WHERE bet_id IN (SELECT id FROM doomed);
+WITH doomed AS (
+  SELECT v.id FROM bets v WHERE v.provider_id='polymarket' AND v.bet_type IS NULL AND v.provider_bet_id IS NULL
+    AND EXISTS (SELECT 1 FROM bets c WHERE c.provider_id='polymarket' AND c.bet_type='arb_counter'
+      AND round(c.odds::numeric,2)=round(v.odds::numeric,2) AND round(c.stake::numeric,1)=round(v.stake::numeric,1)))
+DELETE FROM settlement_queue WHERE bet_id IN (SELECT id FROM doomed);
+WITH doomed AS (
+  SELECT v.id FROM bets v WHERE v.provider_id='polymarket' AND v.bet_type IS NULL AND v.provider_bet_id IS NULL
+    AND EXISTS (SELECT 1 FROM bets c WHERE c.provider_id='polymarket' AND c.bet_type='arb_counter'
+      AND round(c.odds::numeric,2)=round(v.odds::numeric,2) AND round(c.stake::numeric,1)=round(v.stake::numeric,1)))
+DELETE FROM bets WHERE id IN (SELECT id FROM doomed);
+COMMIT;\""
+```
+Expected: the final `DELETE` reports the phantom-row count from Step 1.
+
+- [ ] **Step 4: Verify no value-row phantoms remain**
+
+```bash
+ssh root@148.251.40.251 "cd /opt/arnold && docker compose exec -T postgres psql -U arnold -d arnold -c \"
+SELECT count(*) FROM bets v WHERE v.provider_id='polymarket' AND v.bet_type IS NULL AND v.provider_bet_id IS NULL
+  AND EXISTS (SELECT 1 FROM bets c WHERE c.provider_id='polymarket' AND c.bet_type='arb_counter'
+    AND round(c.odds::numeric,2)=round(v.odds::numeric,2) AND round(c.stake::numeric,1)=round(v.stake::numeric,1));\""
+```
+Expected: `0`.
+
+- [ ] **Step 5: No commit** (operational task)
+
+---
+
 ## Notes
 
 - **Settlement logic is intentionally unchanged** — it only marks `lost` on genuine on-chain resolution. The "instant lost" symptom was the duplicate being re-settled; Task 4 removes the duplication.
 - **Honest limitation:** Polymarket legs with a null `event_id` and an obscure title (ITF / minor esports) with no single clear anchor are left unlinked by Task 7. Aggregate P&L is still correct after Tasks 4–11; only per-arb grouping is incomplete for those.
 - The `arb_runner._record_bet` `notes` field (dropped by `BetCreate`) is left as-is — the user places arbs manually, so that path is not exercised.
+- **Part 4** closes a cross-path duplicate Parts 1–3 miss: the reactive history sync re-records a settled Polymarket `arb_counter` position as a separate `bet_type=NULL` value row. The wrong-`event_id` fuzzy match those phantom rows also carry is a *separate* defect (the matcher) — out of scope here; tracked separately.
