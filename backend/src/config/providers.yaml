@@ -802,12 +802,13 @@ providers:
     retriever_type: cloudbet
     api_base: https://sports-api.cloudbet.com/pub/v2/odds
     api_key: ${CLOUDBET_API_KEY}
-    # Cloudbet is a crypto book — /iam-balances reports the fiatAggregated
-    # figure in USD (verified: fiatCurrency=USD regardless of display locale).
-    # Without these, get_provider_currency falls back to SEK / get_exchange_rate
-    # to 1.0 and the bankroll under-counts cloudbet ~10x (balance_sek =
-    # balance * 1.0 instead of * rate). exchange_rate_sek mirrors kalshi/polymarket.
-    currency: USD
+    # Cloudbet is a crypto book — the wallet + betslip settle in USDC (a
+    # USD-pegged stablecoin), same as polymarket. /iam-balances reports the
+    # fiatAggregated total in USD; USD and USDC share one SEK rate via
+    # get_exchange_rate, so the conversion is identical either way.
+    # Without currency/exchange_rate_sek, get_provider_currency falls back to
+    # SEK and the bankroll under-counts cloudbet ~10x (balance * 1.0 vs * rate).
+    currency: USDC
     exchange_rate_sek: 10.5  # refresh periodically; rough 2026-04 FX
     supported_sports:
       - football
