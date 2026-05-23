@@ -42,29 +42,17 @@ _MARKET_TYPE_MAP = {
     "total_sets": "total",
 }
 
-# Sports where we NEVER derive moneyline from the 3-way `*.1x2` / `*.match_odds`
-# market. The 3-way is a different proposition — its draw is a real outcome
-# (regulation tie, ~5% for NBA basketball, ~22% for NHL hockey) and the
-# market carries its own vig. De-drawing it ("drop the draw, keep the prices")
-# yields a 2-way that is materially mispriced vs Pinnacle's true moneyline
-# and manufactures fake +EV. The canonical 2-way for these sports lives in
-# `*.moneyline` (basketball/hockey/NFL/baseball/esports), `*.winner` (combat,
-# tennis), or — when Cloudbet's affiliate API returns it as suspended (price=0)
-# — nowhere, in which case we correctly emit no moneyline for that event.
-# Soccer/football is intentionally absent: regulation draw is real and we
-# keep its 3-way as `1x2`.
-_SKIP_THREE_WAY_SPORTS = frozenset(
-    {
-        "basketball",
-        "ice_hockey",
-        "american_football",
-        "baseball",
-        "tennis",
-        "mma",
-        "boxing",
-        "esports",
-    }
-)
+# Combat sports expose a genuine 2-way `*.winner` market (= the moneyline,
+# "To Win Fight") AND a separate 3-way `*.1x2`/`*.match_odds`. The 3-way is
+# a different proposition (real draw outcome, own vig). Keeping it as a `1x2`
+# row is pointless — Pinnacle doesn't ship boxing/mma 1x2, so it would just
+# be orphan data with no sharp counterpart — and folding it into moneyline
+# would manufacture fake +EV against the 2-way. So combat 3-way is skipped
+# entirely. For other no-draw sports (basketball/hockey/NFL/baseball/tennis/
+# esports), the 3-way IS stored as type=1x2 for direct comparison against
+# Pinnacle's 1x2 market; the moneyline path comes solely from `*.moneyline`
+# / `*.winner` with no de-drawing.
+_COMBAT_SPORTS = frozenset({"boxing", "mma"})
 _THREE_WAY_SUFFIXES = frozenset({"1x2", "match_odds", "matchOdds"})
 
 # Sport key mapping: internal → Cloudbet
@@ -256,12 +244,10 @@ def parse_event(
     markets_data = event.get("markets") or {}
     markets = []
     for market_key, market_obj in markets_data.items():
-        # Never derive moneyline from the 3-way for sports listed in
-        # _SKIP_THREE_WAY_SPORTS. The 3-way is a different proposition than
-        # the 2-way (different vig, real regulation-tie outcome) and
-        # de-drawing it would manufacture fake +EV against Pinnacle's true
-        # moneyline. See _SKIP_THREE_WAY_SPORTS above.
-        if sport in _SKIP_THREE_WAY_SPORTS and market_key.split(".")[-1] in _THREE_WAY_SUFFIXES:
+        # Combat sports: skip the 3-way entirely — see _COMBAT_SPORTS above.
+        # No Pinnacle 1x2 counterpart for combat, and de-drawing would create
+        # a counterfeit moneyline. The real 2-way ML comes from `*.winner`.
+        if sport in _COMBAT_SPORTS and market_key.split(".")[-1] in _THREE_WAY_SUFFIXES:
             continue
         submarkets = (market_obj or {}).get("submarkets") or {}
         for _subkey, submarket in submarkets.items():
