@@ -127,6 +127,16 @@ def provider_min_stake_sek(provider_id: str, exchange_rate: float, fallback: flo
     profile = PROVIDER_STAKE_PROFILES.get(provider_id)
     if profile is None:
         return fallback
+    # min_stake_native is denominated in profile.currency, NOT the wallet's
+    # currency. For SEK-denominated minima ("20 kr click overhead" — pinnacle,
+    # cloudbet, rainbet) the value is already SEK; multiplying by the wallet's
+    # exchange_rate would scale a real cost in click-overhead by a wallet FX,
+    # which is meaningless. Crucially this matters when wallet currency ≠
+    # profile currency: cloudbet's profile says 20 SEK but its wallet is USDC
+    # (rate 10.5), so the old `value * rate` returned 210 SEK ≈ full cloudbet
+    # bankroll → every Kelly stake was floored to the entire balance.
+    if profile.currency == "SEK":
+        return profile.min_stake_native
     return profile.min_stake_native * (exchange_rate or 1.0)
 
 
