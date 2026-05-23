@@ -2171,8 +2171,11 @@ export default function PlayPage() {
     if (m === 'total') return b.point != null ? `O/U ${b.point}` : 'O/U'
     if (m === 'spread') {
       if (b.point == null) return 'SPREAD'
-      const sign = b.point > 0 ? '+' : ''
-      return `SPR ${sign}${b.point}`
+      // `point` is the LINE (home-team handicap). The away side's handicap is
+      // its negation — show the handicap for the side actually being bet.
+      const pt = b.outcome === 'away' ? -b.point : b.point
+      const sign = pt > 0 ? '+' : ''
+      return `SPR ${sign}${pt}`
     }
     return (b.market || '').toUpperCase() || '—'
   }
