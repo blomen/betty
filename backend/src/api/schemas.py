@@ -82,9 +82,11 @@ class BetCreate(BaseModel):
     fair_odds_at_placement: float | None = None  # For boosts: pass LLM fair odds directly
     boost_event: str | None = None  # For boosts: event name at placement (e.g. "Arsenal vs Sunderland")
     boost_title: str | None = None  # For boosts: LLM-simplified title at placement
-    bet_type: str | None = None  # "value", "arb", "reverse", "polymarket", "boost"
+    bet_type: str | None = None  # "value", "arb_anchor", "arb_counter", "mirror", "boost"
     start_time: str | None = None  # ISO datetime — persisted on Bet for boost lifecycle tracking
     provider_bet_id: str | None = None  # Coupon/bet ref from placement response — enables exact-ID settlement matching
+    arb_group_id: str | None = None  # Set by arb_runner to link anchor + counter legs at insert-time
+    #                                  (instead of relying on the after-the-fact correlate_arbs sweep)
     # Skip the balance-sufficiency check. Used by mirror's reactive sync
     # when recording bets the user already placed manually on the
     # bookmaker's site — the bookmaker already accepted the stake, our

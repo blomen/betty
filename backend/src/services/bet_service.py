@@ -63,6 +63,7 @@ class BetService:
         start_time_str: str | None = None,
         provider_bet_id: str | None = None,
         external_placement: bool = False,
+        arb_group_id: str | None = None,
     ) -> dict:
         """Record a placed bet for active profile with risk tracking."""
         profile = self.profile_repo.get_active()
@@ -257,6 +258,7 @@ class BetService:
             confirmation_id=confirmation_id,
             bet_type=bet_type,
             provider_bet_id=provider_bet_id,
+            arb_group_id=arb_group_id,
         )
 
         # Balance is managed manually via Adjust — no auto-deduct on placement

@@ -1922,7 +1922,13 @@ class ProviderRunner:
                 known_keys.discard(key)
                 continue
 
-            # Unknown open bet — record to DB
+            # Unknown open bet — record to DB.
+            # Tag bet_type so the row isn't NULL: poly/kalshi are always counter
+            # legs in this stack; soft providers get "mirror" (recognized type
+            # that bypasses the edge gate — user already accepted the price).
+            # Pre-fix, every reactive recovery landed bet_type=NULL and dropped
+            # out of stats / arb-correlation views.
+            inferred_bet_type = "arb_counter" if provider_id in ("polymarket", "kalshi") else "mirror"
             payload = {
                 "event_id": "",
                 "provider_id": provider_id,
@@ -1931,7 +1937,9 @@ class ProviderRunner:
                 "odds": entry.get("odds", 0),
                 "stake": entry.get("stake", 0),
                 "is_bonus": False,
+                "bet_type": inferred_bet_type,
                 "provider_bet_id": entry.get("provider_bet_id") or None,
+                "external_placement": True,
             }
             try:
                 from arnold.http_client import tunnel_client as _tc

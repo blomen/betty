@@ -580,6 +580,14 @@ class PendingLoop:
             picked_market = picked.get("market") or ""
             picked_outcome = picked.get("outcome") or ""
             picked_start_time = picked.get("start_time")
+            # Infer bet_type from provider role. Polymarket / Kalshi are always
+            # counter legs in this stack (arb hedges against soft books); soft
+            # books recovered via reactive history are tagged "mirror" — a
+            # recognized type that bypasses the server-side edge gate (since
+            # the user already accepted the price on the provider's site).
+            # Without an explicit type these rows landed as NULL and dropped
+            # out of every stats / arb-correlation view.
+            inferred_bet_type = "arb_counter" if provider_id in ("polymarket", "kalshi") else "mirror"
             payload = {
                 "event_id": picked_event_id,
                 "provider_id": provider_id,
@@ -588,6 +596,7 @@ class PendingLoop:
                 "odds": entry.get("odds", 0),
                 "stake": entry.get("stake", 0),
                 "is_bonus": False,
+                "bet_type": inferred_bet_type,
                 "provider_bet_id": pid_id or None,
                 # Free-text event name → boost_event field. UI uses this when
                 # home_team/away_team are null (no Event row joined).

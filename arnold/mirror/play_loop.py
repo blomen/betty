@@ -452,6 +452,12 @@ class PlayLoop:
         planned_odds = picked.get("planned_odds")
         start_time = picked.get("start_time")
 
+        # bet_type by provider role: polymarket/kalshi are always counter legs
+        # in this stack, every other provider acts as the anchor. The legacy
+        # value "arb" was a catch-all that downstream filters (arb_correlation,
+        # stats views) ignored — splitting into arb_anchor/arb_counter lets
+        # correlate_arbs link the legs and lets per-side analytics work.
+        inferred_bet_type = "arb_counter" if provider_id in ("polymarket", "kalshi") else "arb_anchor"
         payload = {
             "event_id": event_id,
             "provider_id": provider_id,
@@ -461,7 +467,7 @@ class PlayLoop:
             "point": point,
             "stake": actual_stake,
             "is_bonus": False,
-            "bet_type": "arb",
+            "bet_type": inferred_bet_type,
             "provider_bet_id": provider_bet_id,
             "start_time": start_time,
         }

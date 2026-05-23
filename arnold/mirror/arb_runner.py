@@ -1165,6 +1165,13 @@ class ArbRunner:
         gate skips this bet — arb legs can individually have negative edge as
         long as the COMBINED pair locks profit. The server's stand-alone gate
         would otherwise reject anchors on the favored side.
+
+        arb_group_id is passed as a first-class column so the anchor + counter
+        rows are linked at insert-time. Previously this id was stuffed into a
+        non-existent `notes` field and silently dropped; the only thing that
+        ever filled bets.arb_group_id was the after-the-fact correlate_arbs
+        sweep, which left 73% of legs unlinked (no event_id on counter, or
+        ambiguous title match).
         """
         from arnold.http_client import tunnel_client as _tc
 
@@ -1181,7 +1188,7 @@ class ArbRunner:
             "start_time": bet.get("start_time"),
             "provider_bet_id": provider_bet_id,
             "bet_type": "arb_anchor" if is_anchor else "arb_counter",
-            "notes": f"arb_group:{arb_group_id}",
+            "arb_group_id": arb_group_id or None,
         }
         client = _tc()
         for attempt in range(3):
