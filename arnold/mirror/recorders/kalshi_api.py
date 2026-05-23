@@ -126,25 +126,28 @@ async def _get(path: str, params: dict[str, Any] | None = None) -> dict | None:
 def _kalshi_position_to_recovered(p: dict, ticker_meta: dict | None) -> RecoveredPosition | None:
     """Convert a /portfolio/positions row to RecoveredPosition.
 
-    Kalshi position fields:
+    Kalshi position fields (as of API v2, 2026+):
       ticker: market ticker (e.g. "KXNBA-26MAY17PHILA-DAL")
-      position: signed share count (positive = YES, negative = NO)
-      market_exposure: cost basis in cents
-      total_traded: total volume traded
-      fees_paid: cents
+      position_fp: signed share count as decimal string (positive = YES, negative = NO)
+      market_exposure_dollars: cost basis as decimal string in dollars
+      total_traded_dollars: total volume traded in dollars
+      fees_paid_dollars: dollars
+
+    Field names with `_dollars` / `_fp` suffix are the post-2025 schema.
+    Pre-suffix names (`position`, `market_exposure`) return None silently.
     """
     ticker = p.get("ticker") or ""
-    shares = abs(int(p.get("position") or 0))
-    exposure_cents = int(p.get("market_exposure") or 0)
-    if shares <= 0 or exposure_cents <= 0:
+    raw_pos_float = float(p.get("position_fp") or 0)
+    shares = abs(raw_pos_float)
+    exposure_dollars = float(p.get("market_exposure_dollars") or 0)
+    if shares <= 0 or exposure_dollars <= 0:
         return None
 
     # Side: YES if position > 0, NO if < 0
-    raw_pos = int(p.get("position") or 0)
-    side = "YES" if raw_pos > 0 else "NO"
+    side = "YES" if raw_pos_float > 0 else "NO"
 
-    # avg_price (in dollars) = exposure / shares / 100
-    avg_price = exposure_cents / shares / 100.0
+    # avg_price (in dollars per share)
+    avg_price = exposure_dollars / shares
     if avg_price <= 0 or avg_price >= 1:
         return None
 
@@ -153,8 +156,8 @@ def _kalshi_position_to_recovered(p: dict, ticker_meta: dict | None) -> Recovere
     effective = avg_price + fee_rate * avg_price * (1.0 - avg_price)
     odds = round(1.0 / effective, 4) if effective > 0 else 1.01
 
-    # Stake in USD = exposure_cents / 100
-    stake = round(exposure_cents / 100.0, 2)
+    # Stake in USD
+    stake = round(exposure_dollars, 2)
 
     # Event/outcome name from ticker_meta if available
     title = (ticker_meta or {}).get("title") or ticker
@@ -236,33 +239,57 @@ def match_event_and_outcome(
     return (best[1], best[2]) if best else (None, None)
 
 
-async def fetch_settled_positions() -> list[dict]:
-    """Return raw settled position rows.
+async def fetch_settlements() -> list[dict]:
+    """Return raw settlement rows from /portfolio/settlements (paginated).
 
-    Each row carries `ticker`, `realized_pnl` (cents — positive = won, negative
-    or zero = lost), `total_traded`, etc. The settlement_status=settled filter
-    captures only positions where the market resolved.
+    Settlements are the canonical record of resolved markets. Fully-resolved
+    positions disappear from /portfolio/positions (Kalshi cleans up after
+    payout) — they only persist in /portfolio/settlements.
+
+    Each row carries:
+      ticker:                 market ticker
+      market_result:          "yes" | "no" | "scalar"
+      yes_count_fp:           decimal string — YES shares held at settlement
+      no_count_fp:            decimal string — NO shares held at settlement
+      yes_total_cost_dollars: decimal string — total cost spent on YES side
+      no_total_cost_dollars:  decimal string — total cost spent on NO side
+      revenue:                INTEGER cents — gross payout received
+      fee_cost:               decimal string — fees paid in dollars
+      value:                  scalar payout per share (for scalar markets)
+      settled_time:           ISO timestamp
     """
-    data = await _get(
-        "/portfolio/positions",
-        params={"limit": 200, "settlement_status": "settled"},
-    )
-    if not data:
-        return []
-    return data.get("market_positions") or []
+    out: list[dict] = []
+    cursor = None
+    for _ in range(20):  # bounded paginate
+        params: dict = {"limit": 100}
+        if cursor:
+            params["cursor"] = cursor
+        data = await _get("/portfolio/settlements", params=params)
+        if not data:
+            break
+        rows = data.get("settlements") or []
+        out.extend(rows)
+        cursor = data.get("cursor")
+        if not cursor or not rows:
+            break
+    return out
 
 
 async def settle(
     api_settle,  # async callable(bet_id, result, payout) -> response
     fetch_db_pending,
 ) -> dict:
-    """Settle DB pending kalshi bets using settled positions endpoint.
+    """Settle DB pending kalshi bets using /portfolio/settlements.
 
-    For each pending bet, match by ticker (provider_bet_id). Read realized_pnl
-    from the settled position:
-      - realized_pnl > 0 → WON, payout = stake + realized_pnl
-      - realized_pnl ≤ 0 → LOST, payout = 0
-    Skips bets without provider_bet_id (legacy rows recorded pre-API path).
+    For each pending bet, match by ticker (provider_bet_id). Determine
+    result by comparing the bet's side (YES/NO inferred from which
+    `*_count_fp` field is non-zero in the settlement row) against
+    `market_result`.
+
+    Payout:
+      - won  → revenue (cents → dollars)
+      - lost → 0
+      - scalar → revenue (Kalshi already credits partial payouts)
     """
     out = {"won": 0, "lost": 0, "skipped": 0, "errors": []}
 
@@ -270,13 +297,12 @@ async def settle(
     if not pending:
         return out
 
-    settled_rows = await fetch_settled_positions()
-    by_ticker = {(r.get("ticker") or "").strip(): r for r in settled_rows if r.get("ticker")}
+    rows = await fetch_settlements()
+    by_ticker = {(r.get("ticker") or "").strip(): r for r in rows if r.get("ticker")}
 
     for bet in pending:
         bet_id = bet.get("id")
         ticker = (bet.get("provider_bet_id") or "").strip()
-        stake = float(bet.get("stake") or 0)
         if not bet_id or not ticker:
             out["skipped"] += 1
             continue
@@ -286,10 +312,27 @@ async def settle(
             # Not in settled set — still open or market hasn't resolved yet
             continue
 
-        realized_pnl_cents = int(row.get("realized_pnl") or 0)
-        if realized_pnl_cents > 0:
+        yes_ct = float(row.get("yes_count_fp") or 0)
+        no_ct = float(row.get("no_count_fp") or 0)
+        revenue_dollars = (row.get("revenue") or 0) / 100.0
+        market_result = (row.get("market_result") or "").lower()
+
+        # Infer which side the bet was on from non-zero count
+        if yes_ct > 0:
+            bet_side = "yes"
+        elif no_ct > 0:
+            bet_side = "no"
+        else:
+            # Both counts zero — position fully exited before settlement; skip.
+            continue
+
+        if market_result == "scalar":
+            # Partial payout — revenue is gross return regardless of side label.
+            result = "won" if revenue_dollars > 0 else "lost"
+            payout = round(revenue_dollars, 2)
+        elif bet_side == market_result:
             result = "won"
-            payout = round(stake + realized_pnl_cents / 100.0, 2)
+            payout = round(revenue_dollars, 2)
         else:
             result = "lost"
             payout = 0.0
