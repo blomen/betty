@@ -26,6 +26,10 @@ from .types import RecorderResult, RecoveredPosition
 logger = logging.getLogger(__name__)
 
 KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2"
+# The signed message includes the FULL URL path (with `/trade-api/v2` prefix),
+# not just the resource path. Signing the resource-only path returns 401
+# INCORRECT_API_KEY_SIGNATURE — looked like bad creds but was a signing bug.
+KALSHI_SIGN_PREFIX = "/trade-api/v2"
 
 
 def _load_private_key():
@@ -86,7 +90,7 @@ def _auth_headers(method: str, path: str) -> dict[str, str] | None:
         logger.warning("[kalshi_api] KALSHI_API_KEY env not set")
         return None
     ts_ms = str(int(time.time() * 1000))
-    msg = ts_ms + method.upper() + path
+    msg = ts_ms + method.upper() + KALSHI_SIGN_PREFIX + path
     sig = _sign_message(msg)
     if sig is None:
         return None
