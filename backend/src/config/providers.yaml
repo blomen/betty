@@ -914,11 +914,15 @@ extraction_scheduling:
     interval_minutes: 10
     grouped: false
 
-  kalshi:
-    # Prediction-market exchange. Public REST API, unauthenticated for market data.
-    providers: [kalshi]
-    interval_minutes: 5
-    grouped: false
+  # kalshi:
+  #   # Prediction-market exchange. Public REST API, unauthenticated for market data.
+  #   # DISABLED 2026-05-23: 4 days of extraction → 0 opportunities, 1 bet placed
+  #   # at −5.94% EV. Kalshi MMs track Pinnacle with ~3-5% spread → structurally
+  #   # -EV vs sharp. Re-enable if pricing improves; provider code intact at
+  #   # backend/src/providers/kalshi.py.
+  #   providers: [kalshi]
+  #   interval_minutes: 5
+  #   grouped: false
 
   api_soft:
     # Fast REST/WS/API-interception providers — all fire simultaneously.
@@ -1069,7 +1073,7 @@ active:
   # Betting exchange (signal-only; user IP-banned, SOCKS5 proxy required)
   - smarkets
   # Prediction-market exchange (playable + consensus input)
-  - kalshi
+  # - kalshi  # DISABLED 2026-05-23: 0 opps in 4 days, structurally -EV vs Pinnacle (see kalshi tier comment above)
   - rainbet
 
 
