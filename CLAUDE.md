@@ -209,6 +209,26 @@ Multiple Claude Code agents may work on this repo concurrently. **Follow these r
     - **Stocks-hot window**: US RTH runs 14:30–21:00 UTC and that's when zone density and trade opportunities peak. Non-critical rebuilds in this window trade model-learning data for convenience. Prefer deploys outside this window when the change isn't blocking.
     - **Startup grace**: the server waits `STOCKS_AUTH_STARTUP_DELAY_SEC` (default 30s) before auth'ing TopstepX on a fresh container, so the prior container's SignalR session can be cleaned up by TopstepX before we connect. Shorten via env if you're sure no other session exists.
 
+### Currencies (READ BEFORE ANY CROSS-PROVIDER MATH)
+
+**Providers run in DIFFERENT currencies. Never add, subtract, compare, or hedge-size across providers without converting first.**
+
+| Currency | Providers |
+|---|---|
+| **USDC** | polymarket |
+| **USD** | kalshi |
+| **SEK** | every Swedish / EU softbook this user has: betinia, betsson, bethard, campobet, coolbet, dbet, interwetten, leovegas, pinnacle (this account is SEK-funded), quickcasino, spelklubben, tipwin, unibet, vbet, 10bet, 888sport, comeon, hajper, marathon, rainbet, stake, cloudbet |
+
+The `bets.currency` column is authoritative — query it (`SELECT provider_id, currency, COUNT(*) FROM bets GROUP BY 1,2`) when in doubt.
+
+**The rule:**
+- **In code:** use `money.Money` + `money.Currency` from the [`money/`](money/) package. `money.convert(amount, from, to)` pivots through SEK. The pin lives in [`backend/src/config/`](backend/src/config/) — one source of truth (commit `ca144533`). Never write `stake_a + stake_b` across providers as raw floats.
+- **In SQL analysis:** wrap with `CASE WHEN currency='SEK' THEN x/<sek_per_usd> WHEN currency IN ('USD','USDC') THEN x END` BEFORE any cross-provider `SUM`/`MIN`/`MAX`. A `MIN(stake * odds)` across legs without conversion is meaningless.
+- **For arb checks:** worst-case payout = `MIN(stake_i × odds_i)` in **one base currency**, total stake = `SUM(stake_i)` in the **same base currency**. An arb is "guaranteed" iff `worst_payout_base ≥ total_stake_base`. Comparing 268 SEK to $15 USDC and concluding "broken hedge" is the canonical wrong answer — that's actually ~$25 vs $15, perfectly fine.
+- **For bankroll / Kelly / stats / ROI:** same rule. Aggregate views over mixed-currency bets that don't convert are wrong by construction.
+
+**The first hypothesis when a sizing/hedge/bankroll number looks off by 5-10×** is "did I mix currencies?" — not "the sizer is broken." `feature/unified-currency-layer` (the active branch) is rolling this enforcement out everywhere in code; analysts reading the DB directly are not exempt.
+
 ### Postgres FK Enforcement
 **PostgreSQL enforces foreign key constraints — SQLite did not.** When writing storage code:
 - Always `session.flush()` parent rows before inserting children (e.g., flush Event before inserting Odds)

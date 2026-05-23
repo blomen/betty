@@ -268,7 +268,7 @@ async def sync(
                 "external_placement": True,
                 "boost_event": pos.event_name,
                 "provider_bet_id": pos.provider_bet_id or None,
-                "bet_type": "arb_counter",
+                "bet_type": "mirror",
             }
             try:
                 resp = await api_post(payload)
@@ -323,7 +323,15 @@ async def sync(
             "external_placement": True,
             "boost_event": pos.event_name,
             "provider_bet_id": pos.provider_bet_id or None,
-            "bet_type": "arb_counter",  # Polymarket positions in your stack are arb counters
+            # Recovery path: position is observed in the /positions feed but we
+            # don't know the user's INTENT (arb counter? value bet? direct pick?).
+            # Tag as "mirror" — it bypasses the edge gate (the user already
+            # accepted the price) and stays out of arb-correlation analytics
+            # that look at arb_counter. If this row truly is an arb counter,
+            # the arb_runner side will have ALREADY inserted it with
+            # bet_type="arb_counter" + arb_group_id before this recovery pass
+            # fires, and the (event_id, outcome) dedup above will skip it.
+            "bet_type": "mirror",
         }
 
         try:
