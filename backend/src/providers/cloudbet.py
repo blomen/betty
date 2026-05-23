@@ -42,14 +42,18 @@ _MARKET_TYPE_MAP = {
     "total_sets": "total",
 }
 
-# Sports where a regulation tie is decided by OT/extra time, so the canonical
-# match-winner market is 2-way (home/away) — matches Pinnacle's convention.
-# Cloudbet's API returns these as 3-way `*.match_odds` with a phantom draw
-# outcome priced at 12-30 odds. We normalize those to 2-way `moneyline` so the
-# scanner can compare against Pinnacle (which stores them as `moneyline`,
-# OT-included). Soccer/football is intentionally absent — draw is a real
-# 3rd outcome in regulation and stays as `1x2`.
-_NO_DRAW_SPORTS = frozenset(
+# Sports where we NEVER derive moneyline from the 3-way `*.1x2` / `*.match_odds`
+# market. The 3-way is a different proposition — its draw is a real outcome
+# (regulation tie, ~5% for NBA basketball, ~22% for NHL hockey) and the
+# market carries its own vig. De-drawing it ("drop the draw, keep the prices")
+# yields a 2-way that is materially mispriced vs Pinnacle's true moneyline
+# and manufactures fake +EV. The canonical 2-way for these sports lives in
+# `*.moneyline` (basketball/hockey/NFL/baseball/esports), `*.winner` (combat,
+# tennis), or — when Cloudbet's affiliate API returns it as suspended (price=0)
+# — nowhere, in which case we correctly emit no moneyline for that event.
+# Soccer/football is intentionally absent: regulation draw is real and we
+# keep its 3-way as `1x2`.
+_SKIP_THREE_WAY_SPORTS = frozenset(
     {
         "basketball",
         "ice_hockey",
@@ -61,16 +65,6 @@ _NO_DRAW_SPORTS = frozenset(
         "esports",
     }
 )
-
-# Combat sports expose a genuine 2-way `*.winner` market (= the moneyline,
-# "To Win Fight") AND a separate 3-way `*.1x2`/`*.match_odds`. The 3-way is a
-# DIFFERENT proposition — its draw is a real outcome and it carries its own
-# vig, so de-drawing it (drop the draw, keep the prices) yields a moneyline
-# that is materially mispriced vs the real 2-way (observed: boxing.1x2 away
-# 3.00 vs the true boxing.winner away ~2.30). Comparing that against a 2-way
-# Pinnacle line manufactures false +EV. So for these sports the moneyline
-# comes ONLY from `*.winner`; the 3-way is skipped entirely (see parse_event).
-_COMBAT_SPORTS = frozenset({"boxing", "mma"})
 _THREE_WAY_SUFFIXES = frozenset({"1x2", "match_odds", "matchOdds"})
 
 # Sport key mapping: internal → Cloudbet
@@ -137,22 +131,6 @@ def parse_selections_to_market(
         return _parse_totals(selections)
     else:
         return _parse_winner(selections, market_type)
-
-
-def _drop_draw_to_moneyline(market: dict) -> dict:
-    """For no-draw sports, drop any draw outcome and retype 1x2→moneyline.
-
-    Idempotent. Markets without a draw outcome and non-winner markets pass
-    through unchanged.
-    """
-    mtype = market.get("type")
-    if mtype not in ("1x2", "moneyline"):
-        return market
-    outcomes = market.get("outcomes") or []
-    filtered = [o for o in outcomes if o.get("name") != "draw"]
-    if len(filtered) == len(outcomes) and mtype == "moneyline":
-        return market
-    return {**market, "type": "moneyline", "outcomes": filtered}
 
 
 def _parse_winner(selections: list, market_type: str) -> dict | None:
@@ -278,9 +256,12 @@ def parse_event(
     markets_data = event.get("markets") or {}
     markets = []
     for market_key, market_obj in markets_data.items():
-        # Combat sports: never derive moneyline from the 3-way market — the
-        # real 2-way `*.winner` is the moneyline. See _COMBAT_SPORTS above.
-        if sport in _COMBAT_SPORTS and market_key.split(".")[-1] in _THREE_WAY_SUFFIXES:
+        # Never derive moneyline from the 3-way for sports listed in
+        # _SKIP_THREE_WAY_SPORTS. The 3-way is a different proposition than
+        # the 2-way (different vig, real regulation-tie outcome) and
+        # de-drawing it would manufacture fake +EV against Pinnacle's true
+        # moneyline. See _SKIP_THREE_WAY_SPORTS above.
+        if sport in _SKIP_THREE_WAY_SPORTS and market_key.split(".")[-1] in _THREE_WAY_SUFFIXES:
             continue
         submarkets = (market_obj or {}).get("submarkets") or {}
         for _subkey, submarket in submarkets.items():
@@ -288,13 +269,6 @@ def parse_event(
             market = parse_selections_to_market(selections, market_key)
             if market:
                 markets.append(market)
-
-    # Normalize 1x2-with-draw → moneyline for no-draw sports. Cloudbet's API
-    # ships basketball/NHL/NFL as `*.match_odds` with a phantom draw outcome;
-    # without this fix the market key won't match Pinnacle's `moneyline` and
-    # the scanner can never compare them. Soccer/football retains 1x2.
-    if sport in _NO_DRAW_SPORTS:
-        markets = [_drop_draw_to_moneyline(m) for m in markets]
 
     if not markets:
         return None

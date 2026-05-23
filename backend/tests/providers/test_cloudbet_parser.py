@@ -3,7 +3,6 @@
 import pytest
 
 from src.providers.cloudbet import (
-    _drop_draw_to_moneyline,
     parse_event,
     parse_selections_to_market,
 )
@@ -375,35 +374,21 @@ class TestParseEvent:
         assert event.markets[0]["type"] == "moneyline"
 
 
-class TestNoDrawSportNormalization:
-    """Cloudbet's API ships basketball/NHL/NFL as 3-way `match_odds` with a
-    phantom draw outcome. The scanner groups by market key, so without
-    normalization those events never meet Pinnacle's `moneyline` market in
-    the same bucket → zero opportunities. parse_event applies
-    _drop_draw_to_moneyline for no-draw sports.
+class TestThreeWaySkippedForNoDrawSports:
+    """For sports where regulation can end tied but the canonical match-winner
+    is 2-way (basketball/hockey/NFL/baseball/tennis/esports + combat), the
+    3-way `*.1x2` / `*.match_odds` is a DIFFERENT proposition than the 2-way
+    `*.moneyline` / `*.winner`. The draw outcome is real (regulation tie,
+    decided in OT) and the market carries its own vig — de-drawing the 3-way
+    produces inflated 2-way prices that manufacture fake +EV against
+    Pinnacle's true moneyline. So we skip the 3-way entirely.
+
+    Verified live for Cloudbet IBL basketball (2026-05-23): the affiliate API
+    shipped `basketball.moneyline` at price=0 (suspended) and
+    `basketball.1x2` at 5.86/18.02/1.08. The old de-drawing path stored
+    5.86/1.08 as `moneyline`, vs Pinnacle's true moneyline near 4.83/1.03,
+    printing a fictitious +16.3% edge.
     """
-
-    def test_drop_draw_helper_converts_1x2_with_draw(self):
-        m = {
-            "type": "1x2",
-            "outcomes": [
-                {"name": "home", "odds": 1.34},
-                {"name": "draw", "odds": 15.83},
-                {"name": "away", "odds": 3.57},
-            ],
-        }
-        out = _drop_draw_to_moneyline(m)
-        assert out["type"] == "moneyline"
-        assert [o["name"] for o in out["outcomes"]] == ["home", "away"]
-        assert [o["odds"] for o in out["outcomes"]] == [1.34, 3.57]
-
-    def test_drop_draw_helper_passes_2way_moneyline(self):
-        m = {"type": "moneyline", "outcomes": [{"name": "home", "odds": 2.0}, {"name": "away", "odds": 2.0}]}
-        assert _drop_draw_to_moneyline(m) == m
-
-    def test_drop_draw_helper_passes_spread(self):
-        m = {"type": "spread", "outcomes": [{"name": "home", "odds": 1.9, "point": -3.5}]}
-        assert _drop_draw_to_moneyline(m) is m
 
     def _basketball_3way_event(self):
         return {
@@ -426,29 +411,65 @@ class TestNoDrawSportNormalization:
             },
         }
 
-    def test_basketball_3way_normalizes_to_moneyline(self):
+    def test_basketball_3way_never_becomes_moneyline(self):
+        # With only the 3-way market available and no genuine 2-way, the event
+        # has no moneyline at all — better than a counterfeit one.
         ev = parse_event(self._basketball_3way_event(), "basketball", "cloudbet")
-        assert ev is not None
-        assert len(ev.markets) == 1
-        m = ev.markets[0]
-        assert m["type"] == "moneyline"
-        assert {o["name"] for o in m["outcomes"]} == {"home", "away"}
+        assert ev is None  # no extractable markets → event dropped
 
-    # Combat sports (boxing, mma) are intentionally NOT in this list — they
-    # keep a genuine 2-way `winner` market, so their 3-way is skipped, not
-    # normalized. See TestCombatSportMoneyline below.
     @pytest.mark.parametrize("sport", ["ice_hockey", "american_football", "baseball", "tennis"])
-    def test_other_no_draw_sports_normalize(self, sport):
+    def test_other_no_draw_sports_skip_three_way(self, sport):
         ev = parse_event(self._basketball_3way_event(), sport, "cloudbet")
-        assert ev is not None
-        assert ev.markets[0]["type"] == "moneyline"
-        assert all(o["name"] != "draw" for o in ev.markets[0]["outcomes"])
+        assert ev is None
 
     def test_football_keeps_1x2_with_draw(self):
         ev = parse_event(self._basketball_3way_event(), "football", "cloudbet")
         assert ev is not None
         assert ev.markets[0]["type"] == "1x2"
         assert {o["name"] for o in ev.markets[0]["outcomes"]} == {"home", "draw", "away"}
+
+    def test_basketball_2way_moneyline_kept_alongside_skipped_3way(self):
+        """When BOTH `basketball.moneyline` (real 2-way) and `basketball.1x2`
+        (3-way) ship, only the 2-way survives. This is the actual production
+        shape — Cloudbet ships both, and we must take the real one."""
+        ev_data = {
+            "id": "evt2",
+            "status": "TRADING",
+            "home": {"name": "Lakers"},
+            "away": {"name": "Celtics"},
+            "markets": {
+                "basketball.moneyline": {
+                    "submarkets": {
+                        "period=ft": {
+                            "selections": [
+                                {"outcome": "home", "params": "", "price": 4.80, "status": "SELECTION_ENABLED"},
+                                {"outcome": "away", "params": "", "price": 1.03, "status": "SELECTION_ENABLED"},
+                            ]
+                        }
+                    }
+                },
+                "basketball.1x2": {
+                    "submarkets": {
+                        "period=ft": {
+                            "selections": [
+                                {"outcome": "home", "params": "", "price": 5.86, "status": "SELECTION_ENABLED"},
+                                {"outcome": "draw", "params": "", "price": 18.02, "status": "SELECTION_ENABLED"},
+                                {"outcome": "away", "params": "", "price": 1.08, "status": "SELECTION_ENABLED"},
+                            ]
+                        }
+                    }
+                },
+            },
+        }
+        ev = parse_event(ev_data, "basketball", "cloudbet")
+        assert ev is not None
+        ml = [m for m in ev.markets if m["type"] == "moneyline"]
+        assert len(ml) == 1
+        odds = {o["name"]: o["odds"] for o in ml[0]["outcomes"]}
+        # Real 2-way prices from basketball.moneyline — NOT the de-drawed 1x2.
+        assert odds == {"home": 4.80, "away": 1.03}
+        # The 3-way must not leak into any other market type either.
+        assert all(m["type"] != "1x2" for m in ev.markets)
 
 
 class TestCombatSportMoneyline:
