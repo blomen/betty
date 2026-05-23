@@ -516,7 +516,7 @@ cd backend && pytest tests/
 **We extract 1x2/moneyline, spread, and total markets. All other markets are skipped.**
 
 - **Markets extracted**: `1x2`, `moneyline` (match winner), `spread` (handicap), `total` (over/under)
-- **Spread/total**: Pinnacle ships mainline + alternate handicaps so kalshi/cloudbet/polymarket ladder lines have a sharp comparison baseline (period 0 + 6, esports map markets stay mainline-only); Kambi mainline only (betOfferType 6/7). Scanner groups by `(market, point)` so each handicap is independently scanned.
+- **Spread/total**: Pinnacle ships mainline + alternate handicaps so kalshi/cloudbet/polymarket ladder lines have a sharp comparison baseline (period 0 + 6, esports map markets stay mainline-only); Kambi mainline only (betOfferType 6/7). Scanner groups spreads by **line** (home-team handicap) — `home@P` and `away@-P` co-locate at key `spread_P` — so each handicap is independently scanned and opposite-favorite alternate lines (e.g. Polymarket's `Spread: Thunder (-3.5)` vs Pinnacle's `home -3.5`) never merge into one comparison. Totals stay keyed by raw point. See [`backend/src/analysis/scanner.py`](backend/src/analysis/scanner.py) `group_odds`.
 - **Markets skipped**: props, player markets, corners, cards, correct score, etc.
 - **Live events**: Skipped entirely - only pre-match odds
 - **Whitelist enforced in**: `constants.py` via `ALLOWED_MARKETS` (imported by `pipeline/storage.py`)
