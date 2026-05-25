@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from ..bankroll.stake_calculator import StakeCalculator
+from ..config import get_provider_currency
 from ..constants import PLATFORM_MAP, PREDICTION_MARKETS, SHARP_PROVIDERS, SIGNAL_ONLY_PROVIDERS, canonical_scope_for
 from ..db.models import Event
 from ..repositories import EventRepo
@@ -904,6 +905,7 @@ class OpportunityScanner:
                     "stake_pct": stake_pct,
                     "is_sharp": data["is_sharp"],
                     "point": point_by_outcome.get(out),
+                    "currency": get_provider_currency(data["provider"]),
                 }
             )
 
@@ -949,6 +951,7 @@ class OpportunityScanner:
                                         "stake_pct": arb_stake_pct,
                                         "is_sharp": False,
                                         "point": point_by_outcome.get(out),
+                                        "currency": get_provider_currency(sdata["provider"]),
                                     }
                                 )
                             arb_legs.sort(key=lambda x: x["edge_pct"], reverse=True)
@@ -1152,7 +1155,11 @@ class OpportunityScanner:
             if row_scope != canonical:
                 logger.debug(
                     "scope_filter: drop %s/%s scope=%s (canonical=%s for sport=%s)",
-                    event.id, odds.provider_id, row_scope, canonical, getattr(event, "sport", None),
+                    event.id,
+                    odds.provider_id,
+                    row_scope,
+                    canonical,
+                    getattr(event, "sport", None),
                 )
                 continue
 

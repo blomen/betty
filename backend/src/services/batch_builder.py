@@ -96,6 +96,13 @@ class BatchBet:
     skip_reason: str | None = None
     bankroll_needed: float = 0.0
 
+    # Currency annotation — SEK is the bankroll-base and Kelly works in SEK,
+    # but cross-currency arbs (cloudbet=USDC, kalshi=USD, polymarket=USDC,
+    # smarkets=GBP) require the user to place stake_native at the provider,
+    # not stake. Frontend MUST present stake_native + stake_currency.
+    stake_currency: str = "SEK"
+    stake_native: float = 0.0
+
     # Provider metadata (for navigation — altenar event IDs, kambi matchup IDs, etc.)
     provider_meta: dict | None = None
 
@@ -565,13 +572,18 @@ class BatchBuilder:
         # Their balances and bet placements are in USDC/USD; the balance-vs-stake
         # check downstream compares native-to-native.
         from .. import bankroll
-        from ..config import get_exchange_rate
+        from ..config import get_exchange_rate, get_provider_currency
+
+        stake_currency = get_provider_currency(provider_id)
 
         prof = bankroll.stake_calculator.PROVIDER_STAKE_PROFILES.get(provider_id)
         if prof and prof.currency != "SEK" and stake > 0:
             exchange_rate = get_exchange_rate(provider_id)
             if exchange_rate > 0:
                 stake = stake / exchange_rate
+
+        # After conversion, stake is already in native units for non-SEK providers.
+        stake_native = round(stake, 2)
 
         expected_profit = stake * edge_raw
 
@@ -596,6 +608,8 @@ class BatchBuilder:
             edge_pct=opp.edge_pct or 0.0,
             stake=stake,
             expected_profit=expected_profit,
+            stake_currency=stake_currency,
+            stake_native=stake_native,
             is_bonus=False,
             bonus_type=None,
             display_home=event.display_home or event.home_team or "",
@@ -728,10 +742,15 @@ class BatchBuilder:
         Optional overrides for stake/bonus when the target provider has
         freebet or trigger constraints.
         """
+        from ..config import get_exchange_rate, get_provider_currency
+
         actual_stake = stake if stake is not None else bet.stake
         actual_is_bonus = is_bonus if is_bonus is not None else bet.is_bonus
         actual_bonus_type = bonus_type if bonus_type is not None else bet.bonus_type
         edge_raw = bet.edge_pct / 100.0
+        new_stake_currency = get_provider_currency(new_provider_id)
+        new_exchange_rate = get_exchange_rate(new_provider_id)
+        new_stake_native = round(actual_stake / new_exchange_rate, 2) if new_exchange_rate > 0 else actual_stake
         return BatchBet(
             rank=0,
             tier=bet.tier,
@@ -745,6 +764,8 @@ class BatchBuilder:
             edge_pct=bet.edge_pct,
             stake=actual_stake,
             expected_profit=actual_stake * edge_raw,
+            stake_currency=new_stake_currency,
+            stake_native=new_stake_native,
             is_bonus=actual_is_bonus,
             bonus_type=actual_bonus_type,
             display_home=bet.display_home,
