@@ -122,7 +122,11 @@ def cleanup_stale_opportunities(session: Session) -> dict:
         or 0
     )
 
-    session.commit()
+    # Don't commit here — caller (analyzer) manages its own transaction
+    # lifetime. Committing inside would prematurely flush any pending writes
+    # from the same scan cycle. Caller flushes the updates as part of its
+    # normal commit.
+    session.flush()
     return {
         "expired_post_start": int(expired_post_start),
         "expired_stale_odds": int(expired_stale_odds),

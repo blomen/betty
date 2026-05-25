@@ -55,8 +55,17 @@ MAX_TTK_HOURS = 168.0  # 1 week — frontend TTK filter handles the rest
 # disagreement fixes, anything above these is virtually always a bug —
 # currency mismatch in stake sizing, novel scope/handicap bug, fuzzy-match
 # false positive, etc. Refuse to surface and log so we can monitor.
+#
+# Thresholds:
+# - Value edge > 10%: real Pinnacle-anchored value bets above 10% are
+#   exceedingly rare; mostly tennis longshots that calibrate poorly.
+# - Arb profit > 8%: same-currency soft-vs-Pinnacle arbs are low single
+#   digits per CLAUDE.md, but cross-book Polymarket/Kalshi arbs against
+#   SEK softs can legitimately reach 6-8% (prediction-market liquidity
+#   dynamics, longshot pricing). 8% is the band that keeps real ones in
+#   while still refusing the obvious phantoms (20%+ from convention bugs).
 MAX_BATCH_VALUE_EDGE_PCT = 10.0
-MAX_BATCH_ARB_PROFIT_PCT = 5.0
+MAX_BATCH_ARB_PROFIT_PCT = 8.0
 
 
 def _is_phantom_value_bet(edge_pct: float) -> bool:
@@ -529,10 +538,12 @@ class BatchBuilder:
         # 2026-05-26: upper-bound sanity gate
         if _is_phantom_value_bet(opp.edge_pct or 0.0):
             logger.warning(
-                "[suspect_phantom] dropping value bet edge=%.2f%% > cap=%.2f%% "
-                "(event=%s market=%s provider=%s)",
-                opp.edge_pct, MAX_BATCH_VALUE_EDGE_PCT,
-                opp.event_id, opp.market, opp.provider1_id,
+                "[suspect_phantom] dropping value bet edge=%.2f%% > cap=%.2f%% (event=%s market=%s provider=%s)",
+                opp.edge_pct,
+                MAX_BATCH_VALUE_EDGE_PCT,
+                opp.event_id,
+                opp.market,
+                opp.provider1_id,
             )
             return None
 
@@ -1084,6 +1095,11 @@ class BatchBuilder:
             "fair_odds": round(bet.fair_odds, 3),
             "edge_pct": round(bet.edge_pct, 2),
             "stake": round(bet.stake, 2),
+            # Frontend should present stake_native + stake_currency for
+            # cross-currency providers (USDC/USD/GBP). stake stays in SEK
+            # (bankroll base) for sizing math.
+            "stake_currency": bet.stake_currency,
+            "stake_native": round(bet.stake_native, 2),
             "expected_profit": round(bet.expected_profit, 2),
             "is_bonus": bet.is_bonus,
             "bonus_type": bet.bonus_type,

@@ -30,6 +30,7 @@ from ..constants import CANONICAL_MEMBERS, PROVIDER_CANONICAL
 from ..db.models import Opportunity, Profile
 from ..repositories import OpportunityRepo
 from ..services.bet_service import BetService
+from ..services.opportunity_service import cleanup_stale_opportunities
 
 logger = logging.getLogger(__name__)
 
