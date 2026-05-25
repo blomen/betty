@@ -80,6 +80,55 @@ def _resolve_leg_provider_meta(provider_meta_map: dict[tuple, dict], event_id: s
     return meta or {}
 
 
+def cleanup_stale_opportunities(session: Session) -> dict:
+    """Expire opportunities whose underlying data is stale.
+
+    Two rules:
+      1. Hard expire: event start_time has passed by > 1h
+      2. Soft expire: the opp's provider1 odds row hasn't been updated in > 4h
+
+    Returns {'expired_post_start': N, 'expired_stale_odds': M} for /health.
+    """
+    from sqlalchemy import text
+
+    expired_post_start = (
+        session.execute(
+            text("""
+        UPDATE opportunities SET is_active = false
+        WHERE is_active = true
+          AND event_id IN (
+            SELECT id FROM events WHERE start_time < NOW() - INTERVAL '1 hour'
+          )
+    """)
+        ).rowcount
+        or 0
+    )
+
+    expired_stale_odds = (
+        session.execute(
+            text("""
+        UPDATE opportunities SET is_active = false
+        WHERE is_active = true
+          AND id IN (
+            SELECT op.id FROM opportunities op
+            JOIN odds o
+              ON o.event_id = op.event_id
+              AND o.provider_id = op.provider1_id
+            WHERE op.is_active = true
+              AND o.updated_at < NOW() - INTERVAL '4 hours'
+          )
+    """)
+        ).rowcount
+        or 0
+    )
+
+    session.commit()
+    return {
+        "expired_post_start": int(expired_post_start),
+        "expired_stale_odds": int(expired_stale_odds),
+    }
+
+
 class OpportunityService:
     """Business logic for opportunities: listing, stake calculation, hedging."""
 
