@@ -1140,6 +1140,17 @@ class OpportunityScanner:
 
         grouped = defaultdict(lambda: defaultdict(list))
 
+        # 2026-05-26: skip events where the home/away inversion check did
+        # not resolve cleanly. Defaults to True for historical rows that
+        # haven't been revalidated yet.
+        if not getattr(event, "home_away_validated", True):
+            logger.debug(
+                "home_away_unvalidated: drop %s (sport=%s)",
+                event.id,
+                getattr(event, "sport", None),
+            )
+            return {}
+
         # Calculate staleness cutoff
         now = datetime.now(timezone.utc)
         staleness_cutoff = now - timedelta(hours=MAX_ODDS_AGE_HOURS)
