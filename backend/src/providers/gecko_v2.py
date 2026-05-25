@@ -43,6 +43,18 @@ from ..matching.normalizer import normalize_team_name
 logger = logging.getLogger(__name__)
 
 
+def scope_for_template(template: str, sport: str | None) -> str:
+    """Map Gecko V2 market_template + sport to canonical scope.
+
+    Hockey regulation-only variants must be tagged 'reg' so the scanner
+    doesn't compare them against OT-inclusive odds from other books.
+    """
+    # Hockey regulation-only variants
+    if sport == "ice_hockey" and template in ("TGOU", "MHCPNOT"):
+        return "reg"
+    return "ft"
+
+
 class GeckoV2Retriever(BrowserRetriever):
     """
     Retriever for Betsson Group sites using events-table/v2 API.
@@ -680,11 +692,6 @@ class GeckoV2Retriever(BrowserRetriever):
             league=league,
         )
 
-    # Ice hockey: regulation-only templates to skip (OT-inclusive variants preferred)
-    # Pinnacle uses OT-inclusive totals/spreads, so soft providers must match.
-    # TGOU = total excl OT (TGOUOT is OT-inclusive), MHCPNOT = spread excl OT
-    _ICE_HOCKEY_REGULATION_ONLY = {"TGOU", "MHCPNOT"}
-
     def _parse_markets(
         self,
         markets_raw: list[dict],
@@ -694,7 +701,7 @@ class GeckoV2Retriever(BrowserRetriever):
     ) -> list[dict]:
         """Parse markets and their selections."""
         markets = []
-        seen_types: set[str] = set()
+        seen_type_scopes: set[tuple[str, str]] = set()
 
         for market in markets_raw:
             template_id = market.get("marketTemplateId", "")
@@ -702,18 +709,15 @@ class GeckoV2Retriever(BrowserRetriever):
             if not market_type:
                 continue
 
-            # Ice hockey: skip regulation-only total/spread when OT-inclusive exists
-            # Pinnacle sharp odds include OT, so we must compare like-for-like.
-            if sport == "ice_hockey" and template_id in self._ICE_HOCKEY_REGULATION_ONLY:
-                continue
-
             # Skip half-time / period-specific markets by label
             market_label = (market.get("label") or "").lower()
             if any(kw in market_label for kw in self._PERIOD_KEYWORDS):
                 continue
 
-            # Skip duplicate market types (keep first)
-            if market_type in seen_types:
+            # Skip duplicate (type, scope) pairs (keep first).
+            # Use (type, scope) so reg-total and ft-total can both be emitted.
+            market_scope = scope_for_template(template_id, sport)
+            if (market_type, market_scope) in seen_type_scopes:
                 continue
 
             # Skip suspended markets
@@ -773,6 +777,7 @@ class GeckoV2Retriever(BrowserRetriever):
                 markets.append(
                     {
                         "type": market_type,
+                        "scope": market_scope,
                         "outcomes": outcomes,
                         "provider_meta": {
                             "event_id": event_id,
@@ -780,7 +785,7 @@ class GeckoV2Retriever(BrowserRetriever):
                         },
                     }
                 )
-                seen_types.add(market_type)
+                seen_type_scopes.add((market_type, market_scope))
 
         # Dedup: prefer 1x2 over moneyline
         types = {m["type"] for m in markets}
