@@ -27,6 +27,43 @@ from ..matching.normalizer import normalize_team_name
 logger = logging.getLogger(__name__)
 
 
+def scope_for(type_id: int, sport: str | None) -> str:
+    """Map Altenar typeId + sport to canonical scope.
+
+    Sport-aware because typeId 18 means "regulation only" for hockey
+    (OT-inclusive lives at 412) but means "Full Time" for football
+    (which doesn't have OT in standard markets).
+    """
+    # Hockey regulation-only total/spread
+    if type_id == 18 and sport == "ice_hockey":
+        return "reg"
+    # Similarly, typeId 16 (spread) is regulation-only for hockey
+    if type_id == 16 and sport == "ice_hockey":
+        return "reg"
+    # Everything else maps to 'ft' by default. New typeIds with scope ambiguity
+    # must be added here explicitly.
+    _FT_TYPEIDS = {
+        1, 186, 219, 251, 406, 30001,    # moneyline / 1x2
+        18, 189, 225, 238, 258, 412,     # total
+        16, 187, 223, 237, 256, 410,     # spread
+    }
+    if type_id in _FT_TYPEIDS:
+        return "ft"
+    # Unknown typeId — caller decides whether to emit. Default 'ft' to keep
+    # backward compatibility; a unit test guards completeness.
+    return "ft"
+
+
+# Sentinel exported for completeness-check tests
+TYPEID_SCOPE = {
+    tid: scope_for(tid, None) for tid in (
+        1, 186, 219, 251, 406, 30001,
+        18, 189, 225, 238, 258, 412,
+        16, 187, 223, 237, 256, 410,
+    )
+}
+
+
 class AltenarRetriever(Retriever):
     """
     Altenar platform retriever using REST API.
@@ -310,10 +347,10 @@ class AltenarRetriever(Retriever):
                 market_type_id = market.get("typeId")
                 market_type = self.MARKET_TYPE_MAPPING.get(market_type_id)
 
-                # Ice hockey: skip regulation-only total (typeId 18) — OT-inclusive
-                # variant (412) preferred. Pinnacle sharp odds include OT.
-                if sport == "ice_hockey" and market_type_id == 18:
-                    continue
+                # Note: regulation-only hockey markets (typeId 18/16) are now stored
+                # with scope='reg' instead of being skipped — see scope_for().
+                # The scanner refuses to compare across scopes, so this won't
+                # produce false arbs against Pinnacle's period-0 OT-inclusive odds.
 
                 if not market_type:
                     # Fallback: match by market name keywords (catches unmapped
@@ -395,6 +432,7 @@ class AltenarRetriever(Retriever):
                         "type": market_type,
                         "outcomes": outcomes,
                         "provider_meta": market_meta,
+                        "scope": scope_for(market_type_id, sport),
                     }
                     markets.append(market_dict)
 
@@ -621,9 +659,8 @@ class AltenarRetriever(Retriever):
             if market_type not in ("spread", "total"):
                 continue
 
-            # Ice hockey: skip regulation-only markets (same filter as Pass 1)
-            if sport == "ice_hockey" and market_type_id in (18, 16):
-                continue
+            # Note: regulation-only hockey markets (typeId 18/16) are now stored
+            # with scope='reg' instead of being skipped — see scope_for().
 
             # Extract point value
             market_point = None
@@ -660,7 +697,11 @@ class AltenarRetriever(Retriever):
                 outcomes.append(outcome_dict)
 
             if outcomes:
-                new_markets.append({"type": market_type, "outcomes": outcomes})
+                new_markets.append({
+                    "type": market_type,
+                    "outcomes": outcomes,
+                    "scope": scope_for(market_type_id, sport),
+                })
                 existing_keys.add(dup_key)
 
         return new_markets
