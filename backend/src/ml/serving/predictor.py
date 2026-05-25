@@ -82,12 +82,7 @@ class Predictor:
         model = model_data.get("model")
 
         try:
-            if model_name == "level_classifier":
-                from src.ml.models.level_classifier import _encode_features
-
-                X = _encode_features(features).reshape(1, -1)
-            else:
-                X = np.array([[features.get(f, 0.0) for f in feature_names]])
+            X = np.array([[features.get(f, 0.0) for f in feature_names]])
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message="X does not have valid feature names")
                 if task == "calibration":
