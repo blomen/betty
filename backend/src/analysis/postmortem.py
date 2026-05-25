@@ -1,5 +1,5 @@
 """
-Postmortem Classifier — classifies settled bets and closed trades.
+Postmortem Classifier — classifies settled bets.
 
 Pure functions that take domain objects and return classification dicts.
 No DB access — caller is responsible for storage.
@@ -117,91 +117,4 @@ def classify_bet(bet, profile_bankroll=None) -> dict:
         "is_oversized": is_oversized,
         "is_undersized": is_undersized,
         "variance_score": variance_score,
-    }
-
-
-def classify_trade(trade, all_trades_for_setup, streak_position, routine=None, trade_events=None) -> dict:
-    """
-    Classify a closed trade into a postmortem category.
-
-    Args:
-        trade: Trade ORM object (must have state in "closed"/"reviewed")
-        all_trades_for_setup: List of Trade objects with same setup_type + account
-        streak_position: Consecutive loss streak count (negative = losing)
-        routine: DailyRoutine object (optional)
-        trade_events: List of TradeEvent objects for this trade (optional)
-
-    Returns:
-        Dict with all TradePostmortem fields (excluding trade_id, computed_at, version).
-    """
-    r_multiple = trade.r_multiple if trade.r_multiple is not None else 0.0
-
-    # Setup stats from peers (excluding current trade)
-    closed_peers = [
-        t
-        for t in (all_trades_for_setup or [])
-        if t.id != trade.id and t.state in ("closed", "reviewed") and t.r_multiple is not None
-    ]
-
-    setup_avg_r = None
-    setup_win_rate = None
-    if closed_peers:
-        setup_avg_r = sum(t.r_multiple for t in closed_peers) / len(closed_peers)
-        wins = sum(1 for t in closed_peers if t.r_multiple > 0)
-        setup_win_rate = wins / len(closed_peers)
-
-    # Stop quality: check if stop was widened via trade events
-    stop_widened = False
-    if trade_events:
-        for ev in trade_events:
-            if ev.event_type == "trail_stop" and ev.details:
-                details = ev.details if isinstance(ev.details, dict) else {}
-                old_stop = details.get("old_stop")
-                new_stop = details.get("new_stop")
-                if old_stop is not None and new_stop is not None and trade.entry_price is not None:
-                    # Stop is "widened" if new_stop is farther from entry than old_stop
-                    old_dist = abs(trade.entry_price - old_stop)
-                    new_dist = abs(trade.entry_price - new_stop)
-                    if new_dist > old_dist:
-                        stop_widened = True
-                        break
-
-    stop_quality = "too_wide" if (stop_widened and r_multiple < -1.0) else "optimal"
-
-    # Target quality
-    target_quality = None
-    if r_multiple > 0:
-        target_quality = "hit_target" if r_multiple >= 2.0 else "partial_exit_good"
-
-    # Routine psych average
-    routine_psych_avg = None
-    if routine and routine.psych_average is not None:
-        routine_psych_avg = routine.psych_average
-
-    # Rules followed
-    rules_followed = None
-    if trade.review and trade.review.followed_rules is not None:
-        rules_followed = trade.review.followed_rules
-
-    # Classification
-    if r_multiple < 0:
-        if r_multiple < -1.0 and stop_widened:
-            classification = "stop_too_wide"
-        elif setup_avg_r is not None and setup_avg_r < 0 and len(closed_peers) >= 5:
-            classification = "thesis_invalid"
-        else:
-            classification = "expected_loss"
-    else:
-        classification = "runner" if r_multiple >= 2.0 else "expected_win"
-
-    return {
-        "classification": classification,
-        "r_multiple": r_multiple,
-        "setup_avg_r": setup_avg_r,
-        "setup_win_rate": setup_win_rate,
-        "stop_quality": stop_quality,
-        "target_quality": target_quality,
-        "streak_position": streak_position,
-        "routine_psych_avg": routine_psych_avg,
-        "rules_followed": rules_followed,
     }

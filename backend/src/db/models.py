@@ -569,12 +569,6 @@ class Profile(Base):
     is_active = Column(Boolean, default=False)  # Currently selected profile
     chrome_port = Column(Integer, nullable=True)  # CDP port (default: 9221 + id)
     color = Column(String, nullable=True)  # Hex color for Chrome border (auto-assigned)
-    # Forward-compat for multi-profile trading: each profile may own one
-    # TopstepX account. Trading stats / bankroll filter on this so two
-    # profiles can each have their own broker without leaking trades.
-    # NULL means "not bound to a TopstepX account" — typical for
-    # sports-only profiles.
-    topstepx_account_id = Column(Integer, nullable=True)
 
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
@@ -1177,475 +1171,6 @@ class RiskConfig(Base):
     profile = relationship("Profile")
 
 
-# ============ Trading Models ============
-
-
-class TradingAccount(Base):
-    """Sub-account for trading (intraday, swing, hodl)."""
-
-    __tablename__ = "trading_accounts"
-
-    id = Column(Integer, primary_key=True)
-    name = Column(String, nullable=False)
-    account_type = Column(String, nullable=False)  # "intraday", "swing", "hodl"
-
-    # Balances
-    balance = Column(Float, default=0.0)
-    equity = Column(Float, default=0.0)
-    realized_pnl = Column(Float, default=0.0)
-    daily_pnl = Column(Float, default=0.0)
-    weekly_pnl = Column(Float, default=0.0)
-
-    # Risk policy
-    risk_per_trade_pct = Column(Float, default=1.0)
-    max_daily_loss_pct = Column(Float, default=3.0)
-    max_weekly_loss_pct = Column(Float, default=7.0)
-    max_trades_per_day = Column(Integer, default=5)
-    stop_after_consecutive_losses = Column(Integer, default=3)
-
-    # Daily counters (reset daily)
-    trades_today = Column(Integer, default=0)
-    consecutive_losses = Column(Integer, default=0)
-    is_daily_locked = Column(Boolean, default=False)
-    is_weekly_locked = Column(Boolean, default=False)
-
-    created_at = Column(DateTime, default=_utcnow)
-    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
-
-    # Relationships
-    trades = relationship("Trade", back_populates="account")
-
-
-class DailyRoutine(Base):
-    """One per trading day — checklist, bias, psych gate."""
-
-    __tablename__ = "daily_routines"
-
-    id = Column(Integer, primary_key=True)
-    date = Column(String, nullable=False, unique=True)  # "2026-02-20"
-
-    # Macro notes
-    macro_notes = Column(JSON, nullable=True)  # {"calendar": "...", "dxy": "...", ...}
-
-    # Session context
-    overnight_high = Column(Float, nullable=True)
-    overnight_low = Column(Float, nullable=True)
-    key_levels = Column(JSON, nullable=True)  # [{"label": "POC", "price": 21500}, ...]
-    prev_value_area = Column(JSON, nullable=True)  # {"vah": ..., "val": ..., "poc": ...}
-
-    # Bias
-    bias_text = Column(Text, nullable=True)
-    bias_direction = Column(String, nullable=True)  # "bullish", "bearish", "neutral"
-    bias_confidence = Column(Integer, nullable=True)  # 1-5
-
-    # Psych gate
-    sleep_score = Column(Integer, nullable=True)  # 1-10
-    focus_score = Column(Integer, nullable=True)  # 1-10
-    emotional_score = Column(Integer, nullable=True)  # 1-10
-    psych_average = Column(Float, nullable=True)
-    psych_override = Column(Text, nullable=True)  # Override reason text
-
-    # Checklist completion tracking
-    checklist_completion = Column(JSON, nullable=True)  # {"macro_0": true, "session_2": false, ...}
-    is_complete = Column(Boolean, default=False)
-
-    created_at = Column(DateTime, default=_utcnow)
-    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
-
-    # Relationships
-    trades = relationship("Trade", back_populates="daily_routine")
-
-
-class Trade(Base):
-    """A single trade with full lifecycle tracking."""
-
-    __tablename__ = "trades"
-
-    id = Column(Integer, primary_key=True)
-    account_id = Column(Integer, ForeignKey("trading_accounts.id"), nullable=False)
-    daily_routine_id = Column(Integer, ForeignKey("daily_routines.id"), nullable=True)
-
-    # Instrument & direction
-    instrument = Column(String, nullable=False)  # "NQ", "ES", "MNQ"
-    direction = Column(String, nullable=False)  # "long", "short"
-    setup_type = Column(String, nullable=False)  # "trend_continuation", etc.
-
-    # Levels
-    entry_price = Column(Float, nullable=True)
-    stop_price = Column(Float, nullable=True)
-    be_price = Column(Float, nullable=True)  # Breakeven price after move-to-BE
-    targets = Column(JSON, nullable=True)  # [{"price": 21600, "contracts": 1}, ...]
-
-    # Position
-    contracts = Column(Integer, default=1)
-    risk_amount = Column(Float, nullable=True)  # Dollar risk
-    rr_ratio = Column(Float, nullable=True)  # Reward/risk ratio
-    r_multiple = Column(Float, nullable=True)  # Actual R earned (filled on close)
-
-    # Confirmations checked
-    confirmations = Column(JSON, nullable=True)  # {"confirmation_text": true/false, ...}
-
-    # State machine
-    state = Column(String, default="created")  # TRADE_STATES
-
-    # Result
-    realized_pnl = Column(Float, nullable=True)
-    commission = Column(Float, default=0.0)
-    notes = Column(Text, nullable=True)
-
-    # Timestamps per state
-    armed_at = Column(DateTime, nullable=True)
-    triggered_at = Column(DateTime, nullable=True)
-    opened_at = Column(DateTime, nullable=True)
-    closed_at = Column(DateTime, nullable=True)
-
-    created_at = Column(DateTime, default=_utcnow)
-    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
-
-    # Relationships
-    account = relationship("TradingAccount", back_populates="trades")
-    daily_routine = relationship("DailyRoutine", back_populates="trades")
-    events = relationship("TradeEvent", back_populates="trade", cascade="all, delete-orphan")
-    review = relationship("TradeReview", back_populates="trade", uselist=False, cascade="all, delete-orphan")
-
-    __table_args__ = (
-        Index("ix_trades_account_state", "account_id", "state"),
-        Index("ix_trades_setup", "setup_type"),
-        Index("ix_trades_created", "created_at"),
-    )
-
-
-class TradeEvent(Base):
-    """Timeline entry for a trade (state transitions, notes, partial exits)."""
-
-    __tablename__ = "trade_events"
-
-    id = Column(Integer, primary_key=True)
-    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=False)
-
-    event_type = Column(
-        String, nullable=False
-    )  # "transition", "partial_exit", "move_to_be", "trail_stop", "add_position", "note"
-    from_state = Column(String, nullable=True)
-    to_state = Column(String, nullable=True)
-    details = Column(JSON, nullable=True)  # Flexible payload
-    notes = Column(Text, nullable=True)
-
-    timestamp = Column(DateTime, default=_utcnow)
-
-    # Relationships
-    trade = relationship("Trade", back_populates="events")
-
-
-class TradeReview(Base):
-    """Post-close journal review for a trade."""
-
-    __tablename__ = "trade_reviews"
-
-    id = Column(Integer, primary_key=True)
-    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=False, unique=True)
-
-    thesis_recap = Column(Text, nullable=True)
-    followed_rules = Column(Boolean, nullable=True)
-    what_to_improve = Column(Text, nullable=True)
-    grade = Column(Integer, nullable=True)  # 1-5
-
-    created_at = Column(DateTime, default=_utcnow)
-
-    # Relationships
-    trade = relationship("Trade", back_populates="review")
-
-
-class TradePostmortem(Base):
-    """Post-close classification for a trade. One row per closed trade."""
-
-    __tablename__ = "trade_postmortems"
-
-    trade_id = Column(Integer, ForeignKey("trades.id"), primary_key=True)
-    classification = Column(
-        String, nullable=False
-    )  # expected_loss, stop_too_wide, thesis_invalid, expected_win, runner
-    r_multiple = Column(Float, nullable=True)
-    setup_avg_r = Column(Float, nullable=True)
-    setup_win_rate = Column(Float, nullable=True)
-    stop_quality = Column(String, nullable=True)  # optimal, too_wide
-    target_quality = Column(String, nullable=True)  # hit_target, partial_exit_good, missed_runner, exited_early
-    streak_position = Column(Integer, nullable=True)  # negative = losing streak
-    routine_psych_avg = Column(Float, nullable=True)
-    rules_followed = Column(Boolean, nullable=True)
-    computed_at = Column(DateTime, default=_utcnow)
-    version = Column(Integer, default=1)
-
-    trade = relationship("Trade")
-
-    __table_args__ = (Index("ix_trade_pm_classification_version", "classification", "version"),)
-
-
-class MarketSession(Base):
-    """Computed AMT session data for a symbol/date."""
-
-    __tablename__ = "market_sessions"
-
-    id = Column(Integer, primary_key=True)
-    date = Column(String, nullable=False)  # "2026-03-11"
-    symbol = Column(String, nullable=False)  # "NQ"
-
-    # Volume profile levels
-    poc = Column(Float, nullable=True)
-    vah = Column(Float, nullable=True)
-    val = Column(Float, nullable=True)
-
-    # VWAP bands
-    vwap = Column(Float, nullable=True)
-    vwap_1sd_upper = Column(Float, nullable=True)
-    vwap_1sd_lower = Column(Float, nullable=True)
-    vwap_2sd_upper = Column(Float, nullable=True)
-    vwap_2sd_lower = Column(Float, nullable=True)
-    vwap_3sd_upper = Column(Float, nullable=True)
-    vwap_3sd_lower = Column(Float, nullable=True)
-
-    # Initial balance
-    ib_high = Column(Float, nullable=True)
-    ib_low = Column(Float, nullable=True)
-    ib_range = Column(Float, nullable=True)
-
-    # Overnight range
-    overnight_high = Column(Float, nullable=True)
-    overnight_low = Column(Float, nullable=True)
-
-    # Delta
-    total_delta = Column(Integer, nullable=True)
-    delta_divergence = Column(Boolean, default=False)
-
-    # Classifications
-    market_type = Column(String, nullable=True)  # "balanced", "trending_up", "trending_down"
-    opening_type = Column(String, nullable=True)  # "OD", "OTD", "ORR", "OA"
-    poor_high = Column(Boolean, default=False)
-    poor_low = Column(Boolean, default=False)
-
-    # Full session analysis JSON
-    session_json = Column(JSON, nullable=True)
-
-    # New: session metrics
-    rotation_factor = Column(Integer, nullable=True)
-    aspr = Column(Float, nullable=True)
-    aspr_percentile = Column(Float, nullable=True)
-    ib_tpo_count = Column(Integer, nullable=True)
-    value_migration = Column(String, nullable=True)  # "up", "down", "overlapping"
-    # New: session levels
-    pdh = Column(Float, nullable=True)
-    pdl = Column(Float, nullable=True)
-    tokyo_high = Column(Float, nullable=True)
-    tokyo_low = Column(Float, nullable=True)
-    london_high = Column(Float, nullable=True)
-    london_low = Column(Float, nullable=True)
-
-    created_at = Column(DateTime, default=_utcnow)
-    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
-
-    # Relationships
-    signals = relationship("TradingSignal", back_populates="session")
-
-    __table_args__ = (UniqueConstraint("date", "symbol", name="uq_market_session_date_symbol"),)
-
-
-class TradingSignal(Base):
-    """Scanner-generated trading signal with quality score."""
-
-    __tablename__ = "trading_signals"
-
-    id = Column(Integer, primary_key=True)
-    session_id = Column(Integer, ForeignKey("market_sessions.id"), nullable=False)
-
-    # Setup info
-    setup_type = Column(String, nullable=False)  # "reversal_vwap_2sd", etc.
-    setup_name = Column(String, nullable=True)
-    category = Column(String, nullable=True)  # "fabio", "flow_horse"
-    direction = Column(String, nullable=True)  # "long", "short"
-
-    # Scoring
-    score = Column(Float, nullable=False)  # 0-100 composite score
-    conditions = Column(JSON, nullable=True)  # [{name, score, weight, is_auto}, ...]
-
-    # Context at signal time
-    price_at_signal = Column(Float, nullable=True)
-    suggested_entry = Column(Float, nullable=True)
-    suggested_stop = Column(Float, nullable=True)
-    suggested_target = Column(Float, nullable=True)
-
-    # Key levels at signal time
-    vwap = Column(Float, nullable=True)
-    poc = Column(Float, nullable=True)
-    vah = Column(Float, nullable=True)
-    val = Column(Float, nullable=True)
-    ib_high = Column(Float, nullable=True)
-    ib_low = Column(Float, nullable=True)
-    cumulative_delta = Column(Integer, nullable=True)
-
-    # Lifecycle
-    is_active = Column(Boolean, default=True)
-    triggered_at = Column(DateTime, default=_utcnow)
-    expired_at = Column(DateTime, nullable=True)
-    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=True)
-
-    # New: multi-target + setup categorization
-    suggested_target_2 = Column(Float, nullable=True)
-    suggested_target_3 = Column(Float, nullable=True)
-    level_touched = Column(String, nullable=True)
-    setup_category = Column(String, nullable=True)  # "spring", "sfp", "poor_extreme", etc.
-    rr_tp1 = Column(Float, nullable=True)
-    rr_tp2 = Column(Float, nullable=True)
-
-    created_at = Column(DateTime, default=_utcnow)
-
-    # Relationships
-    session = relationship("MarketSession", back_populates="signals")
-    trade = relationship("Trade")
-
-    __table_args__ = (
-        Index("ix_trading_signals_active", "is_active", "triggered_at"),
-        Index("ix_trading_signals_setup", "setup_type"),
-    )
-
-
-class MarketTrade(Base):
-    """Raw tick data from Databento live stream."""
-
-    __tablename__ = "market_trades"
-
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String, nullable=False)
-    ts = Column(DateTime, nullable=False)  # UTC from Databento
-    price = Column(Float, nullable=False)
-    size = Column(Integer, nullable=False)
-    side = Column(String, nullable=False)  # "B" (bid aggressor) | "A" (ask aggressor)
-
-    __table_args__ = (Index("ix_market_trades_symbol_ts", "symbol", "ts"),)
-
-
-class MarketCandle(Base):
-    """Persisted OHLCV candle bars — backfilled from Databento + appended live."""
-
-    __tablename__ = "market_candles"
-
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String, nullable=False)
-    interval = Column(String, nullable=False)  # "1m" | "5m" | "15m"
-    ts = Column(DateTime, nullable=False)  # bucket-start UTC
-    o = Column(Float, nullable=False)
-    h = Column(Float, nullable=False)
-    l = Column(Float, nullable=False)
-    c = Column(Float, nullable=False)
-    v = Column(Integer, nullable=False)
-
-    __table_args__ = (
-        UniqueConstraint("symbol", "interval", "ts", name="uq_market_candle"),
-        Index("ix_market_candles_symbol_interval_ts", "symbol", "interval", "ts"),
-    )
-
-
-class MarketLevel(Base):
-    """Computed structural level for a session."""
-
-    __tablename__ = "market_levels"
-
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String, nullable=False)
-    date = Column(String, nullable=False)
-    level_type = Column(
-        String, nullable=False
-    )  # "order_block", "fvg", "ledge", "single_print", "pdh", "pdl", "tokyo_high", etc.
-    session = Column(String, nullable=True)  # "tokyo", "london", "ny", null
-    price_low = Column(Float, nullable=False)
-    price_high = Column(Float, nullable=False)  # = price_low for single-price levels
-    direction = Column(String, nullable=True)  # "bullish", "bearish", null
-    is_filled = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=_utcnow)
-
-    __table_args__ = (Index("ix_market_levels_symbol_date", "symbol", "date", "level_type"),)
-
-
-class MarketTPOSession(Base):
-    """Pre-computed TPO profile for a Globex session."""
-
-    __tablename__ = "market_tpo_sessions"
-
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String, nullable=False)
-    date = Column(String, nullable=False)  # YYYY-MM-DD
-    poc = Column(Float, nullable=False)
-    vah = Column(Float, nullable=False)
-    val = Column(Float, nullable=False)
-    ib_high = Column(Float, nullable=True)
-    ib_low = Column(Float, nullable=True)
-    rotation_factor = Column(Integer, nullable=True)
-    profile_shape = Column(String, nullable=True)
-    opening_type = Column(String, nullable=True)
-    opening_direction = Column(String, nullable=True)
-    upper_excess = Column(Integer, default=0)
-    lower_excess = Column(Integer, default=0)
-    session_high = Column(Float, nullable=True)
-    session_low = Column(Float, nullable=True)
-    session_json = Column(String, nullable=False)  # Full TPOProfile as JSON
-    created_at = Column(DateTime, default=_utcnow)
-
-    __table_args__ = (
-        UniqueConstraint("symbol", "date", name="uq_market_tpo_session"),
-        Index("ix_market_tpo_sessions_symbol_date", "symbol", "date"),
-    )
-
-
-class MarketContext(Base):
-    """Manual context gate persistence (Layer A gates)."""
-
-    __tablename__ = "market_context"
-
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String, nullable=False)
-    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
-    # Gate 1: Macro
-    macro_bias = Column(String, nullable=True)  # "bull", "bear", "neutral"
-    risk_mode = Column(String, nullable=True)  # "risk_on", "risk_off", "mixed"
-    cycle_phase = Column(String, nullable=True)  # "early", "mid", "late", "recession"
-    # Gate 2: Structure
-    structure = Column(String, nullable=True)  # "uptrend", "downtrend", "ranging"
-    structure_hl = Column(Float, nullable=True)  # Last confirmed HL (long invalidation below)
-    structure_lh = Column(Float, nullable=True)  # Last confirmed LH (short invalidation above)
-    # Gate 3: Day type
-    day_type = Column(String, nullable=True)  # "trend", "normal", "normal_variation", "neutral", "composite"
-    # VP anchors (Unix timestamps)
-    vp_old_macro_start = Column(Integer, nullable=True)  # repurposed as "current" anchor
-    vp_ongoing_macro_start = Column(Integer, nullable=True)
-    vp_leg_start = Column(Integer, nullable=True)
-
-    @property
-    def vp_current_start(self):
-        return self.vp_old_macro_start
-
-    @vp_current_start.setter
-    def vp_current_start(self, value):
-        self.vp_old_macro_start = value
-
-    __table_args__ = (UniqueConstraint("symbol", name="uq_market_context_symbol"),)
-
-
-class SessionMetric(Base):
-    """Permanent session metrics history for ASPR/RF baselines."""
-
-    __tablename__ = "session_metrics"
-
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String, nullable=False)
-    date = Column(String, nullable=False)  # YYYY-MM-DD
-    rotation_factor = Column(Integer, nullable=True)
-    aspr = Column(Float, nullable=True)
-
-    __table_args__ = (
-        UniqueConstraint("symbol", "date", name="uq_session_metrics_symbol_date"),
-        Index("ix_session_metrics_symbol", "symbol"),
-    )
-
-
 class ProviderExtractionSetting(Base):
     """Per-profile override for whether a provider is included in extraction.
 
@@ -2021,148 +1546,6 @@ def _run_migrations(engine):
                     pass
 
 
-# ============ ML Feature Store ============
-
-
-class MlFeature(Base):
-    """
-    Generic feature store for ML training and inference.
-
-    Stores feature vectors keyed by domain + source, with optional outcome
-    labels populated after the fact for supervised learning.
-    """
-
-    __tablename__ = "ml_features"
-    __table_args__ = (
-        Index("idx_ml_features_domain", "domain"),
-        Index("idx_ml_features_source", "source_type", "source_id"),
-    )
-
-    id = Column(Integer, primary_key=True)
-    domain = Column(String, nullable=False)  # e.g. "betting", "trading"
-    source_id = Column(String, nullable=False)  # FK-like ref to source row
-    source_type = Column(String, nullable=False)  # e.g. "opportunity", "signal"
-    features = Column(JSON, nullable=False)  # serialised feature dict
-    feature_version = Column(Integer, default=1)
-    outcome = Column(Float, nullable=True)  # continuous label (e.g. CLV)
-    outcome_binary = Column(Integer, nullable=True)  # 0/1 classification label
-    resolved_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=_utcnow)
-
-
-class CandleSnapshot(Base):
-    """
-    Stores OHLCV candle arrays associated with a trading signal for ML use.
-    """
-
-    __tablename__ = "candle_snapshots"
-
-    id = Column(Integer, primary_key=True)
-    signal_id = Column(Integer, ForeignKey("trading_signals.id"), nullable=True)
-    candles = Column(JSON, nullable=False)  # list of candle dicts
-    timeframe = Column(String, default="1m")
-    created_at = Column(DateTime, default=_utcnow)
-
-    signal = relationship("TradingSignal")
-
-
-class EconomicEvent(Base):
-    """
-    Scheduled macro economic events (e.g. CPI, NFP, FOMC) with consensus data.
-    """
-
-    __tablename__ = "economic_events"
-    __table_args__ = (Index("idx_econ_events_datetime", "event_datetime"),)
-
-    id = Column(Integer, primary_key=True)
-    event_name = Column(String, nullable=False)
-    event_datetime = Column(DateTime, nullable=False)
-    importance = Column(Integer, nullable=True)  # 1=low, 2=medium, 3=high
-    forecast = Column(Float, nullable=True)
-    actual = Column(Float, nullable=True)
-    previous = Column(Float, nullable=True)
-    surprise = Column(Float, nullable=True)  # actual - forecast
-    created_at = Column(DateTime, default=_utcnow)
-
-    impacts = relationship("NewsImpact", back_populates="economic_event")
-
-
-class NewsImpact(Base):
-    """
-    Price-impact measurements for economic events, used as ML training labels.
-    """
-
-    __tablename__ = "news_impact"
-
-    id = Column(Integer, primary_key=True)
-    event_id = Column(Integer, ForeignKey("economic_events.id"), nullable=True)
-    symbol = Column(String, default="NQ")
-    price_before = Column(Float, nullable=True)
-    price_1m = Column(Float, nullable=True)
-    price_5m = Column(Float, nullable=True)
-    price_15m = Column(Float, nullable=True)
-    price_30m = Column(Float, nullable=True)
-    price_60m = Column(Float, nullable=True)
-    immediate_impact_pct = Column(Float, nullable=True)
-    sustained_impact_pct = Column(Float, nullable=True)
-    reversal_pct = Column(Float, nullable=True)
-    vix_at_event = Column(Float, nullable=True)
-    delta_1m_after = Column(Float, nullable=True)
-    volume_1m_after = Column(Float, nullable=True)
-    created_at = Column(DateTime, default=_utcnow)
-
-    economic_event = relationship("EconomicEvent", back_populates="impacts")
-
-
-class OptionsFlow(Base):
-    """
-    Daily options market microstructure data (GEX, put/call, VIX, DXY, yields).
-    """
-
-    __tablename__ = "options_flow"
-    __table_args__ = (UniqueConstraint("date", "symbol", name="idx_options_flow_date"),)
-
-    id = Column(Integer, primary_key=True)
-    date = Column(String, nullable=False)
-    symbol = Column(String, default="NQ")
-    gex = Column(Float, nullable=True)
-    gex_flip_level = Column(Float, nullable=True)
-    net_options_delta = Column(Float, nullable=True)
-    put_call_ratio = Column(Float, nullable=True)
-    total_options_volume = Column(Float, nullable=True)
-    vix_level = Column(Float, nullable=True)
-    vix_1d_change = Column(Float, nullable=True)
-    vix_term_structure = Column(String, nullable=True)
-    dxy_level = Column(Float, nullable=True)
-    dxy_1d_change = Column(Float, nullable=True)
-    us10y_level = Column(Float, nullable=True)
-    us10y_1d_change = Column(Float, nullable=True)
-    us02y_level = Column(Float, nullable=True)
-    yield_curve_spread = Column(Float, nullable=True)
-    es_nq_ratio = Column(Float, nullable=True)
-    created_at = Column(DateTime, default=_utcnow)
-
-
-class CotData(Base):
-    """
-    CFTC Commitment of Traders report data for futures positioning analysis.
-    """
-
-    __tablename__ = "cot_data"
-    __table_args__ = (UniqueConstraint("report_date", "symbol", name="idx_cot_date"),)
-
-    id = Column(Integer, primary_key=True)
-    report_date = Column(String, nullable=False)
-    symbol = Column(String, default="NQ")
-    net_position = Column(Integer, nullable=True)
-    net_change = Column(Integer, nullable=True)
-    long_pct = Column(Float, nullable=True)
-    short_pct = Column(Float, nullable=True)
-    open_interest = Column(Integer, nullable=True)
-    open_interest_change = Column(Integer, nullable=True)
-    created_at = Column(DateTime, default=_utcnow)
-
-
 class MlModelRegistry(Base):
     """
     Registry of trained ML model artifacts with versioning and performance metrics.
@@ -2294,43 +1677,6 @@ class ProviderRecommendation(Base):
     )
 
 
-class LevelTouchOutcome(Base):
-    __tablename__ = "level_touch_outcomes"
-
-    id = Column(Integer, primary_key=True)
-    symbol = Column(Text, nullable=False)
-    touch_ts = Column(Float, nullable=False)
-    level_name = Column(Text, nullable=False)
-    level_type = Column(Text, nullable=False)
-    level_price = Column(Float, nullable=False)
-    approach_direction = Column(Text, nullable=False)
-    outcome = Column(Text)
-    max_continuation_ticks = Column(Float)
-    max_reversal_ticks = Column(Float)
-    outcome_measured_at = Column(Float)
-    session_date = Column(Text, nullable=False)
-    is_backfill = Column(Integer, default=0)
-    prediction = Column(Text)
-    prediction_confidence = Column(Float)
-
-    __table_args__ = (
-        Index("ix_level_touch_outcomes_symbol_ts", "symbol", "touch_ts"),
-        Index("ix_level_touch_outcomes_touch_ts", "touch_ts"),
-    )
-
-
-class LevelTouchFeature(Base):
-    __tablename__ = "level_touch_features"
-
-    id = Column(Integer, primary_key=True)
-    touch_outcome_id = Column(Integer, ForeignKey("level_touch_outcomes.id"), nullable=False)
-    features = Column(Text, nullable=False)
-    feature_version = Column(Integer, default=1)
-    created_at = Column(Float)
-
-    __table_args__ = (Index("ix_level_touch_features_outcome_id", "touch_outcome_id"),)
-
-
 def _run_pg_migrations(engine) -> None:
     """Lightweight column-additive migrations for Postgres.
 
@@ -2343,66 +1689,71 @@ def _run_pg_migrations(engine) -> None:
     (table, column, type_sql) with type_sql in Postgres dialect.
     """
     additions: list[tuple[str, str, str]] = [
-        # broker_trades: decision context added 2026-04-24
-        ("broker_trades", "tp_price", "DOUBLE PRECISION"),
-        ("broker_trades", "was_stop", "BOOLEAN"),
-        ("broker_trades", "trail_count", "INTEGER"),
-        ("broker_trades", "stop_ticks", "INTEGER"),
-        ("broker_trades", "signal_trigger", "VARCHAR"),
-        ("broker_trades", "signal_cont_p", "DOUBLE PRECISION"),
-        ("broker_trades", "signal_rev_p", "DOUBLE PRECISION"),
-        ("broker_trades", "orderflow_score", "DOUBLE PRECISION"),
-        # stock_signals: full observation snapshot for training feedback (2026-04-25)
-        ("stock_signals", "observation_b64", "TEXT"),
-        ("stock_signals", "observation_dim", "INTEGER"),
-        # broker_trades + stock_signals: structured "why we took it" tags (2026-04-27)
-        ("broker_trades", "reasoning", "JSONB"),
-        ("stock_signals", "reasoning", "JSONB"),
         # extraction_features: renamed dutch_opportunities_found → arb_opportunities_found
-        # in code; existing prod DB has only the old name. Add new column so the
-        # current code's INSERT/UPDATE doesn't error every cycle (was spamming
-        # 'column "arb_opportunities_found" does not exist' on every extraction).
+        # in code; existing prod DB has only the old name.
         ("extraction_features", "arb_opportunities_found", "INTEGER"),
         # bets.provider_bet_id: BetCreate schema accepts this since the mirror
         # workflow split (early 2026); the column was never added to Bet,
         # silently crashing every /api/bets POST with TypeError. Adding now.
         ("bets", "provider_bet_id", "VARCHAR"),
-        # 2026-04-29 — profile↔TopstepX account binding so trading stats and
-        # bankroll are scoped per-profile (forward-compat for multi-profile).
-        ("broker_trades", "profile_id", "INTEGER"),
-        ("profiles", "topstepx_account_id", "INTEGER"),
-        # 2026-05-05 — exit_reason for closed-trade chart labels. Distinguishes
-        # STOP / EE_LOCK / FLIP / EOD / MANUAL / etc. — was_stop alone covers
-        # the binary STOP-vs-not but the user wants chart-side visibility into
-        # which non-stop pathway closed the trade.
-        ("broker_trades", "exit_reason", "VARCHAR"),
-        # 2026-05-07 — TopstepX broker order ids for the entry + closing
-        # legs. Stored as the unambiguous join key against /api/Trade/search
-        # so backfill / realignment scripts can pin a broker_trade row to
-        # exact broker fill records (price+side+size matching is too
-        # ambiguous when trades cluster). NULL on legacy rows.
-        ("broker_trades", "entry_order_id", "BIGINT"),
-        ("broker_trades", "exit_order_id", "BIGINT"),
-        # 2026-05-08 — DQN raw action q-values, persisted at signal time so we
-        # can analyze action margin and calibration without re-running inference.
-        ("stock_signals", "q_values", "JSONB"),
-        # 2026-05-08 — actual placed stop at exit time (BE-lock + cont-trail
-        # walks). Used by the chart widget to draw a trail line at the
-        # final stop while keeping the original stop_price band visible
-        # for the R:R label. NULL on legacy rows.
-        ("broker_trades", "final_stop_price", "DOUBLE PRECISION"),
         # 2026-05-20 — arb leg linkage. Pairs the soft anchor + Polymarket
         # counter of one arbitrage so per-arb guaranteed profit is verifiable.
         ("bets", "arb_group_id", "VARCHAR"),
     ]
+
+    # Tables dropped during the 2026-05-25 strip-trading work. Idempotent —
+    # DROP TABLE IF EXISTS is a no-op when the table is already gone.
+    trading_tables_to_drop = [
+        "broker_trades",
+        "stock_signals",
+        "account_snapshots",
+        "shadow_predictions",
+        "trading_accounts",
+        "daily_routines",
+        "trades",
+        "trade_events",
+        "trade_reviews",
+        "trade_postmortems",
+        "market_sessions",
+        "trading_signals",
+        "market_trades",
+        "market_candles",
+        "market_levels",
+        "market_tpo_sessions",
+        "market_context",
+        "session_metrics",
+        "ml_features",
+        "candle_snapshots",
+        "economic_events",
+        "news_impact",
+        "options_flow",
+        "cot_data",
+        "level_touch_outcomes",
+        "level_touch_features",
+    ]
+
     with engine.begin() as conn:
+        # Drop trading tables first (CASCADE so dependent FKs go too)
+        for tbl in trading_tables_to_drop:
+            sp = conn.begin_nested()
+            try:
+                conn.execute(text(f"DROP TABLE IF EXISTS {tbl} CASCADE"))
+                sp.commit()
+            except Exception:
+                sp.rollback()
+                logger.warning("pg migration: DROP TABLE %s failed", tbl, exc_info=True)
+
+        # Drop profile column added for TopstepX binding (no-op if missing)
+        sp = conn.begin_nested()
+        try:
+            conn.execute(text("ALTER TABLE profiles DROP COLUMN IF EXISTS topstepx_account_id"))
+            sp.commit()
+        except Exception:
+            sp.rollback()
+            logger.warning("pg migration: DROP COLUMN profiles.topstepx_account_id failed", exc_info=True)
+
         # Each ALTER runs inside its own SAVEPOINT so a single failure
-        # doesn't put the outer transaction into a broken state. Without
-        # this, one bad ALTER would silently abort every subsequent
-        # statement with Postgres "current transaction is aborted,
-        # commands ignored until end of transaction block" — the failure
-        # mode that ate the realign_broker_trade_timestamps script's
-        # session init on 2026-05-07.
+        # doesn't put the outer transaction into a broken state.
         for table, col, col_type in additions:
             sp = conn.begin_nested()
             try:
@@ -2420,67 +1771,6 @@ def _run_pg_migrations(engine) -> None:
         except Exception:
             sp.rollback()
             logger.warning("pg migration: bets.provider_bet_id index failed", exc_info=True)
-
-        # Index for per-profile broker-trades lookups (stats + bankroll filter)
-        sp = conn.begin_nested()
-        try:
-            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_broker_trades_profile ON broker_trades(profile_id)"))
-            sp.commit()
-        except Exception:
-            sp.rollback()
-            logger.warning("pg migration: broker_trades.profile_id index failed", exc_info=True)
-
-        # 2026-05-07 — level_touch_outcomes/features had zero indexes despite
-        # symbol/touch_ts filters, ORDER BY touch_ts, and the FK join on
-        # touch_outcome_id. Audit item #14. Sequential scans on a growing
-        # training table are O(n) per query.
-        for idx_sql in (
-            "CREATE INDEX IF NOT EXISTS ix_level_touch_outcomes_symbol_ts ON level_touch_outcomes(symbol, touch_ts)",
-            "CREATE INDEX IF NOT EXISTS ix_level_touch_outcomes_touch_ts ON level_touch_outcomes(touch_ts)",
-            "CREATE INDEX IF NOT EXISTS ix_level_touch_features_outcome_id ON level_touch_features(touch_outcome_id)",
-        ):
-            sp = conn.begin_nested()
-            try:
-                conn.execute(text(idx_sql))
-                sp.commit()
-            except Exception:
-                sp.rollback()
-                logger.warning("pg migration: %s failed", idx_sql, exc_info=True)
-
-        # 2026-05-08 — broker_trades.profile_id and stock_signals.trade_id
-        # have always been plain Integer columns (no FK constraint). Audit
-        # item #50. ON DELETE SET NULL so deleting a profile or a broker
-        # trade row doesn't error out callers that still hold the reference;
-        # they just see NULL on the next read. Idempotent: skip if the
-        # constraint already exists. Each ALTER runs in a SAVEPOINT so a
-        # surprise orphan row doesn't abort the rest of the migration.
-        fk_migrations = [
-            (
-                "fk_broker_trades_profile",
-                "ALTER TABLE broker_trades ADD CONSTRAINT fk_broker_trades_profile "
-                "FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE SET NULL",
-            ),
-            (
-                "fk_stock_signals_trade",
-                "ALTER TABLE stock_signals ADD CONSTRAINT fk_stock_signals_trade "
-                "FOREIGN KEY (trade_id) REFERENCES broker_trades(id) ON DELETE SET NULL",
-            ),
-        ]
-        for cname, ddl in fk_migrations:
-            sp = conn.begin_nested()
-            try:
-                exists = conn.execute(
-                    text("SELECT 1 FROM pg_constraint WHERE conname = :n"),
-                    {"n": cname},
-                ).first()
-                if exists:
-                    sp.commit()
-                    continue
-                conn.execute(text(ddl))
-                sp.commit()
-            except Exception:
-                sp.rollback()
-                logger.warning("pg migration: %s failed", cname, exc_info=True)
 
         # 2026-04-25 — slip_odds_ticks for slip-streaming observability
         conn.execute(
@@ -2504,47 +1794,6 @@ def _run_pg_migrations(engine) -> None:
             text("CREATE INDEX IF NOT EXISTS ix_slip_odds_event ON slip_odds_ticks(event_id, market, outcome);")
         )
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_slip_odds_ts ON slip_odds_ticks(ts);"))
-
-        # 2026-05-17 — shadow_predictions: side-by-side logging of multiple
-        # models' predictions on the same observation so production vs. shadow
-        # model agreement/disagreement can be analysed before switching.
-        sp = conn.begin_nested()
-        try:
-            conn.execute(
-                text("""
-                    CREATE TABLE IF NOT EXISTS shadow_predictions (
-                        id SERIAL PRIMARY KEY,
-                        request_id VARCHAR(64) NOT NULL,
-                        model_name VARCHAR(32) NOT NULL,
-                        is_production BOOLEAN NOT NULL DEFAULT FALSE,
-                        ts TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-                        p_cont DOUBLE PRECISION NOT NULL,
-                        p_rev DOUBLE PRECISION NOT NULL,
-                        p_skip DOUBLE PRECISION NOT NULL,
-                        expected_r DOUBLE PRECISION NOT NULL,
-                        win_probability DOUBLE PRECISION NOT NULL,
-                        duration_bars DOUBLE PRECISION NOT NULL,
-                        uncertainty DOUBLE PRECISION NOT NULL,
-                        confidence DOUBLE PRECISION NOT NULL,
-                        action VARCHAR(16) NOT NULL,
-                        zone_id INTEGER,
-                        zone_center DOUBLE PRECISION,
-                        broker_trade_id INTEGER REFERENCES broker_trades(id)
-                    )
-                """)
-            )
-            conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS ix_shadow_predictions_request_model"
-                    " ON shadow_predictions(request_id, model_name)"
-                )
-            )
-            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_shadow_predictions_ts ON shadow_predictions(ts)"))
-            sp.commit()
-            logger.info("shadow_predictions table ready")
-        except Exception:
-            sp.rollback()
-            logger.exception("shadow_predictions migration failed")
 
 
 def init_db() -> None:
@@ -2575,274 +1824,11 @@ def get_session():
     return factory()
 
 
-# ── Market DB (separate file for high-frequency tick/candle writes) ────────
-
-_market_engine = None
-_market_async_engine = None
-_MarketSessionFactory = None
-_MarketAsyncSessionFactory = None
-
-# Tables that live in market.db — high-frequency writes that must not
-# contend with extraction/analysis for SQLite's single-writer lock.
-MARKET_DB_TABLES = {MarketTrade.__table__, MarketCandle.__table__}
-
-
-def get_market_engine():
-    """Get or create the market-data database engine.
-
-    Uses MARKET_DATABASE_URL env var for PostgreSQL, or SQLite fallback.
-    Separate from main DB so Databento tick writes (hundreds/sec) never
-    block extraction commits or frontend API queries.
-    """
-    global _market_engine
-    if _market_engine is None:
-        db_url = os.environ.get("MARKET_DATABASE_URL")
-        if db_url:
-            sync_url = db_url.replace("+asyncpg", "+psycopg2")
-            _market_engine = create_engine(sync_url)
-        else:
-            from ..paths import get_market_db_path
-
-            market_path = get_market_db_path()
-            market_path.parent.mkdir(parents=True, exist_ok=True)
-            _market_engine = create_engine(
-                f"sqlite:///{market_path}",
-                poolclass=NullPool,
-                connect_args={
-                    "check_same_thread": False,
-                    "timeout": 10,
-                },
-            )
-            with _market_engine.connect() as conn:
-                conn.execute(text("PRAGMA journal_mode=WAL"))
-                conn.commit()
-
-            @event.listens_for(_market_engine, "connect")
-            def _set_market_pragmas(dbapi_conn, connection_record):
-                cursor = dbapi_conn.cursor()
-                cursor.execute("PRAGMA busy_timeout=10000")
-                cursor.execute("PRAGMA synchronous=NORMAL")
-                cursor.close()
-
-        for table in MARKET_DB_TABLES:
-            table.create(_market_engine, checkfirst=True)
-    return _market_engine
-
-
-def get_market_session_factory():
-    """Get or create session factory for market DB."""
-    global _MarketSessionFactory
-    if _MarketSessionFactory is None:
-        _MarketSessionFactory = sessionmaker(bind=get_market_engine())
-    return _MarketSessionFactory
-
-
-def get_market_session():
-    """Get a database session for market DB (ticks + candles).
-
-    Caller is responsible for closing the session.
-    """
-    factory = get_market_session_factory()
-    return factory()
-
-
 # ============ Constants ============
 
 # Minimum odds for bonus wagering (bets below this don't count)
 BONUS_MIN_ODDS = 1.80
 
 
-class BrokerTrade(Base):
-    """Automated trade execution log with full decision context.
-
-    Captures not just the trade mechanics (entry/exit/pnl) but also the
-    signal that produced it (confidence, probabilities, zone, orderflow)
-    and the exit trajectory (trail count, was-stop) so future retraining
-    has the full (context, action, outcome) tuple in a single row. Richer
-    observation context (zone_members, model_type, etc) is queryable via
-    stock_signals join on trade_id after the nightly correlate cron runs.
-    """
-
-    __tablename__ = "broker_trades"
-
-    id = Column(Integer, primary_key=True)
-    ts = Column(DateTime, nullable=False, default=_utcnow)
-    # Owning sports-betting profile. Lets us scope trading stats / equity
-    # curve to the active profile so two profiles trading different
-    # TopstepX accounts don't see each other's trades. NULL only for
-    # legacy rows pre-migration (backfilled to the rasmus profile).
-    profile_id = Column(
-        Integer,
-        ForeignKey("profiles.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    session_date = Column(String, nullable=False)
-    symbol = Column(String, nullable=False)
-    side = Column(String, nullable=False)
-    size = Column(Integer, nullable=False)
-
-    # Trade mechanics
-    entry_price = Column(Float, nullable=False)
-    stop_price = Column(Float, nullable=True)
-    # Actual placed stop at exit time — captures BE-lock + cont-trail walks.
-    # NULL on rows pre-2026-05-08 migration; widget falls back to "no trail line".
-    final_stop_price = Column(Float, nullable=True)
-    tp_price = Column(Float, nullable=True)
-    exit_price = Column(Float, nullable=True)
-    stop_ticks = Column(Integer, nullable=True)
-    was_stop = Column(Boolean, nullable=True)
-    trail_count = Column(Integer, nullable=True)
-
-    # Outcome
-    pnl_dollars = Column(Float, nullable=True)
-    pnl_r = Column(Float, nullable=True)
-    fill_latency_ms = Column(Float, nullable=True)
-    slippage_ticks = Column(Float, nullable=True)
-    # STOP / EE_LOCK / FLIP / FLIP_REVERSAL / EOD / MANUAL / SHUTDOWN /
-    # ADVERSE_SLIP / SIZE_MISMATCH / etc. Captured from broker_adapter's
-    # last flatten() reason at close time, or "STOP" when was_stop=true.
-    exit_reason = Column(String, nullable=True)
-
-    # Signal context at entry
-    signal_action = Column(String, nullable=True)
-    signal_confidence = Column(Float, nullable=True)
-    signal_zone = Column(Float, nullable=True)
-    signal_trigger = Column(String, nullable=True)
-    signal_cont_p = Column(Float, nullable=True)
-    signal_rev_p = Column(Float, nullable=True)
-    orderflow_score = Column(Float, nullable=True)
-    # Why we took it — derived structured tags + 1-line summary.
-    # JSONB in Postgres so factors can be queried with ? / ->>.
-    reasoning = Column(JSON, nullable=True)
-
-    closed_at = Column(DateTime, nullable=True)
-
-    # TopstepX broker order ids for the entry leg and the closing leg.
-    # Stored so the backfill / realignment script can join unambiguously
-    # against /api/Trade/search records (price+side+size matching is too
-    # ambiguous when trades cluster). NULL on legacy rows pre-2026-05-07.
-    entry_order_id = Column(BigInteger, nullable=True, index=True)
-    exit_order_id = Column(BigInteger, nullable=True, index=True)
-
-    __table_args__ = (
-        Index("ix_broker_trades_session", "session_date"),
-        Index("ix_broker_trades_ts", "ts"),
-    )
-
-
-class StockSignal(Base):
-    """Every signal the LevelMonitor emits, persisted for later correlation
-    with realized broker_trades. This is the training-feedback foundation —
-    joined against broker_trades by ts + entry_price proximity to produce
-    labelled (signal_context, realized_outcome) pairs.
-
-    `observation_b64` captures the 279-dim observation vector the model saw
-    at signal time, base64-encoded float32 numpy bytes. Together with the
-    eventual realized PnL on the linked trade, this gives the trainer a
-    ground-truth (obs, action, reward) tuple to learn from — not just a
-    simulator estimate.
-    """
-
-    __tablename__ = "stock_signals"
-
-    id = Column(Integer, primary_key=True)
-    ts = Column(DateTime, nullable=False, default=_utcnow, index=True)
-    symbol = Column(String, nullable=False, default="NQ")
-    # Signal context
-    action = Column(String, nullable=False)  # enter_long / enter_short / SKIP
-    price = Column(Float, nullable=False)  # tick price when signal fired
-    confidence = Column(Float, nullable=True)
-    cont_p = Column(Float, nullable=True)
-    rev_p = Column(Float, nullable=True)
-    stop_price = Column(Float, nullable=True)
-    stop_ticks = Column(Integer, nullable=True)
-    zone_center = Column(Float, nullable=True)
-    zone_members = Column(Integer, nullable=True)
-    model_type = Column(String, nullable=True)  # "gbt+dqn", "dqn", etc.
-    # Full observation vector — base64(np.float32[279].tobytes()).
-    # ~1.5 KB per signal, decoded back to numpy with np.frombuffer.
-    observation_b64 = Column(Text, nullable=True)
-    observation_dim = Column(Integer, nullable=True)
-    # Outcome linkage (filled by the correlate step when a matching trade closes)
-    trade_id = Column(
-        Integer,
-        ForeignKey("broker_trades.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    # Why we emitted the signal — same shape as broker_trades.reasoning.
-    reasoning = Column(JSON, nullable=True)
-    # Raw DQN action q-values [q_continuation, q_reversal, q_skip] (or 2-elem
-    # [q_cont, q_rev] for legacy GBT-only paths). Lets us analyze action margin
-    # and calibration drift across model versions without re-running inference.
-    q_values = Column(JSON, nullable=True)
-
-    __table_args__ = (Index("ix_stock_signals_ts_price", "ts", "price"),)
-
-
-class AccountSnapshot(Base):
-    """Time-series of TopstepX account state. Written by the snapshot_account.py
-    cron every 5 minutes so we can reconstruct equity curves, drawdown profiles,
-    and overlay account state with trade outcomes."""
-
-    __tablename__ = "account_snapshots"
-
-    id = Column(Integer, primary_key=True)
-    ts = Column(DateTime, nullable=False, default=_utcnow, index=True)
-    account_id = Column(BigInteger, nullable=False)
-    balance = Column(Float, nullable=True)
-    equity = Column(Float, nullable=True)
-    unrealized_pnl = Column(Float, nullable=True)
-    daily_pnl = Column(Float, nullable=True)
-    open_position_size = Column(Integer, nullable=True)
-    source = Column(String, nullable=False, default="topstepx_account_search")
-
-    __table_args__ = (Index("ix_account_snapshots_account_ts", "account_id", "ts"),)
-
-
-class ShadowPrediction(Base):
-    """Side-by-side log of multiple models' predictions on the same obs.
-
-    Production model's prediction is what gets dispatched. Shadow model's
-    prediction is logged here for comparison. Both rows share the same
-    request_id so we can compare them later.
-    """
-
-    __tablename__ = "shadow_predictions"
-
-    id = Column(Integer, primary_key=True)
-    request_id = Column(String(64), nullable=False, index=True)  # uuid per zone touch
-    model_name = Column(String(32), nullable=False, index=True)  # 'gbt_v5' or 'ft_v1'
-    is_production = Column(Boolean, nullable=False, default=False)
-    ts = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-        index=True,
-    )
-
-    # The prediction itself
-    p_cont = Column(Float, nullable=False)
-    p_rev = Column(Float, nullable=False)
-    p_skip = Column(Float, nullable=False)
-    expected_R = Column("expected_r", Float, nullable=False)
-    win_probability = Column(Float, nullable=False)
-    duration_bars = Column(Float, nullable=False)
-    uncertainty = Column(Float, nullable=False)
-    confidence = Column(Float, nullable=False)
-    action = Column(String(16), nullable=False)  # "CONTINUATION"/"REVERSAL"/"SKIP"
-
-    # Context for joining to outcomes
-    zone_id = Column(Integer, nullable=True)
-    zone_center = Column(Float, nullable=True)
-
-    # FK to the realized broker_trade if one was placed (production only)
-    broker_trade_id = Column(Integer, ForeignKey("broker_trades.id"), nullable=True)
-
-    __table_args__ = (Index("ix_shadow_predictions_request_model", "request_id", "model_name"),)
-
-
 if __name__ == "__main__":
     init_db()
-    print(f"Database initialized at: {DB_PATH}")
