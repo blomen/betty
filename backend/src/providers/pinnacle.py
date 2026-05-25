@@ -468,7 +468,12 @@ class PinnacleRetriever(Retriever):
             # Moneyline: always extract — auto-classifies as 1x2 (draw present).
             # Spread/total: only extract if period=0 doesn't have them, to avoid
             # overwriting OT-included odds with regulation-time odds.
-            elif period == 6:
+            # Guard sport — Pinnacle uses period 6 specifically for ice hockey
+            # regulation time. If another sport ever ships period=6 markets, the
+            # 'reg' tag would be wrong (their canonical scope is 'ft' too), so
+            # we'd silently drop them via the scanner's scope filter. Skip them
+            # entirely instead.
+            elif period == 6 and sport == "ice_hockey":
                 if market_type in self._CORE_TYPES:
                     before = len(parsed)
                     if market_type == "moneyline":

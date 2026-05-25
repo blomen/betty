@@ -43,9 +43,24 @@ def scope_for(type_id: int, sport: str | None) -> str:
     # Everything else maps to 'ft' by default. New typeIds with scope ambiguity
     # must be added here explicitly.
     _FT_TYPEIDS = {
-        1, 186, 219, 251, 406, 30001,    # moneyline / 1x2
-        18, 189, 225, 238, 258, 412,     # total
-        16, 187, 223, 237, 256, 410,     # spread
+        1,
+        186,
+        219,
+        251,
+        406,
+        30001,  # moneyline / 1x2
+        18,
+        189,
+        225,
+        238,
+        258,
+        412,  # total
+        16,
+        187,
+        223,
+        237,
+        256,
+        410,  # spread
     }
     if type_id in _FT_TYPEIDS:
         return "ft"
@@ -54,12 +69,33 @@ def scope_for(type_id: int, sport: str | None) -> str:
     return "ft"
 
 
-# Sentinel exported for completeness-check tests
+# Sentinel exported for the test_altenar_typeid_scope_map_is_complete check.
+# WARNING: built with sport=None, so the sport-overridden scopes don't show
+# here. In particular TYPEID_SCOPE[18] == 'ft' BUT scope_for(18, 'ice_hockey')
+# == 'reg' (same for typeId 16). To know the real scope for an emitted row,
+# call scope_for(tid, sport) — never index TYPEID_SCOPE directly in extractor
+# code. The parametrized scope_for tests cover the sport-aware paths.
 TYPEID_SCOPE = {
-    tid: scope_for(tid, None) for tid in (
-        1, 186, 219, 251, 406, 30001,
-        18, 189, 225, 238, 258, 412,
-        16, 187, 223, 237, 256, 410,
+    tid: scope_for(tid, None)
+    for tid in (
+        1,
+        186,
+        219,
+        251,
+        406,
+        30001,
+        18,
+        189,
+        225,
+        238,
+        258,
+        412,
+        16,
+        187,
+        223,
+        237,
+        256,
+        410,
     )
 }
 
@@ -697,11 +733,13 @@ class AltenarRetriever(Retriever):
                 outcomes.append(outcome_dict)
 
             if outcomes:
-                new_markets.append({
-                    "type": market_type,
-                    "outcomes": outcomes,
-                    "scope": scope_for(market_type_id, sport),
-                })
+                new_markets.append(
+                    {
+                        "type": market_type,
+                        "outcomes": outcomes,
+                        "scope": scope_for(market_type_id, sport),
+                    }
+                )
                 existing_keys.add(dup_key)
 
         return new_markets
