@@ -221,20 +221,85 @@ PINNACLE_SPORTS = frozenset(
     }
 )
 
-# Canonical result scope per sport.
-# 'ft' = full-time (includes overtime/shootout) — default for most sports.
-# 'reg' = regulation time only — used for ice_hockey where Pinnacle's main
-#         puck-line/total markets settle at 60 min; OT-inclusive totals are a
-#         separate period on Pinnacle but a full-game total on soft books.
-# The scanner enforces this: only odds whose scope matches the canonical for
-# the event sport are grouped together.  Cross-scope rows are silently dropped
+# ============ Period / Scope Dimension ============
+#
+# Each row in the `odds` table carries a `scope` value identifying the
+# temporal/structural scope of the market. The scanner only joins odds
+# at matching scope, refusing to compare e.g. "Over 4.5 goals regulation"
+# against "Under 4.5 goals incl. OT".
+#
+# Canonical vocabulary:
+#   ft         — full time as the sport/book conventionally settles it
+#   reg        — regulation time only (no OT/SO/extra innings)
+#   1h, 2h     — halves (football, basketball, AF)
+#   q1..q4     — quarters (basketball, AF)
+#   p1..p3     — periods (hockey)
+#   set_1..5   — sets (tennis, volleyball)
+#   map_1..5   — maps (esports)
+#
+# `ft` per sport means:
+#   football          — 90 min + stoppage (NO extra time, NO penalties)
+#   ice_hockey        — including OT + shootout
+#   basketball        — including OT
+#   american_football — including OT
+#   baseball          — including extra innings
+#   tennis            — final match winner
+#   esports           — series outcome (map markets are explicit scope)
+
+VALID_SCOPES = frozenset(
+    {
+        "ft",
+        "reg",
+        "1h",
+        "2h",
+        "q1",
+        "q2",
+        "q3",
+        "q4",
+        "p1",
+        "p2",
+        "p3",
+        "set_1",
+        "set_2",
+        "set_3",
+        "set_4",
+        "set_5",
+        "map_1",
+        "map_2",
+        "map_3",
+        "map_4",
+        "map_5",
+    }
+)
+
+# Default scope for new odds rows when an extractor doesn't set one.
+DEFAULT_SCOPE = "ft"
+
+# Per-sport canonical scope. The scanner only surfaces opportunities at
+# this scope for each sport. Sports without an entry fall through to "ft"
+# via canonical_scope_for() — cross-scope rows are silently dropped
 # (produce silence, not phantom arbs).
-SPORT_CANONICAL_SCOPE: dict[str, str] = {}
+SPORT_CANONICAL_SCOPE: dict[str, str] = {
+    "football": "ft",
+    "ice_hockey": "ft",
+    "basketball": "ft",
+    "american_football": "ft",
+    "baseball": "ft",
+    "tennis": "ft",
+    "volleyball": "ft",
+    "handball": "ft",
+    "mma": "ft",
+    "boxing": "ft",
+    "rugby": "ft",
+    "esports": "ft",
+}
 
 
 def canonical_scope_for(sport: str | None) -> str:
-    """Return the canonical result scope for *sport* (default 'ft')."""
-    return SPORT_CANONICAL_SCOPE.get(sport or "", "ft")
+    """Return the canonical scope for a sport, falling back to DEFAULT_SCOPE."""
+    if sport is None:
+        return DEFAULT_SCOPE
+    return SPORT_CANONICAL_SCOPE.get(sport, DEFAULT_SCOPE)
 
 
 # ============ Trading Constants ============
