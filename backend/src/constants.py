@@ -221,6 +221,21 @@ PINNACLE_SPORTS = frozenset(
     }
 )
 
+# Canonical result scope per sport.
+# 'ft' = full-time (includes overtime/shootout) — default for most sports.
+# 'reg' = regulation time only — used for ice_hockey where Pinnacle's main
+#         puck-line/total markets settle at 60 min; OT-inclusive totals are a
+#         separate period on Pinnacle but a full-game total on soft books.
+# The scanner enforces this: only odds whose scope matches the canonical for
+# the event sport are grouped together.  Cross-scope rows are silently dropped
+# (produce silence, not phantom arbs).
+SPORT_CANONICAL_SCOPE: dict[str, str] = {}
+
+
+def canonical_scope_for(sport: str | None) -> str:
+    """Return the canonical result scope for *sport* (default 'ft')."""
+    return SPORT_CANONICAL_SCOPE.get(sport or "", "ft")
+
 
 # ============ Trading Constants ============
 
