@@ -142,7 +142,7 @@ def _persist_live_odds(
 
     async def _do_push():
         try:
-            from arnold.http_client import tunnel_client
+            from local.http_client import tunnel_client
 
             await tunnel_client().post(
                 "/api/odds/live-update",
@@ -231,7 +231,7 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
     _prev_callback = browser._on_event
 
     async def _post_balance_async(provider_id: str, balance: float):
-        from arnold.http_client import tunnel_client
+        from local.http_client import tunnel_client
 
         try:
             client = tunnel_client()
@@ -612,7 +612,7 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         Idempotent — dedup against existing DB rows via provider_bet_id +
         (event_id, outcome). Safe to call repeatedly.
         """
-        from arnold.http_client import tunnel_client
+        from local.http_client import tunnel_client
 
         async def api_post(payload: dict):
             return await tunnel_client().post("/api/bets", json=payload, timeout=10.0)

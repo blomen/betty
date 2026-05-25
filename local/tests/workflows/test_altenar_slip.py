@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from arnold.mirror.workflows.altenar import AltenarWorkflow
+from local.mirror.workflows.altenar import AltenarWorkflow
 
 
 def _wf(provider_id: str = "betinia", domain: str = "betinia.se") -> AltenarWorkflow:

@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 def _tunnel_client():
     """Lazy import to avoid pulling http_client at module load (test isolation)."""
-    from arnold.http_client import tunnel_client
+    from local.http_client import tunnel_client
 
     return tunnel_client()
 

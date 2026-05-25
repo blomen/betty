@@ -243,7 +243,7 @@ async def _fallback_reconcile_unmatched(
     """For each DB-pending bet not matched by paginated sync_history, attempt a
     targeted date-range query. PATCH + broadcast bet_reconciled per match.
     Returns the count of bets reconciled by the fallback path."""
-    from arnold.http_client import tunnel_client as _tc
+    from local.http_client import tunnel_client as _tc
 
     if not hasattr(workflow, "fetch_history_for_bet"):
         return 0
@@ -311,7 +311,7 @@ async def reconcile_and_publish(
     any DB-pending bet not matched by the main paginated history pass is
     re-queried via workflow.fetch_history_for_bet (if the workflow implements it).
     """
-    from arnold.http_client import tunnel_client as _tc
+    from local.http_client import tunnel_client as _tc
 
     deltas = reconcile_from_history(db_pending, history)
 

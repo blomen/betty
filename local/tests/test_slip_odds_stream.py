@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from arnold.mirror.slip_odds_stream import SlipOddsStream
+from local.mirror.slip_odds_stream import SlipOddsStream
 
 
 @pytest.mark.asyncio

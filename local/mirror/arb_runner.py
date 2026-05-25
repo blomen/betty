@@ -1041,7 +1041,7 @@ class ArbRunner:
         Timeout 60s — soft scans take 30s-3min cold, then 60s cache + in-flight
         coalescing keeps subsequent calls fast. 30s was killing every first call.
         """
-        from arnold.http_client import tunnel_client as _tc
+        from local.http_client import tunnel_client as _tc
 
         pool = set(self._counter_pool())
         pool.add(self.provider_id)  # anchor provider is always allowed
@@ -1173,7 +1173,7 @@ class ArbRunner:
         sweep, which left 73% of legs unlinked (no event_id on counter, or
         ambiguous title match).
         """
-        from arnold.http_client import tunnel_client as _tc
+        from local.http_client import tunnel_client as _tc
 
         provider_bet_id = result.bet_id if isinstance(result.bet_id, str) and result.bet_id else None
         payload = {
@@ -1358,7 +1358,7 @@ class ArbRunner:
         )
 
     async def _fetch_pending(self, provider_id: str) -> list[dict]:
-        from arnold.http_client import tunnel_client as _tc
+        from local.http_client import tunnel_client as _tc
 
         try:
             resp = await _tc().get("/api/opportunities/play/pending-bets", timeout=30.0)
@@ -1372,7 +1372,7 @@ class ArbRunner:
         return []
 
     async def _fetch_placed_today(self, provider_id: str) -> None:
-        from arnold.http_client import tunnel_client as _tc
+        from local.http_client import tunnel_client as _tc
 
         try:
             resp = await _tc().post("/api/opportunities/play/batch", json={}, timeout=30.0)
@@ -1384,7 +1384,7 @@ class ArbRunner:
             logger.warning(f"[Arb:{provider_id}] failed to fetch placed_today")
 
     async def _post_balance(self, provider_id: str, balance: float) -> None:
-        from arnold.http_client import tunnel_client as _tc
+        from local.http_client import tunnel_client as _tc
 
         try:
             resp = await _tc().post(f"/api/bankroll/set/{provider_id}", json={"balance": balance}, timeout=15.0)

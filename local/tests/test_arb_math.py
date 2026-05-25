@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from arnold.mirror.arb_math import (
+from local.mirror.arb_math import (
     is_valid_arb_shape,
     recalc_counter_stakes,
     recalc_profit_pct,

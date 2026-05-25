@@ -22,7 +22,7 @@ _BACKEND_DIR = Path(__file__).resolve().parent.parent / "backend"
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
-# Make `arnold` package importable (parent of this file's directory)
+# Make `local` package importable (parent of this file's directory)
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -117,7 +117,7 @@ async def _reset_stale_runner_state() -> None:
     try:
         from mirror.state_writer import write_runner_state
 
-        from arnold.http_client import tunnel_client
+        from local.http_client import tunnel_client
 
         await asyncio.sleep(2)
         client = tunnel_client()
@@ -148,7 +148,7 @@ async def _reset_stale_runner_state() -> None:
 async def _auto_start_play_loop() -> None:
     """Background task: ensures the polymarket play loop is always running
     when polymarket is logged in and has +EV opportunities."""
-    from arnold.http_client import local_client, tunnel_client
+    from local.http_client import local_client, tunnel_client
 
     POLL_INTERVAL = 30.0
     while True:
@@ -206,7 +206,7 @@ async def shutdown():
     try:
         from proxy import close_proxy_clients
 
-        from arnold.http_client import close_all as _close_clients
+        from local.http_client import close_all as _close_clients
 
         await _close_clients()
         await close_proxy_clients()

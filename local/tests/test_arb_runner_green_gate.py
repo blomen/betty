@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from arnold.mirror.arb_runner import ArbRunner
+from local.mirror.arb_runner import ArbRunner
 
 
 def _make_browser():
@@ -514,7 +514,7 @@ class TestPlacedWhileRedGate:
         runner._all_green = True
 
         # Force the anchor workflow's parser to report success regardless of body shape
-        from arnold.mirror.workflows import get_workflow
+        from local.mirror.workflows import get_workflow
 
         wf = get_workflow("betinia")
         monkeypatch.setattr(
@@ -556,7 +556,7 @@ class TestWatchTopOppLoop:
 
     @pytest.mark.asyncio
     async def test_watcher_fires_dethrone_when_better_opp_appears(self, monkeypatch):
-        from arnold.mirror import arb_runner as ar
+        from local.mirror import arb_runner as ar
 
         runner = self._make_runner()
         # Speed up the loop sleep so the test finishes quickly
@@ -585,7 +585,7 @@ class TestWatchTopOppLoop:
 
     @pytest.mark.asyncio
     async def test_watcher_does_not_dethrone_for_same_opp(self, monkeypatch):
-        from arnold.mirror import arb_runner as ar
+        from local.mirror import arb_runner as ar
 
         runner = self._make_runner()
         monkeypatch.setattr(ar, "RERANK_INTERVAL_S", 0.05)
@@ -619,7 +619,7 @@ class TestWatchTopOppLoop:
 
     @pytest.mark.asyncio
     async def test_watcher_swallows_fetch_exceptions_and_continues(self, monkeypatch):
-        from arnold.mirror import arb_runner as ar
+        from local.mirror import arb_runner as ar
 
         runner = self._make_runner()
         monkeypatch.setattr(ar, "RERANK_INTERVAL_S", 0.05)

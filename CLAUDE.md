@@ -21,7 +21,7 @@ Arnold compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to 
 
 ```
 Hetzner Server (24/7, headless)              Your PC
-├── backend/src/                             ├── arnold/               # Local client
+├── backend/src/                             ├── local/                # Local client
 │   ├── providers/    # 16 extractors        │   ├── server.py         # FastAPI: /api proxy + /mirror + static
 │   ├── pipeline/     # orchestrator         │   ├── launch.py         # SSH tunnel + uvicorn + browser open
 │   ├── analysis/     # scanner, devig       │   ├── proxy.py          # /api/* reverse-proxy to server via tunnel
@@ -163,7 +163,7 @@ Multiple Claude Code agents may work on this repo concurrently. **Follow these r
     - `ssh root@148.251.40.251 "curl -sf http://localhost:8000/health"` — note the `boot_id` (changes on every container restart)
     - `ssh root@148.251.40.251 "cd /opt/arnold && docker compose ps backend --format json | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get(\"CreatedAt\"))'"` — container creation time should be after your deploy completed
     - If git HEAD is ahead of what your deploy pulled (e.g. another agent pushed mid-deploy), the running container is stale — re-deploy with `--no-cache` or wait for the next pull cycle.
-13. **Backend deploys vs frontend/local-client changes**: a commit touching ONLY `frontend/`, `arnold/mirror/`, `arnold/server.py`, `arnold/launch.py`, or `arnold/proxy.py` is **local-client only** and ships via `arnold.bat` (Vite + local FastAPI) — do NOT trigger a backend rebuild for these. Quick check: `git diff --name-only origin/main...HEAD | grep -vE '^(arnold|frontend)/' | head -1` — if empty, no backend deploy needed.
+13. **Backend deploys vs frontend/local-client changes**: a commit touching ONLY `frontend/`, `local/mirror/`, `local/server.py`, `local/launch.py`, or `local/proxy.py` is **local-client only** and ships via `arnold.bat` (Vite + local FastAPI) — do NOT trigger a backend rebuild for these. Quick check: `git diff --name-only origin/main...HEAD | grep -vE '^(local|frontend)/' | head -1` — if empty, no backend deploy needed.
 14. **Background-deploy etiquette**: when running deploys via `Bash run_in_background=true` and SSH, the remote bash survives if you cancel the local task — always `pgrep -fa 'server-deploy.sh'` on the server BEFORE assuming the slot is free.
 
 ### Currencies (READ BEFORE ANY CROSS-PROVIDER MATH)
@@ -272,7 +272,7 @@ IDLE → OPENING → LOGIN_WAITING → SETTLING → NAVIGATING → READY → PLA
 
 ### Key Files
 ```
-arnold/
+local/
 ├── launch.py              # SSH tunnel + uvicorn + browser open (+ zombie-tunnel watchdog)
 ├── server.py              # FastAPI: /mirror router + /api proxy + static
 ├── proxy.py               # /api/* reverse proxy through the SSH tunnel
@@ -284,10 +284,11 @@ arnold/
 │   ├── router.py          # /mirror/* endpoints
 │   ├── sse.py             # Local SSE broadcaster
 │   └── workflows/         # Provider DOM automation
+├── navigations/           # Playwright nav recordings (per-provider JSONs)
 └── data/                  # local cache (tunnel lock file, etc.)
 
-frontend/                  # React app (repo root) — served by arnold/server.py
-arnold.bat                 # Windows launcher at repo root — invokes arnold/launch.py
+frontend/                  # React app (repo root) — served by local/server.py
+arnold.bat                 # Windows launcher at repo root — invokes local/launch.py
 ```
 
 ### Frontend (IMPORTANT)

@@ -6,7 +6,7 @@ has been replaced by strategies/pinnacle.py + GenericWorkflow routing.
 
 from __future__ import annotations
 
-from arnold.mirror.workflows.strategies.pinnacle import (
+from local.mirror.workflows.strategies.pinnacle import (
     parse_placement_response,
     parse_placement_status,
 )

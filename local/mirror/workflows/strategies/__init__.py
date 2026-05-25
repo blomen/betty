@@ -56,12 +56,12 @@ class Strategy:
 def load_strategy(provider_id: str) -> Strategy | None:
     """Import strategies/{provider_id}.py if it exists, return .strategy attr.
 
-    Tries both `arnold.mirror.workflows.strategies.<id>` (repo-root sys.path,
+    Tries both `local.mirror.workflows.strategies.<id>` (repo-root sys.path,
     e.g. pytest) and `mirror.workflows.strategies.<id>` (arnold.bat launcher
     that puts `arnold/` on sys.path directly).
     """
     for module_path in (
-        f"arnold.mirror.workflows.strategies.{provider_id}",
+        f"local.mirror.workflows.strategies.{provider_id}",
         f"mirror.workflows.strategies.{provider_id}",
     ):
         try:

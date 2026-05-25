@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from arnold.mirror.reconcile import _has_meaningful_diff, reconcile_from_history
+from local.mirror.reconcile import _has_meaningful_diff, reconcile_from_history
 
 
 def test_no_history_no_deltas():

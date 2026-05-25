@@ -16,8 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from arnold.mirror.workflows.strategies import kalshi
-from arnold.mirror.workflows.strategies.kalshi import (
+from local.mirror.workflows.strategies import kalshi
+from local.mirror.workflows.strategies.kalshi import (
     _bet_is_no_side,
     _check_live_price,
     _event_ticker_from_market,

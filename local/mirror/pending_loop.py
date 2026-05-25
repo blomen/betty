@@ -300,7 +300,7 @@ class PendingLoop:
 
     async def _fetch_pending(self) -> dict[str, list[dict]]:
         """GET /api/opportunities/play/pending-bets → {provider_id: [bet, ...]}"""
-        from arnold.http_client import tunnel_client
+        from local.http_client import tunnel_client
 
         try:
             client = tunnel_client()
@@ -442,7 +442,7 @@ class PendingLoop:
     # ------------------------------------------------------------------
 
     async def _record_settlements(self, pid: str, settlements: list[dict]) -> None:
-        from arnold.http_client import tunnel_client
+        from local.http_client import tunnel_client
 
         batch = [
             {"bet_id": s["bet_id"], "result": s["result"]} for s in settlements if s.get("bet_id") and s.get("result")
@@ -462,7 +462,7 @@ class PendingLoop:
             logger.exception(f"[PendingLoop] failed to record settlements for {pid}")
 
     async def _post_balance(self, pid: str, balance: float) -> None:
-        from arnold.http_client import tunnel_client
+        from local.http_client import tunnel_client
 
         try:
             client = tunnel_client()
@@ -609,7 +609,7 @@ class PendingLoop:
                 "external_placement": True,
             }
             try:
-                from arnold.http_client import tunnel_client
+                from local.http_client import tunnel_client
 
                 resp = await tunnel_client().post("/api/bets", json=payload, timeout=10.0)
                 resp.raise_for_status()
@@ -657,7 +657,7 @@ class PendingLoop:
         re-insert every open bet as a duplicate (the BETINIA ×3 dup bug,
         2026-05-12 — 4 open bets became 12 DB rows across 3 failed syncs).
         """
-        from arnold.http_client import tunnel_client
+        from local.http_client import tunnel_client
 
         try:
             resp = await tunnel_client().get("/api/opportunities/play/pending-bets", timeout=15.0)

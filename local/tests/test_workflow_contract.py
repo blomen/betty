@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 
-from arnold.mirror.workflows.base import ProviderWorkflow
+from local.mirror.workflows.base import ProviderWorkflow
 
 
 def test_base_workflow_defines_read_slip_odds():

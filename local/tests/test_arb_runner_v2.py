@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from arnold.mirror.arb_runner import ArbRunner
+from local.mirror.arb_runner import ArbRunner
 
 
 def _make_browser():

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from arnold.mirror.play_loop import PlayLoop
+from local.mirror.play_loop import PlayLoop
 
 
 def _make_loop() -> PlayLoop:
@@ -74,7 +74,7 @@ def test_make_push_bet_no_total_bump_on_replace():
 
 def test_provider_runner_accepts_push_bet_param():
     """ProviderRunner constructor accepts push_bet callable."""
-    from arnold.mirror.provider_runner import ProviderRunner
+    from local.mirror.provider_runner import ProviderRunner
 
     push_calls = []
 
@@ -100,7 +100,7 @@ def test_provider_runner_accepts_push_bet_param():
 def test_hard_fail_reasons_constant_includes_known_failures():
     """The hard-fail reason set in provider_runner must cover all four
     polymarket prep_betslip failure modes."""
-    from arnold.mirror.provider_runner import HARD_FAIL_PREP_REASONS
+    from local.mirror.provider_runner import HARD_FAIL_PREP_REASONS
 
     assert "navigation_redirected" in HARD_FAIL_PREP_REASONS
     assert "no_cent_button_matched" in HARD_FAIL_PREP_REASONS
@@ -115,7 +115,7 @@ def test_is_hard_fail_reason_substring_match():
        'no_cent_button_matched (market=moneyline, target=...)'
        'click_failed: js_eval_returned_none'
     """
-    from arnold.mirror.provider_runner import is_hard_fail_reason
+    from local.mirror.provider_runner import is_hard_fail_reason
 
     assert is_hard_fail_reason("navigation_redirected (expected slug 'foo' not in URL 'bar')")
     assert is_hard_fail_reason("no_cent_button_matched (market=moneyline, target=team)")
@@ -131,7 +131,7 @@ def test_mark_recently_skipped_called_on_hard_fail(monkeypatch):
     must call mark_recently_skipped(bet) so refresh_batch excludes it for 60s."""
     from unittest.mock import MagicMock
 
-    from arnold.mirror.provider_runner import ProviderRunner
+    from local.mirror.provider_runner import ProviderRunner
 
     marked: list[dict] = []
 
@@ -152,7 +152,7 @@ def test_mark_recently_skipped_called_on_hard_fail(monkeypatch):
     # _run loop is too complex to invoke from a unit test (browser tabs,
     # workflow strategy, asyncio scaffolding), so we simulate the part the
     # task adds: is_hard_fail_reason + mark_recently_skipped.
-    from arnold.mirror.provider_runner import is_hard_fail_reason
+    from local.mirror.provider_runner import is_hard_fail_reason
 
     bet = {"event_id": "abc", "market": "moneyline", "outcome": "home"}
     reason = "navigation_redirected (expected slug 'x' not in URL 'y')"
@@ -165,7 +165,7 @@ def test_mark_recently_skipped_not_called_on_soft_reason():
     """Non-hard-fail prep reasons must NOT trigger the TTL marking."""
     from unittest.mock import MagicMock
 
-    from arnold.mirror.provider_runner import ProviderRunner, is_hard_fail_reason
+    from local.mirror.provider_runner import ProviderRunner, is_hard_fail_reason
 
     marked: list[dict] = []
     runner = ProviderRunner(
@@ -192,7 +192,7 @@ def test_is_hard_fail_reason_matches_click_eval_failed():
     JS-click path must trigger the 60s TTL (the substring 'click_failed'
     alone does NOT match 'click_eval_failed' because the latter has a
     different prefix)."""
-    from arnold.mirror.provider_runner import is_hard_fail_reason
+    from local.mirror.provider_runner import is_hard_fail_reason
 
     assert is_hard_fail_reason("click_eval_failed:js_eval_returned_none") is True
     assert is_hard_fail_reason("click_eval_failed: ReferenceError: foo is undefined") is True
@@ -200,7 +200,7 @@ def test_is_hard_fail_reason_matches_click_eval_failed():
 
 def test_convergence_should_redirect_returns_true_when_top_above_live():
     """should_redirect_to_top: queue top edge > live edge → True."""
-    from arnold.mirror.provider_runner import should_redirect_to_top
+    from local.mirror.provider_runner import should_redirect_to_top
 
     assert should_redirect_to_top(live_edge=19.9, queue_top_edge=23.0) is True
     assert should_redirect_to_top(live_edge=10.0, queue_top_edge=10.0001) is True
@@ -208,7 +208,7 @@ def test_convergence_should_redirect_returns_true_when_top_above_live():
 
 def test_convergence_should_redirect_returns_false_when_at_or_above_top():
     """should_redirect_to_top: live edge >= queue top → False (we're top)."""
-    from arnold.mirror.provider_runner import should_redirect_to_top
+    from local.mirror.provider_runner import should_redirect_to_top
 
     assert should_redirect_to_top(live_edge=23.0, queue_top_edge=23.0) is False
     assert should_redirect_to_top(live_edge=25.0, queue_top_edge=23.0) is False
@@ -216,7 +216,7 @@ def test_convergence_should_redirect_returns_false_when_at_or_above_top():
 
 def test_convergence_should_redirect_handles_missing_inputs():
     """Missing live_edge OR missing queue_top_edge → False (assume top)."""
-    from arnold.mirror.provider_runner import should_redirect_to_top
+    from local.mirror.provider_runner import should_redirect_to_top
 
     assert should_redirect_to_top(live_edge=None, queue_top_edge=23.0) is False
     assert should_redirect_to_top(live_edge=19.9, queue_top_edge=None) is False
@@ -225,7 +225,7 @@ def test_convergence_should_redirect_handles_missing_inputs():
 
 def test_convergence_max_iter_constant():
     """CONVERGENCE_MAX_ITER caps the convergence loop at 5."""
-    from arnold.mirror.provider_runner import CONVERGENCE_MAX_ITER
+    from local.mirror.provider_runner import CONVERGENCE_MAX_ITER
 
     assert CONVERGENCE_MAX_ITER == 5
 
@@ -234,7 +234,7 @@ def test_convergence_iter_attribute_exists():
     """ProviderRunner tracks _convergence_iter on self for the convergence cap."""
     from unittest.mock import MagicMock
 
-    from arnold.mirror.provider_runner import ProviderRunner
+    from local.mirror.provider_runner import ProviderRunner
 
     runner = ProviderRunner(
         provider_id="polymarket",
@@ -253,7 +253,7 @@ def test_convergence_iter_attribute_exists():
 def test_should_dethrone_at_ready_uses_2pt_hysteresis():
     """At-READY dethrone uses DETHRONE_HYSTERESIS_PCT (2pts) — strict
     convergence is only on initial entry."""
-    from arnold.mirror.provider_runner import (
+    from local.mirror.provider_runner import (
         DETHRONE_HYSTERESIS_PCT,
         should_dethrone_at_ready,
     )
@@ -267,7 +267,7 @@ def test_should_dethrone_at_ready_uses_2pt_hysteresis():
 
 def test_should_dethrone_at_ready_handles_missing_inputs():
     """Missing live_edge OR queue_top_edge → False (don't dethrone)."""
-    from arnold.mirror.provider_runner import should_dethrone_at_ready
+    from local.mirror.provider_runner import should_dethrone_at_ready
 
     assert should_dethrone_at_ready(live_edge=None, queue_top_edge=23.0) is False
     assert should_dethrone_at_ready(live_edge=20.0, queue_top_edge=None) is False

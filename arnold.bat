@@ -4,8 +4,8 @@ setlocal
 REM Single-instance lock — prevents two arnold.bat invocations from racing each
 REM other into kill.bat + launch.py (the bug that left two zombie launchers
 REM fighting over port 8000). Uses an exclusive file handle on a lock file.
-set "LOCKFILE=%~dp0arnold\data\.launch.lock"
-if not exist "%~dp0arnold\data" mkdir "%~dp0arnold\data" >nul 2>&1
+set "LOCKFILE=%~dp0local\data\.launch.lock"
+if not exist "%~dp0local\data" mkdir "%~dp0local\data" >nul 2>&1
 
 REM Open lockfile for exclusive write — call fails immediately if held.
 9>"%LOCKFILE%" (
@@ -20,7 +20,7 @@ REM Open lockfile for exclusive write — call fails immediately if held.
     exit /b 1
   )
 
-  cd /d "%~dp0arnold"
+  cd /d "%~dp0local"
   REM Prefer the project venv's Python ^(has the right playwright + chromium versions^).
   REM Fall back to system Python if the venv isn't present.
   REM

@@ -33,7 +33,7 @@ _last_tunnel_warn: float = 0.0
 _TUNNEL_WARN_INTERVAL = 30.0
 
 # Singleton client per tunnel URL. The proxy can't share `tunnel_client()` from
-# arnold.http_client because that one pre-sets the nginx auth header for our
+# local.http_client because that one pre-sets the nginx auth header for our
 # own internal callers — but the proxy must forward the *request's* headers
 # verbatim so backend auth/role checks see the real caller. So a separate
 # client without canned headers, but still pooled.

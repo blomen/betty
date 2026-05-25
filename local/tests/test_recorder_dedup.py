@@ -24,7 +24,7 @@ def _async(value):
 def test_kalshi_sync_skips_settled_position(monkeypatch):
     """Dedup against all recorded tickers — a settled ticker still in the
     portfolio feed is skipped, not re-inserted."""
-    from arnold.mirror.recorders import kalshi_api
+    from local.mirror.recorders import kalshi_api
 
     ticker = "KXNQ-26-T1"
     pos = kalshi_api.RecoveredPosition(
@@ -59,7 +59,7 @@ def test_kalshi_sync_skips_settled_position(monkeypatch):
 
 def test_kalshi_sync_fails_closed(monkeypatch):
     """fetch_known_ids None → skip insert."""
-    from arnold.mirror.recorders import kalshi_api
+    from local.mirror.recorders import kalshi_api
 
     pos = kalshi_api.RecoveredPosition(
         provider_id="kalshi",

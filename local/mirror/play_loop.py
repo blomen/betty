@@ -354,7 +354,7 @@ class PlayLoop:
             "provider_bet_id": provider_bet_id,
             "start_time": picked.get("start_time"),
         }
-        from arnold.http_client import tunnel_client
+        from local.http_client import tunnel_client
 
         resp = await tunnel_client().post("/api/bets", json=payload, timeout=10.0)
         resp.raise_for_status()
@@ -472,7 +472,7 @@ class PlayLoop:
             "start_time": start_time,
         }
         try:
-            from arnold.http_client import tunnel_client
+            from local.http_client import tunnel_client
 
             resp = await tunnel_client().post("/api/bets", json=payload, timeout=10.0)
             resp.raise_for_status()
@@ -532,7 +532,7 @@ class PlayLoop:
         popped without replenishment.
         """
         try:
-            from arnold.http_client import tunnel_client
+            from local.http_client import tunnel_client
 
             client = tunnel_client()
             resp = await client.post("/api/opportunities/play/batch", json={}, timeout=10.0)

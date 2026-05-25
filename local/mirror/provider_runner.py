@@ -1942,7 +1942,7 @@ class ProviderRunner:
                 "external_placement": True,
             }
             try:
-                from arnold.http_client import tunnel_client as _tc
+                from local.http_client import tunnel_client as _tc
 
                 resp = await _tc().post("/api/bets", json=payload, timeout=10.0)
                 resp.raise_for_status()
@@ -1970,7 +1970,7 @@ class ProviderRunner:
         (distinct from [] = genuinely no pending bets). Callers fail-closed on
         None: a silent [] made _record_unknown_open_bets re-insert every open
         bet as a duplicate (BETINIA ×3 dup bug, 2026-05-12)."""
-        from arnold.http_client import tunnel_client as _tc
+        from local.http_client import tunnel_client as _tc
 
         try:
             resp = await _tc().get("/api/opportunities/play/pending-bets", timeout=30.0)
@@ -1985,7 +1985,7 @@ class ProviderRunner:
         return []
 
     async def _fetch_placed_today(self, provider_id: str) -> None:
-        from arnold.http_client import tunnel_client as _tc
+        from local.http_client import tunnel_client as _tc
 
         try:
             resp = await _tc().post("/api/opportunities/play/batch", json={}, timeout=30.0)
@@ -1997,7 +1997,7 @@ class ProviderRunner:
             logger.warning(f"[Runner:{provider_id}] failed to fetch placed_today")
 
     async def _record_settlements(self, provider_id: str, settlements: list[dict]) -> None:
-        from arnold.http_client import tunnel_client as _tc
+        from local.http_client import tunnel_client as _tc
 
         batch = [
             {"bet_id": s["bet_id"], "result": s["result"]} for s in settlements if s.get("bet_id") and s.get("result")
@@ -2011,7 +2011,7 @@ class ProviderRunner:
             logger.exception(f"[Runner:{provider_id}] Failed to record settlements")
 
     async def _post_balance(self, provider_id: str, balance: float) -> None:
-        from arnold.http_client import tunnel_client as _tc
+        from local.http_client import tunnel_client as _tc
 
         try:
             resp = await _tc().post(f"/api/bankroll/set/{provider_id}", json={"balance": balance}, timeout=15.0)
@@ -2020,7 +2020,7 @@ class ProviderRunner:
             pass
 
     async def _record_bet(self, bet: dict[str, Any], result) -> None:
-        from arnold.http_client import tunnel_client as _tc
+        from local.http_client import tunnel_client as _tc
 
         provider_bet_id = result.bet_id if isinstance(result.bet_id, str) and result.bet_id else None
         # Capture analytics-critical fields from the queued bet so post-settlement
