@@ -1471,53 +1471,6 @@ class ExtractionPipeline:
             except Exception as e:
                 logger.debug(f"Extraction analytics skipped: {e}")
 
-            # Daily ML model training (best-effort)
-            try:
-                import time as _time
-
-                today = _time.strftime("%Y-%m-%d")
-                if getattr(self, "_ml_last_train_day", None) != today:
-                    from src.ml.training.train_all import TrainingOrchestrator
-
-                    orch = TrainingOrchestrator()
-                    train_results = orch.train_all(self.session)
-                    self._ml_last_train_day = today
-                    for model_name, status in train_results.items():
-                        if status == "trained":
-                            logger.info(f"ML model trained: {model_name}")
-            except Exception as e:
-                logger.debug(f"ML training check skipped: {e}")
-
-            # Resolve CLV outcomes for ML feature rows (best-effort)
-            try:
-                from src.ml.feature_store import resolve_clv_outcomes
-
-                resolved = resolve_clv_outcomes(self.session)
-                if resolved > 0:
-                    logger.info(f"Resolved CLV for {resolved} ML feature rows")
-            except Exception:
-                pass
-
-            # Store daily macro data to options_flow (M9)
-            try:
-                from src.market_data.macro_provider import fetch_macro_snapshot
-                from src.ml.models.macro_engine import store_daily_options_flow
-
-                macro = await fetch_macro_snapshot()
-                await store_daily_options_flow(self.session, macro)
-            except Exception as e:
-                logger.debug(f"Daily options_flow storage skipped: {e}")
-
-            # Resolve trading signal outcomes
-            try:
-                from src.ml.feature_store import resolve_trading_outcomes
-
-                resolved = resolve_trading_outcomes(self.session)
-                if resolved:
-                    logger.info(f"Resolved {resolved} trading signal outcomes")
-            except Exception as e:
-                logger.debug(f"Trading outcome resolution skipped: {e}")
-
         except asyncio.CancelledError:
             log_progress("Pipeline cancelled due to shutdown signal")
             results["cancelled"] = True
