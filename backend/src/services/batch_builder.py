@@ -51,6 +51,23 @@ SHARP_PROVIDERS = frozenset({"pinnacle", "polymarket"})
 
 MAX_TTK_HOURS = 168.0  # 1 week — frontend TTK filter handles the rest
 
+# 2026-05-26: upper-bound sanity gates. Even after scope/inversion/spread
+# disagreement fixes, anything above these is virtually always a bug —
+# currency mismatch in stake sizing, novel scope/handicap bug, fuzzy-match
+# false positive, etc. Refuse to surface and log so we can monitor.
+MAX_BATCH_VALUE_EDGE_PCT = 10.0
+MAX_BATCH_ARB_PROFIT_PCT = 5.0
+
+
+def _is_phantom_value_bet(edge_pct: float) -> bool:
+    """Return True if a value bet's edge is above the sanity cap."""
+    return edge_pct > MAX_BATCH_VALUE_EDGE_PCT
+
+
+def _is_phantom_arb(profit_pct: float) -> bool:
+    """Return True if an arb's guaranteed profit is above the sanity cap."""
+    return profit_pct > MAX_BATCH_ARB_PROFIT_PCT
+
 
 @dataclass
 class BatchBet:
@@ -507,6 +524,16 @@ class BatchBuilder:
         # floor — no per-trade gas, fee already in odds.
         prov_min_edge_pct = provider_min_edge_pct(provider_id)
         if (opp.edge_pct or 0.0) < prov_min_edge_pct:
+            return None
+
+        # 2026-05-26: upper-bound sanity gate
+        if _is_phantom_value_bet(opp.edge_pct or 0.0):
+            logger.warning(
+                "[suspect_phantom] dropping value bet edge=%.2f%% > cap=%.2f%% "
+                "(event=%s market=%s provider=%s)",
+                opp.edge_pct, MAX_BATCH_VALUE_EDGE_PCT,
+                opp.event_id, opp.market, opp.provider1_id,
+            )
             return None
 
         # Kelly bankroll:
