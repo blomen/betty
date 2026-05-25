@@ -27,7 +27,7 @@ build-backend = "setuptools.build_meta"
 name = "arnold"
 version = "0.1.0"
 description = "Arnold - Betting analytics platform comparing odds across 40+ sportsbooks"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 
 dependencies = [
 
@@ -200,7 +200,7 @@ include = ["src*"]
 
 # ── Linter ────────────────────────────────────────────────────
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"
 line-length = 120
 
 [tool.ruff.lint]

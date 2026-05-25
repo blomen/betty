@@ -1,5 +1,5 @@
 # ---- Backend runtime ----
-FROM python:3.10-slim
+FROM python:3.12-slim
 
 # System deps for Playwright/Camoufox headless browsers
 RUN apt-get update && apt-get install -y --no-install-recommends \

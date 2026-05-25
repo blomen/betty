@@ -4,7 +4,7 @@
 
 Arnold compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to find value bets.
 
-**Tech stack:** Python 3.10+ / FastAPI / PostgreSQL / Docker / Playwright | React 19 / TypeScript / Vite / Tailwind
+**Tech stack:** Python 3.12+ / FastAPI / PostgreSQL / Docker / Playwright | React 19 / TypeScript / Vite / Tailwind
 
 ## Two Programs
 

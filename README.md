@@ -12,7 +12,7 @@ Betting analytics and trading platform.
 
 ## Tech Stack
 
-- **Server engine:** Python 3.10+ / FastAPI / PostgreSQL / Playwright / SQLAlchemy
+- **Server engine:** Python 3.12+ / FastAPI / PostgreSQL / Playwright / SQLAlchemy
 - **Local clients (arnoldsports / arnoldstocks):** React 19 / TypeScript / Vite / Tailwind
 - **Infrastructure:** Docker / Nginx / Hetzner VPS
 - **Data:** Databento (market data) / Pinnacle (sharp odds)
