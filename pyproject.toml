@@ -15,7 +15,6 @@ dependencies = [
 
     # WebSocket
     "websockets>=12.0",
-    "signalrcore>=1.0.2",
 
     # SOCKS proxy support for aiohttp (Bahnhof VPS SOCKS5)
     "aiohttp-socks>=0.8.0",
@@ -47,13 +46,8 @@ dependencies = [
     # Config
     "pyyaml>=6.0",
 
-    # Market data
-    "async-rithmic>=1.5",
-    "databento>=0.43.0",
-    "yfinance>=0.2.36",
+    # Numeric (used by sports-side ML models in backend/src/ml/models/)
     "numpy>=1.24.0",
-    "pandas>=2.0.0",
-    "pyarrow>=14.0.0",
 
     # Process management — used by BrowserTransport.close() to force-kill
     # leaked chrome processes when Playwright's graceful close hangs
@@ -74,9 +68,6 @@ scrape = [
 ]
 poly = [
     "py-clob-client>=0.18.0",
-]
-ml = [
-    "torch>=2.0.0",
 ]
 
 [project.scripts]
