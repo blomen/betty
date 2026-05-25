@@ -1152,9 +1152,10 @@ class OpportunityScanner:
         grouped = defaultdict(lambda: defaultdict(list))
 
         # 2026-05-26: skip events where the home/away inversion check did
-        # not resolve cleanly. Defaults to True for historical rows that
-        # haven't been revalidated yet.
-        if not getattr(event, "home_away_validated", True):
+        # not resolve cleanly. Only skip when EXPLICITLY False — None means
+        # an unflushed Python object (test fixtures) or a pre-migration row;
+        # both column default + server_default make True the real default.
+        if getattr(event, "home_away_validated", None) is False:
             logger.debug(
                 "home_away_unvalidated: drop %s (sport=%s)",
                 event.id,
