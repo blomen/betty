@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from ..bankroll.stake_calculator import StakeCalculator
-from ..constants import PLATFORM_MAP, PREDICTION_MARKETS, SHARP_PROVIDERS, SIGNAL_ONLY_PROVIDERS
+from ..constants import PLATFORM_MAP, PREDICTION_MARKETS, SHARP_PROVIDERS, SIGNAL_ONLY_PROVIDERS, canonical_scope_for
 from ..db.models import Event
 from ..repositories import EventRepo
 from .devig import (
@@ -1141,7 +1141,21 @@ class OpportunityScanner:
         now = datetime.now(timezone.utc)
         staleness_cutoff = now - timedelta(hours=MAX_ODDS_AGE_HOURS)
 
+        canonical = canonical_scope_for(getattr(event, "sport", None))
+
         for odds in event.odds:
+            # Scope filter: only canonical-scope rows for this sport participate
+            # in opportunity scanning. Cross-scope comparisons (e.g. regulation
+            # vs OT-inclusive hockey totals) are structurally invalid — refusing
+            # to group them prevents false arbs like the 2026-05-25 IIHF bug.
+            row_scope = getattr(odds, "scope", None) or "ft"
+            if row_scope != canonical:
+                logger.debug(
+                    "scope_filter: drop %s/%s scope=%s (canonical=%s for sport=%s)",
+                    event.id, odds.provider_id, row_scope, canonical, getattr(event, "sport", None),
+                )
+                continue
+
             # Skip excluded providers
             if odds.provider_id in exclude_providers:
                 continue

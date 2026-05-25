@@ -444,12 +444,15 @@ class PinnacleRetriever(Retriever):
             # ── Period 0 (full game / OT-included) ──
             if period == 0:
                 if market_type in self._CORE_TYPES:
+                    before = len(parsed)
                     if market_type == "moneyline":
                         parsed.extend(self._parse_moneyline(prices, market_meta))
                     elif market_type == "spread":
                         parsed.extend(self._parse_spread(prices, market_meta))
                     elif market_type == "total":
                         parsed.extend(self._parse_total(prices, market_meta))
+                    for m in parsed[before:]:
+                        m["scope"] = "ft"
 
                 else:
                     # Log unknown types once for discovery
@@ -465,8 +468,14 @@ class PinnacleRetriever(Retriever):
             # Moneyline: always extract — auto-classifies as 1x2 (draw present).
             # Spread/total: only extract if period=0 doesn't have them, to avoid
             # overwriting OT-included odds with regulation-time odds.
-            elif period == 6:
+            # Guard sport — Pinnacle uses period 6 specifically for ice hockey
+            # regulation time. If another sport ever ships period=6 markets, the
+            # 'reg' tag would be wrong (their canonical scope is 'ft' too), so
+            # we'd silently drop them via the scanner's scope filter. Skip them
+            # entirely instead.
+            elif period == 6 and sport == "ice_hockey":
                 if market_type in self._CORE_TYPES:
+                    before = len(parsed)
                     if market_type == "moneyline":
                         # Always extract — has draw, so auto-classifies as 1x2
                         parsed.extend(self._parse_moneyline(prices, market_meta))
@@ -476,15 +485,20 @@ class PinnacleRetriever(Retriever):
                             parsed.extend(self._parse_spread(prices, market_meta))
                         else:
                             parsed.extend(self._parse_total(prices, market_meta))
+                    for m in parsed[before:]:
+                        m["scope"] = "reg"
 
             # ── Esports map periods (1-5) — map-level value scanning ──
             elif is_esports and period in self._ESPORTS_MAP_PERIODS:
+                before = len(parsed)
                 if market_type == "moneyline":
                     parsed.extend(
                         self._parse_moneyline(prices, market_meta, market_type_override=f"moneyline_m{period}")
                     )
                 elif market_type == "total" and not market.get("isAlternate", False):
                     parsed.extend(self._parse_total(prices, market_meta, market_type_override=f"total_m{period}"))
+                for m in parsed[before:]:
+                    m["scope"] = f"map_{period}"
 
         return parsed
 

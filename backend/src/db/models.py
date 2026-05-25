@@ -183,23 +183,30 @@ class Odds(Base):
     provider_meta = Column(
         JSON, nullable=True
     )  # Provider-specific IDs: {"event_id": "...", "betoffer_id": "...", "outcome_id": "..."}
+    # Period/structural scope of this market (e.g. "ft", "reg", "1h", "set_1").
+    # Set by each extractor from its native scope identifier (Pinnacle period,
+    # Altenar typeId, Gecko market_template). Default 'ft' for backward compat.
+    # The scanner only joins odds at matching scope — see SPORT_CANONICAL_SCOPE.
+    scope = Column(String(16), nullable=False, server_default="ft", default="ft")
     bid = Column(Float, nullable=True)  # Best bid price (probability 0-1, CLOB only)
     ask = Column(Float, nullable=True)  # Best ask price (probability 0-1, CLOB only)
     depth_usd = Column(Float, nullable=True)  # Total ask-side depth in USD (CLOB only)
 
     updated_at = Column(DateTime, default=_utcnow)
 
-    # Unique constraint: one odds per event/provider/market/outcome/point combo
+    # Unique constraint: one odds per event/provider/market/outcome/point/scope combo
     # Includes point to allow multiple lines per market (e.g., over 2.5 vs over 3.0)
+    # Includes scope to allow same market at different structural scopes (ft vs reg)
     __table_args__ = (
-        # NULLS NOT DISTINCT so (event_id, provider_id, market, outcome, NULL) is unique
+        # NULLS NOT DISTINCT so (event_id, provider_id, market, outcome, NULL, scope) is unique
         UniqueConstraint(
             "event_id",
             "provider_id",
             "market",
             "outcome",
             "point",
-            name="uq_odds_with_point_nd",
+            "scope",
+            name="uq_odds_with_point_scope",
             postgresql_nulls_not_distinct=True,
         ),
         # Performance index for common query patterns (arbitrage/value detection)
@@ -211,8 +218,10 @@ class Odds(Base):
         # Index for event-level market grouping (scanner.group_odds)
         Index("ix_odds_event_market_outcome", "event_id", "market", "outcome"),
         Index("ix_odds_event_market_point", "event_id", "market", "point"),
-        # Composite key for OddsBatchProcessor flush lookups
-        Index("ix_odds_composite_key", "event_id", "provider_id", "market", "outcome", "point"),
+        # Composite key for OddsBatchProcessor flush lookups (now includes scope)
+        Index("ix_odds_composite_key", "event_id", "provider_id", "market", "outcome", "point", "scope"),
+        # Scanner join index — finds canonical-scope rows for an event/market/line fast
+        Index("ix_odds_event_market_point_scope", "event_id", "market", "point", "scope"),
     )
 
     # Relationships
@@ -1699,6 +1708,10 @@ def _run_pg_migrations(engine) -> None:
         # 2026-05-20 — arb leg linkage. Pairs the soft anchor + Polymarket
         # counter of one arbitrage so per-arb guaranteed profit is verifiable.
         ("bets", "arb_group_id", "VARCHAR"),
+        # 2026-05-25 — period/structural scope dimension for canonical odds.
+        # Added so the scanner can refuse to pair regulation-only with OT-inclusive
+        # odds (the IIHF Slovenia v Italy false-arb bug).
+        ("odds", "scope", "VARCHAR(16) NOT NULL DEFAULT 'ft'"),
     ]
 
     # Tables dropped during the 2026-05-25 strip-trading work. Idempotent —
@@ -1762,6 +1775,58 @@ def _run_pg_migrations(engine) -> None:
             except Exception:
                 sp.rollback()
                 logger.warning("pg migration: %s.%s failed", table, col, exc_info=True)
+
+        # 2026-05-25 — backfill scope on existing Pinnacle hockey period=6 rows.
+        # All other rows keep the column default 'ft'. Idempotent: re-running
+        # is a no-op because period=6 hockey rows will already have scope='reg'.
+        sp = conn.begin_nested()
+        try:
+            conn.execute(text("""
+                UPDATE odds
+                SET scope = 'reg'
+                WHERE provider_id = 'pinnacle'
+                  AND scope = 'ft'
+                  AND provider_meta::jsonb->>'period' = '6'
+                  AND event_id IN (SELECT id FROM events WHERE sport = 'ice_hockey')
+            """))
+            sp.commit()
+        except Exception:
+            sp.rollback()
+            logger.warning("pg migration: odds.scope backfill failed", exc_info=True)
+
+        # 2026-05-25 — rebuild unique constraint to include scope.
+        # Drop old then add new; both wrapped in SAVEPOINT for safety.
+        sp = conn.begin_nested()
+        try:
+            conn.execute(text("ALTER TABLE odds DROP CONSTRAINT IF EXISTS uq_odds_with_point_nd"))
+            sp.commit()
+        except Exception:
+            sp.rollback()
+            logger.warning("pg migration: drop uq_odds_with_point_nd failed", exc_info=True)
+
+        sp = conn.begin_nested()
+        try:
+            conn.execute(text("""
+                ALTER TABLE odds
+                ADD CONSTRAINT uq_odds_with_point_scope
+                UNIQUE NULLS NOT DISTINCT (event_id, provider_id, market, outcome, point, scope)
+            """))
+            sp.commit()
+        except Exception:
+            sp.rollback()
+            logger.warning("pg migration: add uq_odds_with_point_scope failed", exc_info=True)
+
+        # 2026-05-25 — scanner-side join index for canonical-scope lookups.
+        sp = conn.begin_nested()
+        try:
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_odds_event_market_point_scope "
+                "ON odds (event_id, market, point, scope)"
+            ))
+            sp.commit()
+        except Exception:
+            sp.rollback()
+            logger.warning("pg migration: ix_odds_event_market_point_scope failed", exc_info=True)
 
         # Index for provider_bet_id lookups during settlement reconciliation
         sp = conn.begin_nested()

@@ -582,6 +582,7 @@ def store_polymarket_event(
 
         # Build provider_meta from market-level metadata (e.g., event_slug for deep links)
         market_meta = market.get("provider_meta", {})
+        scope = market.get("scope", "ft")
 
         for outcome in outcomes:
             outcome_name = outcome.get("name", "")
@@ -635,6 +636,7 @@ def store_polymarket_event(
                     bid=bid_value,
                     ask=ask_value,
                     depth_usd=depth_value,
+                    scope=scope,
                 )
             else:
                 odds_new += upsert_odds(
@@ -649,6 +651,7 @@ def store_polymarket_event(
                     bid=bid_value,
                     ask=ask_value,
                     depth_usd=depth_value,
+                    scope=scope,
                 )
 
     return is_new_event, odds_processed, odds_new
@@ -1188,6 +1191,7 @@ def store_provider_event(
         # Build provider_meta from market-level + outcome-level metadata
         # Used by placement system to resolve canonical events to provider-specific IDs
         market_meta = market.get("provider_meta", {})
+        scope = market.get("scope", "ft")
 
         # Inject provider's own team names into provider_meta.
         # If should_swap, the provider's home is the canonical away and vice versa.
@@ -1237,6 +1241,7 @@ def store_provider_event(
                     bid=bid_value,
                     ask=ask_value,
                     depth_usd=depth_value,
+                    scope=scope,
                 )
             else:
                 odds_new += upsert_odds(
@@ -1251,6 +1256,7 @@ def store_provider_event(
                     bid=bid_value,
                     ask=ask_value,
                     depth_usd=depth_value,
+                    scope=scope,
                 )
 
     # When using batch processor, we don't know the new count until flush
@@ -1270,6 +1276,7 @@ def upsert_odds(
     bid: float = None,
     ask: float = None,
     depth_usd: float = None,
+    scope: str = "ft",
 ) -> int:
     """
     Insert or update odds record.
@@ -1287,12 +1294,13 @@ def upsert_odds(
     Returns:
         1 if new odds inserted, 0 if updated
     """
-    # Build filter including point (handles NULL correctly)
+    # Build filter including point and scope (handles NULL correctly)
     filters = [
         Odds.event_id == event_id,
         Odds.provider_id == provider,
         Odds.market == market,
         Odds.outcome == outcome,
+        Odds.scope == scope,
     ]
     # Point filter: use is_(None) for NULL comparison
     if point is None:
@@ -1324,6 +1332,7 @@ def upsert_odds(
                 bid=bid,
                 ask=ask,
                 depth_usd=depth_usd,
+                scope=scope,
             )
         )
         return 1
@@ -1360,10 +1369,18 @@ class OddsBatchProcessor:
         bid: float = None,
         ask: float = None,
         depth_usd: float = None,
+        scope: str = "ft",
     ):
-        """Add odds record to batch (will be processed on flush)."""
-        # Use tuple key to deduplicate (point included for schema compatibility)
-        key = (event_id, provider, market, outcome, point)
+        """Add odds record to batch (will be processed on flush).
+
+        `scope` identifies the temporal/structural market scope (e.g. 'ft',
+        'reg', '1h'). See backend/src/constants.py:VALID_SCOPES. Defaults to
+        'ft' so existing callers continue to work; extractors with scope
+        ambiguity (Pinnacle period, Altenar typeId) must pass it explicitly.
+        """
+        # Use tuple key to deduplicate (scope included — two rows at different
+        # scopes are physically different markets, must not dedupe each other).
+        key = (event_id, provider, market, outcome, point, scope)
         self._pending[key] = {
             "event_id": event_id,
             "provider_id": provider,
@@ -1375,6 +1392,7 @@ class OddsBatchProcessor:
             "bid": bid,
             "ask": ask,
             "depth_usd": depth_usd,
+            "scope": scope,
         }
         self._market_counts[market] = self._market_counts.get(market, 0) + 1
 
@@ -1446,6 +1464,7 @@ class OddsBatchProcessor:
                     "bid": r.get("bid"),
                     "ask": r.get("ask"),
                     "depth_usd": r.get("depth_usd"),
+                    "scope": r.get("scope", "ft"),
                     "updated_at": now,
                 }
                 for r in batch
@@ -1453,7 +1472,7 @@ class OddsBatchProcessor:
 
             stmt = pg_insert(Odds.__table__).values(rows)
             stmt = stmt.on_conflict_do_update(
-                constraint="uq_odds_with_point_nd",
+                constraint="uq_odds_with_point_scope",
                 set_={
                     "odds": stmt.excluded.odds,
                     "updated_at": stmt.excluded.updated_at,
