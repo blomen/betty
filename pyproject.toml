@@ -1,102 +1,235 @@
+# ─────────────────────────────────────────────────────────────
+# pyproject.toml — the project's identity card.
+#
+# This is the first file Python reads. It defines:
+#   - what this project is called
+#   - what Python version it needs
+#   - every library it depends on
+#   - how tools like ruff and pytest should behave
+#
+# After creating this file, run from the repo root:
+#   python -m venv .venv
+#   .venv\Scripts\activate          (Windows)
+#   source .venv/bin/activate       (macOS/Linux)
+#   pip install -e ".[scrape,dev]"
+#
+# The -e flag installs in "editable" mode — changes to backend/src/
+# take effect immediately without reinstalling.
+# ─────────────────────────────────────────────────────────────
+
 [build-system]
+# Boilerplate — tells pip how to build the package. Never touch this.
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
 
 [project]
 name = "arnold"
 version = "0.1.0"
 description = "Arnold - Betting analytics platform comparing odds across 40+ sportsbooks"
 requires-python = ">=3.10"
+
 dependencies = [
-    # HTTP/API
+
+    # ── HTTP ─────────────────────────────────────────────────
+    # aiohttp: async HTTP client for all provider requests.
+    # Async means we can fetch 20 providers simultaneously without
+    # waiting for each one to finish before starting the next.
     "aiohttp>=3.9.0",
+
+    # requests: sync HTTP client. Used by setup/discovery scripts
+    # and the handful of legacy code paths that aren't async yet.
     "requests>=2.31.0",
+
+    # httpx: modern HTTP client with both sync and async APIs.
+    # Used by the local arnold client's /api reverse-proxy through
+    # the SSH tunnel to the server.
     "httpx>=0.27.0",
 
-    # WebSocket
+    # websockets: raw WebSocket client. Used by providers (e.g.
+    # Polymarket CLOB, Smarkets signal feed) that push live data
+    # over WebSocket instead of REST.
     "websockets>=12.0",
 
-    # SOCKS proxy support for aiohttp (Bahnhof VPS SOCKS5)
+    # SOCKS5 proxy support — routes Pinnacle and a few other
+    # geo-blocked providers through the Bahnhof VPS. Both packages
+    # required: aiohttp-socks teaches aiohttp how to use a proxy,
+    # PySocks is the underlying SOCKS protocol it relies on.
     "aiohttp-socks>=0.8.0",
     "PySocks>=1.7.1",
 
-    # Database
+    # ── Database ─────────────────────────────────────────────
+    # sqlalchemy: ORM + query builder. Lets us define tables as
+    # Python classes and write queries in Python instead of raw SQL.
+    # Version 2.0 is fully async — older versions were sync-only.
     "sqlalchemy>=2.0.0",
+
+    # aiosqlite: async SQLite driver. Kept for local dev/tests where
+    # spinning up Postgres is overkill; production uses Postgres.
     "aiosqlite>=0.19.0",
+
+    # asyncpg: the actual async PostgreSQL driver. SQLAlchemy uses
+    # this under the hood when connecting to Postgres in production.
     "asyncpg>=0.29.0",
+
+    # psycopg2-binary: sync Postgres driver. Only needed for Alembic
+    # migration commands run from the terminal (not the running app).
     "psycopg2-binary>=2.9.9",
 
-    # Data
+    # ── Data contracts ────────────────────────────────────────
+    # pydantic: validates data automatically. Every piece of data
+    # flowing through the system — odds from a provider, a bet
+    # being placed — is described as a Pydantic model. If the data
+    # doesn't match, it raises an error immediately instead of
+    # causing a silent bug 10 steps later.
     "pydantic>=2.5.0",
 
-    # Matching
+    # ── Matching ─────────────────────────────────────────────
+    # rapidfuzz: fuzzy string matching. Used to match "Man Utd"
+    # from one provider to "Manchester United" from another.
+    # Written in C — 10x faster than the older fuzzywuzzy library.
     "rapidfuzz>=3.6.0",
 
-    # CLI
+    # ── CLI ───────────────────────────────────────────────────
+    # typer: builds the `arnold` command-line interface declaratively
+    # from type-annotated Python functions. Powers `python -m src.cli
+    # extract <provider>` and the other ops commands.
     "typer>=0.9.0",
+
+    # rich: pretty terminal output — tables, progress bars, colored
+    # logs. Used by the CLI to render extraction reports.
     "rich>=13.7.0",
 
-    # API
+    # ── API ───────────────────────────────────────────────────
+    # fastapi: the web framework. Handles HTTP routes, request
+    # parsing, response serialization. Async native, uses Pydantic
+    # for validation automatically.
     "fastapi>=0.109.0",
+
+    # uvicorn: the server that runs FastAPI. FastAPI is just the
+    # framework — uvicorn is what actually listens on port 8000.
     "uvicorn>=0.27.0",
+
+    # uvloop: replaces Python's default event loop with one written
+    # in C. Makes async code significantly faster on Linux.
+    # Skipped on Windows automatically (not supported there).
     "uvloop>=0.19.0; sys_platform != 'win32'",
+
+    # sse-starlette: Server-Sent Events — lets the backend push
+    # real-time updates to the frontend (e.g. live opportunity feed,
+    # bet interception broadcasts) without the frontend polling.
     "sse-starlette>=2.0.0",
+
+    # python-dotenv: reads the .env file into environment variables
+    # at startup. Without this, you'd have to export every variable
+    # manually in the terminal before running the app.
     "python-dotenv>=1.0.0",
 
-    # Config
+    # ── Config ────────────────────────────────────────────────
+    # pyyaml: parses providers.yaml and sports.yaml — the single
+    # source of truth for which providers are active, what endpoints
+    # to hit, and how leagues map across books.
     "pyyaml>=6.0",
 
-    # Numeric (used by sports-side ML models in backend/src/ml/models/)
+    # ── Numeric ───────────────────────────────────────────────
+    # numpy: array math. Used by the ML models under backend/src/ml/
+    # (sports-side predictors only — no trading code).
     "numpy>=1.24.0",
 
-    # Process management — used by BrowserTransport.close() to force-kill
-    # leaked chrome processes when Playwright's graceful close hangs
+    # ── System ────────────────────────────────────────────────
+    # psutil: system process utilities. Used to force-kill leaked
+    # Chrome processes when Playwright's graceful shutdown hangs —
+    # which happens more often than you'd expect on headed browsers.
     "psutil>=5.9",
 ]
 
+
 [project.optional-dependencies]
+
+# Dev deps — only installed when you run pip install -e ".[dev]".
+# Not installed on the production server, keeping the image lean.
 dev = [
+    # pytest: test runner.
     "pytest>=7.4.0",
+    # pytest-asyncio: lets pytest run async test functions.
+    # Without this, async tests just... don't run.
     "pytest-asyncio>=0.21.0",
+    # freezegun: freeze time in tests. Useful for time-sensitive
+    # logic like edge-pct decay and TTK countdowns.
     "freezegun>=1.4.0",
 ]
+
+# Scrape deps — browser automation for soft books that don't
+# expose a usable API. Installed on the server (extraction) and
+# on the local client (mirror/play). Skipped where neither runs.
 scrape = [
-    # Patchright = undetected Playwright fork (bypasses Cloudflare/Imperva)
-    # Falls back to playwright if patchright not installed
+    # patchright: undetected Playwright fork. Regular Playwright
+    # gets fingerprinted by Cloudflare/Imperva on soft book sites.
+    # Patchright patches the browser to look like a real user.
+    # Used for both data extraction (ComeOn, Rainbet) and bet
+    # placement on browser-only providers.
     "patchright>=1.48.0",
+    # playwright: kept as a fallback for the few code paths that
+    # explicitly import from `playwright.*` (patchright re-exports
+    # most of the API but not all).
     "playwright>=1.40.0",
 ]
+
+# Polymarket deps — only installed where Polymarket trading runs.
+# Polymarket uses a Central Limit Order Book (like a stock
+# exchange), not traditional fixed odds, so it needs its own SDK.
 poly = [
     "py-clob-client>=0.18.0",
 ]
 
+
 [project.scripts]
+# Exposes `arnold` as a shell command after `pip install -e .`,
+# wired to the Typer app in backend/src/cli.py.
 arnold = "src.cli:app"
 
+
+# ── Build config ──────────────────────────────────────────────
 [tool.setuptools.packages.find]
+# Tells Python: "the source code lives in src/" (under backend/).
+# Without this, `from src.config.providers import ...` would fail
+# with ModuleNotFoundError.
 where = ["."]
 include = ["src*"]
 
+
+# ── Linter ────────────────────────────────────────────────────
 [tool.ruff]
 target-version = "py310"
 line-length = 120
 
 [tool.ruff.lint]
-select = ["F", "I", "UP", "B"]
+select = [
+    "F",   # pyflakes — undefined names, unused imports
+    "I",   # isort — import ordering
+    "UP",  # pyupgrade — use modern Python syntax
+    "B",   # bugbear — common bug patterns
+]
 ignore = [
     "E501",  # line length — formatter handles wrapping
-    "B008",  # FastAPI Depends()/Query() default pattern
-    "B007",  # unused loop control variable
-    "B023",  # closure-over-loop-var — many false positives
-    "B904",  # raise-from chain
+    "B008",  # FastAPI uses Depends()/Query() as default arguments —
+             # ruff flags this as a bug but it's intentional
+    "B007",  # unused loop variable — too many false positives
+    "B023",  # closure-over-loop-var — too many false positives
+    "B904",  # raise inside except without 'from' — style preference
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"**/__init__.py" = ["F401"]  # re-exports
+# __init__.py files re-export names for cleaner imports.
+# F401 would flag those as "unused imports" — suppress it.
+"**/__init__.py" = ["F401"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["src"]
+known-first-party = ["src"]  # treats src/ as internal, sorts accordingly
 
+
+# ── Tests ─────────────────────────────────────────────────────
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-asyncio_mode = "auto"
+testpaths = ["tests"]   # only look for tests in backend/tests/
+asyncio_mode = "auto"   # every async test function runs automatically
+                        # without needing @pytest.mark.asyncio decorator

@@ -255,11 +255,13 @@ def capture_baseline(
 def main():
     parser = argparse.ArgumentParser(description="Validate provider pipeline metrics")
     parser.add_argument(
-        "--provider", "-p",
+        "--provider",
+        "-p",
         help="Validate specific provider only",
     )
     parser.add_argument(
-        "--capture", "-c",
+        "--capture",
+        "-c",
         action="store_true",
         help="Capture current metrics as baseline",
     )
@@ -274,7 +276,7 @@ def main():
     # Check database exists
     if not args.db.exists():
         print(f"Database not found: {args.db}")
-        print("Run extraction first: python -m src.app extract pinnacle polymarket leovegas")
+        print("Run extraction first: python -m src.cli extract pinnacle polymarket leovegas")
         sys.exit(1)
 
     # Connect and gather metrics
@@ -291,7 +293,7 @@ def main():
 
     if not provider_metrics:
         print("No provider data found in database")
-        print("Run extraction first: python -m src.app extract pinnacle polymarket leovegas")
+        print("Run extraction first: python -m src.cli extract pinnacle polymarket leovegas")
         sys.exit(1)
 
     # Load baseline

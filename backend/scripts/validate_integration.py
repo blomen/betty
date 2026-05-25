@@ -7,7 +7,7 @@ Run after extracting a new provider alongside sharp sources.
 
 Usage:
     # After extraction
-    python -m src.app extract pinnacle polymarket new_provider
+    python -m src.cli extract pinnacle polymarket new_provider
 
     # Run validation
     python scripts/validate_integration.py
@@ -22,11 +22,10 @@ Validation Checks:
 5. Sample matched events verification
 """
 
-import sys
 import argparse
 import sqlite3
+import sys
 from pathlib import Path
-from typing import Optional
 
 # Database path
 DB_PATH = Path(__file__).parent.parent / "data" / "arnold.db"
@@ -36,7 +35,7 @@ def get_connection():
     """Get database connection."""
     if not DB_PATH.exists():
         print(f"Error: Database not found at {DB_PATH}")
-        print("Run extraction first: python -m src.app extract pinnacle <provider>")
+        print("Run extraction first: python -m src.cli extract pinnacle <provider>")
         sys.exit(1)
 
     return sqlite3.connect(DB_PATH)
@@ -49,7 +48,7 @@ def print_header(text: str, char: str = "="):
     print(char * 60)
 
 
-def check_odds_event_ratio(conn, provider_filter: Optional[str] = None):
+def check_odds_event_ratio(conn, provider_filter: str | None = None):
     """
     Check odds/event ratio per provider.
 
@@ -101,7 +100,7 @@ def check_odds_event_ratio(conn, provider_filter: Optional[str] = None):
     return issues
 
 
-def check_outcome_normalization(conn, provider_filter: Optional[str] = None):
+def check_outcome_normalization(conn, provider_filter: str | None = None):
     """
     Check outcome normalization rate.
 
@@ -150,7 +149,7 @@ def check_outcome_normalization(conn, provider_filter: Optional[str] = None):
     return issues
 
 
-def check_score_like_outcomes(conn, provider_filter: Optional[str] = None):
+def check_score_like_outcomes(conn, provider_filter: str | None = None):
     """
     Check for score-like outcomes (e.g., "1-0", "2-1").
 
@@ -276,15 +275,10 @@ def show_matched_sample(conn, limit: int = 10):
     for row in rows:
         event_id, home, away, sport, provider, outcome, odds = row
         if event_id not in events:
-            events[event_id] = {
-                'home': home,
-                'away': away,
-                'sport': sport,
-                'odds': {}
-            }
-        if provider not in events[event_id]['odds']:
-            events[event_id]['odds'][provider] = {}
-        events[event_id]['odds'][provider][outcome] = odds
+            events[event_id] = {"home": home, "away": away, "sport": sport, "odds": {}}
+        if provider not in events[event_id]["odds"]:
+            events[event_id]["odds"][provider] = {}
+        events[event_id]["odds"][provider][outcome] = odds
 
     # Print sample
     count = 0
@@ -293,7 +287,7 @@ def show_matched_sample(conn, limit: int = 10):
             break
 
         print(f"\n  {data['home']} vs {data['away']} ({data['sport']})")
-        for provider, outcomes in data['odds'].items():
+        for provider, outcomes in data["odds"].items():
             odds_str = ", ".join(f"{o}: {v}" for o, v in sorted(outcomes.items()))
             print(f"    {provider}: {odds_str}")
         count += 1
@@ -349,7 +343,7 @@ Expected Benchmarks:
     Outcome normalization: >97%
     Score-like outcomes: 0
     Cross-provider match: >50% (depends on provider coverage)
-        """
+        """,
     )
 
     parser.add_argument("--provider", "-p", help="Filter to specific provider ID")
