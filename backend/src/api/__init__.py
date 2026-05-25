@@ -415,6 +415,42 @@ async def health_ready():
     }
 
 
+def _compute_unscannable_markets(odds_rows: list[dict]) -> int:
+    """Count (event_id, market, point) triples where Pinnacle has a
+    non-canonical-scope row AND no other provider has the canonical-scope row.
+
+    These are markets where we have a sharp baseline at the wrong scope for
+    the sport — they silently drop out of opportunity scanning. Surface them
+    here so a creeping data-quality regression is visible.
+    """
+    from collections import defaultdict
+
+    from ..constants import canonical_scope_for
+
+    # Group by (event_id, market, point)
+    by_key: dict[tuple, list[dict]] = defaultdict(list)
+    for r in odds_rows:
+        by_key[(r["event_id"], r["market"], r.get("point"))].append(r)
+
+    count = 0
+    for (_event_id, _market, _point), rows in by_key.items():
+        # Find the sport from any row in the group (all share the event)
+        sport = rows[0].get("sport")
+        canonical = canonical_scope_for(sport)
+
+        # Does Pinnacle have a non-canonical scope row?
+        has_pinnacle_noncanonical = any(
+            r["provider_id"] == "pinnacle" and r.get("scope", "ft") != canonical for r in rows
+        )
+        # Does anyone have a canonical-scope row?
+        has_canonical = any(r.get("scope", "ft") == canonical for r in rows)
+
+        if has_pinnacle_noncanonical and not has_canonical:
+            count += 1
+
+    return count
+
+
 @app.get("/health/extraction")
 async def health_extraction():
     """Public extraction health endpoint — no auth required.
@@ -475,11 +511,29 @@ async def health_extraction():
                     }
                 )
 
+            # ── Unscannable markets (scope mismatch) ──
+            from sqlalchemy import text
+
+            odds_rows = (
+                db.execute(
+                    text(
+                        "SELECT o.event_id, o.provider_id, e.sport, o.market, o.point, o.scope "
+                        "FROM odds o JOIN events e ON e.id = o.event_id "
+                        "WHERE e.start_time > NOW() AND e.start_time < NOW() + INTERVAL '24 hours'"
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            unscannable = _compute_unscannable_markets(list(odds_rows))
+
             return {
                 "status": health_status,
                 "issues": issues,
                 "providers": providers_health,
                 "runs": run_data,
+                "unscannable_markets": unscannable,
+                "unscannable_markets_status": "WARNING" if unscannable > 10 else "OK",
             }
         except Exception as e:
             return {"error": str(e)}
