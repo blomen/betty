@@ -482,6 +482,27 @@ class OpportunityService:
         if major_only:
             results = [r for r in results if r.get("league") in MAJOR_LEAGUES_FLAT]
 
+        # 2026-05-26: upper-bound sanity gate — drop arbs with implausibly
+        # high profit. Real arbs are low single digits per CLAUDE.md; anything
+        # above MAX_BATCH_ARB_PROFIT_PCT is almost certainly a phantom (scope,
+        # spread, inversion, currency, fuzzy-match bug). Logs for visibility.
+        from .batch_builder import MAX_BATCH_ARB_PROFIT_PCT, _is_phantom_arb
+
+        _pre_filter_count = len(results)
+        results = [
+            r
+            for r in results
+            if not _is_phantom_arb(r.get("guaranteed_profit_pct") or 0.0)
+            and not _is_phantom_arb(r.get("arb_profit_pct") or 0.0)
+        ]
+        _dropped = _pre_filter_count - len(results)
+        if _dropped:
+            logger.warning(
+                "[suspect_phantom] arb_workflow dropped %d arb(s) > %.1f%% profit cap",
+                _dropped,
+                MAX_BATCH_ARB_PROFIT_PCT,
+            )
+
         # Sort by edge desc
         results.sort(key=lambda x: x["combined_edge_pct"], reverse=True)
 

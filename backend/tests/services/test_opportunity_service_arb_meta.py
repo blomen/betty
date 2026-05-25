@@ -74,9 +74,9 @@ def _stub_scanner_arb(service, evt_id="evt-1"):
     fake_opp.home_team = "hartberg"
     fake_opp.away_team = "lask linz"
     fake_opp.start_time = None
-    fake_opp.combined_edge_pct = 23.22
-    fake_opp.guaranteed_profit_pct = 23.22
-    fake_opp.arb_profit_pct = 23.22
+    fake_opp.combined_edge_pct = 2.5
+    fake_opp.guaranteed_profit_pct = 2.5
+    fake_opp.arb_profit_pct = 2.5
     fake_opp.legs = [
         {"provider": "betinia", "outcome": "away", "odds": 1.6154, "is_sharp": False},
         {"provider": "pinnacle", "outcome": "home", "odds": 20.0, "is_sharp": True},
