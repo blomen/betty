@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from unittest.mock import MagicMock
 
-from arnoldsports.mirror.pending_loop import PendingLoop, _detect_settlements
+from local.mirror.pending_loop import PendingLoop, _detect_settlements
 
 
 # ---------------------------------------------------------------------------

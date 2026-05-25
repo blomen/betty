@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from unittest.mock import MagicMock
 
-from arnoldsports.mirror.play_loop import PlayLoop, STATE_IDLE
+from local.mirror.play_loop import PlayLoop, STATE_IDLE
 
 
 def _make_browser():

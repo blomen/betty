@@ -27,7 +27,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ssh = Get-CimInstance Win32_Process -Filter \"Name='ssh.exe'\" | Where-Object { $_.CommandLine -match '18000:localhost' };" ^
   "foreach ($p in $ssh) { Stop-Process -Id $p.ProcessId -Force; [void]$killed.Add(\"ssh tunnel PID $($p.ProcessId)\") }" ^
   ";" ^
-  "$camouf = Get-CimInstance Win32_Process -Filter \"Name='camoufox-bin.exe' OR Name='firefox.exe'\" | Where-Object { $_.CommandLine -match 'playwright|browser_profile|local' };" ^
+  "$camouf = Get-CimInstance Win32_Process -Filter \"Name='camoufox-bin.exe' OR Name='firefox.exe'\" | Where-Object { $_.CommandLine -match 'playwright|browser_profile|arnold' };" ^
   "foreach ($p in $camouf) { Stop-Process -Id $p.ProcessId -Force; [void]$killed.Add(\"camoufox PID $($p.ProcessId)\") }" ^
   ";" ^
   "$chr = Get-CimInstance Win32_Process -Filter \"Name='chrome.exe' OR Name='chromium.exe'\" | Where-Object { $_.CommandLine -match 'browser_profile' };" ^

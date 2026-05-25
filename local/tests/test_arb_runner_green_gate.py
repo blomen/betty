@@ -295,7 +295,7 @@ class TestFetchArbOppsPostFilter:
 
                 return R()
 
-        from arnold import http_client as _hc
+        from local import http_client as _hc
 
         monkeypatch.setattr(_hc, "tunnel_client", lambda: FakeClient())
 
@@ -332,7 +332,7 @@ class TestFetchArbOppsPostFilter:
 
                 return R()
 
-        from arnold import http_client as _hc
+        from local import http_client as _hc
 
         monkeypatch.setattr(_hc, "tunnel_client", lambda: FakeClient())
 
@@ -357,7 +357,7 @@ class TestFetchArbOppsPostFilter:
 
                 return R()
 
-        from arnold import http_client as _hc
+        from local import http_client as _hc
 
         monkeypatch.setattr(_hc, "tunnel_client", lambda: FakeClient())
 

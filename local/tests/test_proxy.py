@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from arnoldsports.proxy import create_proxy_router
+from local.proxy import create_proxy_router
 
 
 TUNNEL_URL = "http://localhost:18000"
@@ -29,7 +29,7 @@ async def test_get_proxy_forwards_request():
     """GET /api/opportunities is forwarded to tunnel and response returned."""
     mock_resp = _mock_response(200, b'{"data": []}', {"content-type": "application/json"})
 
-    with patch("arnoldsports.proxy.httpx.AsyncClient") as mock_client_cls:
+    with patch("local.proxy.httpx.AsyncClient") as mock_client_cls:
         mock_client = AsyncMock()
         mock_client.request = AsyncMock(return_value=mock_resp)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -53,7 +53,7 @@ async def test_post_proxy_forwards_body():
     payload = b'{"bet_id": 42}'
     mock_resp = _mock_response(201, b'{"placed": true}', {"content-type": "application/json"})
 
-    with patch("arnoldsports.proxy.httpx.AsyncClient") as mock_client_cls:
+    with patch("local.proxy.httpx.AsyncClient") as mock_client_cls:
         mock_client = AsyncMock()
         mock_client.request = AsyncMock(return_value=mock_resp)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -78,7 +78,7 @@ async def test_health_proxy_forwarded():
     """/health is forwarded to tunnel health endpoint."""
     mock_resp = _mock_response(200, b'{"status": "ok"}', {"content-type": "application/json"})
 
-    with patch("arnoldsports.proxy.httpx.AsyncClient") as mock_client_cls:
+    with patch("local.proxy.httpx.AsyncClient") as mock_client_cls:
         mock_client = AsyncMock()
         mock_client.request = AsyncMock(return_value=mock_resp)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -99,7 +99,7 @@ async def test_hop_headers_stripped():
     """Hop-by-hop headers are not forwarded to the tunnel."""
     mock_resp = _mock_response(200, b"ok", {"content-type": "text/plain", "connection": "keep-alive"})
 
-    with patch("arnoldsports.proxy.httpx.AsyncClient") as mock_client_cls:
+    with patch("local.proxy.httpx.AsyncClient") as mock_client_cls:
         mock_client = AsyncMock()
         mock_client.request = AsyncMock(return_value=mock_resp)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -122,7 +122,7 @@ async def test_query_params_forwarded():
     """Query parameters are appended to the forwarded URL."""
     mock_resp = _mock_response(200, b"[]", {"content-type": "application/json"})
 
-    with patch("arnoldsports.proxy.httpx.AsyncClient") as mock_client_cls:
+    with patch("local.proxy.httpx.AsyncClient") as mock_client_cls:
         mock_client = AsyncMock()
         mock_client.request = AsyncMock(return_value=mock_resp)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)

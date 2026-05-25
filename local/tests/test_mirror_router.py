@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from arnoldsports.mirror.router import create_mirror_router
+from local.mirror.router import create_mirror_router
 
 
 def _make_browser(running: bool = False, pages: list | None = None):
@@ -126,7 +126,7 @@ def test_navigate_404_when_no_tab_found():
     mock_workflow.domain = "pinnacle.se"
     mock_workflow.find_tab = AsyncMock(return_value=None)
 
-    with patch("arnoldsports.mirror.router.get_workflow", return_value=mock_workflow):
+    with patch("local.mirror.router.get_workflow", return_value=mock_workflow):
         client = TestClient(_make_app(browser))
         resp = client.post("/mirror/navigate", json={
             "provider_id": "pinnacle",
@@ -153,7 +153,7 @@ def test_navigate_success():
     mock_workflow.find_tab = AsyncMock(return_value=page)
     mock_workflow.navigate_to_event = AsyncMock(return_value=True)
 
-    with patch("arnoldsports.mirror.router.get_workflow", return_value=mock_workflow):
+    with patch("local.mirror.router.get_workflow", return_value=mock_workflow):
         client = TestClient(_make_app(browser))
         resp = client.post("/mirror/navigate", json={
             "provider_id": "pinnacle",
@@ -192,7 +192,7 @@ def test_place_404_when_no_tab_found():
     mock_workflow.domain = "pinnacle.se"
     mock_workflow.find_tab = AsyncMock(return_value=None)
 
-    with patch("arnoldsports.mirror.router.get_workflow", return_value=mock_workflow):
+    with patch("local.mirror.router.get_workflow", return_value=mock_workflow):
         client = TestClient(_make_app(browser))
         resp = client.post("/mirror/place", json={"provider_id": "pinnacle", "bet_id": 42})
     assert resp.status_code == 404
@@ -200,7 +200,7 @@ def test_place_404_when_no_tab_found():
 
 def test_place_success():
     """POST /mirror/place calls place_bet and returns placement result."""
-    from arnoldsports.mirror.workflows.base import PlacementResult
+    from local.mirror.workflows.base import PlacementResult
 
     page = MagicMock()
     page.url = "https://pinnacle.se/betting"
@@ -214,7 +214,7 @@ def test_place_success():
     mock_workflow.find_tab = AsyncMock(return_value=page)
     mock_workflow.place_bet = AsyncMock(return_value=mock_result)
 
-    with patch("arnoldsports.mirror.router.get_workflow", return_value=mock_workflow):
+    with patch("local.mirror.router.get_workflow", return_value=mock_workflow):
         client = TestClient(_make_app(browser))
         resp = client.post("/mirror/place", json={"provider_id": "pinnacle", "bet_id": 42})
 
