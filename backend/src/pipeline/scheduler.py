@@ -106,7 +106,6 @@ class ExtractionScheduler:
         self._boosts_task: asyncio.Task | None = None
         self._cleanup_task: asyncio.Task | None = None
         self._settlement_task: asyncio.Task | None = None
-        self._trading_reset_task: asyncio.Task | None = None
         self._watchdog_task: asyncio.Task | None = None
         # Per-provider locks prevent the same provider from overlapping with itself.
         self._provider_locks: dict[str, asyncio.Lock] = {}
@@ -546,9 +545,6 @@ class ExtractionScheduler:
         # CLV snapshot tier — snapshot closing odds every 2 min
         await self.start_settlement_tier()
 
-        # Trading daily/weekly auto-reset (checks every 60s, acts at market boundaries)
-        await self.start_trading_reset_tier()
-
         # Provider health watchdog — logs CRITICAL when any schedule stops running
         self._start_watchdog()
 
@@ -739,10 +735,6 @@ class ExtractionScheduler:
         if self._settlement_task and not self._settlement_task.done():
             self._settlement_task.cancel()
             self._settlement_task = None
-        # Also stop trading reset task
-        if self._trading_reset_task and not self._trading_reset_task.done():
-            self._trading_reset_task.cancel()
-            self._trading_reset_task = None
         # Also stop watchdog
         if self._watchdog_task and not self._watchdog_task.done():
             self._watchdog_task.cancel()
@@ -934,83 +926,6 @@ class ExtractionScheduler:
         finally:
             with contextlib.suppress(Exception):
                 session.close()
-
-    # ── Trading daily/weekly reset ──────────────────────────────────
-
-    async def start_trading_reset_tier(self, check_interval: int = 60):
-        """Auto-reset trading accounts at market boundaries.
-
-        Checks every 60s. Resets daily counters once per day (after midnight UTC,
-        i.e. ~7pm ET / before US pre-market). Resets weekly on Monday.
-        """
-        if self._trading_reset_task and not self._trading_reset_task.done():
-            logger.warning("[Scheduler] Trading reset tier already running")
-            return
-
-        logger.info(f"[Scheduler] Starting trading reset tier: check_interval={check_interval}s")
-        self._trading_reset_task = asyncio.create_task(self._trading_reset_loop(check_interval))
-
-    async def _trading_reset_loop(self, check_interval: int):
-        """Recurring check for daily/weekly trading resets."""
-        last_daily_reset: str | None = None  # Track date of last daily reset
-        last_weekly_reset: str | None = None  # Track week-string of last weekly reset
-
-        while True:
-            try:
-                now = datetime.now(timezone.utc)
-                today_str = now.strftime("%Y-%m-%d")
-                week_str = now.strftime("%Y-W%W")
-
-                # Daily reset — once per UTC day
-                if last_daily_reset != today_str:
-                    try:
-                        from src.db.models import get_session
-                        from src.services.trading_service import TradingService
-
-                        session = get_session()
-                        try:
-                            svc = TradingService(session)
-                            result = svc.auto_reset_daily()
-                            last_daily_reset = today_str
-                            if result["reset_accounts"] > 0:
-                                logger.info(
-                                    f"[Scheduler:trading_reset] Daily reset: {result['reset_accounts']} accounts"
-                                )
-                        finally:
-                            session.close()
-                    except Exception as e:
-                        logger.error(f"[Scheduler:trading_reset] Daily reset failed: {e}")
-
-                # Weekly reset — once per UTC week (Monday = weekday 0)
-                if now.weekday() == 0 and last_weekly_reset != week_str:
-                    try:
-                        from src.db.models import get_session
-                        from src.services.trading_service import TradingService
-
-                        session = get_session()
-                        try:
-                            svc = TradingService(session)
-                            result = svc.auto_reset_weekly()
-                            last_weekly_reset = week_str
-                            if result["reset_accounts"] > 0:
-                                logger.info(
-                                    f"[Scheduler:trading_reset] Weekly reset: {result['reset_accounts']} accounts"
-                                )
-                        finally:
-                            session.close()
-                    except Exception as e:
-                        logger.error(f"[Scheduler:trading_reset] Weekly reset failed: {e}")
-
-            except asyncio.CancelledError:
-                logger.info("[Scheduler:trading_reset] Loop cancelled")
-                break
-            except Exception as e:
-                logger.error(f"[Scheduler:trading_reset] Error: {e}", exc_info=True)
-
-            try:
-                await asyncio.sleep(check_interval)
-            except asyncio.CancelledError:
-                break
 
     # ── Cleanup tier (data retention) ────────────────────────────────
 

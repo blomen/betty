@@ -6,7 +6,6 @@ from .limit_repo import LimitRepo
 from .odds_repo import OddsRepo
 from .opportunity_repo import OpportunityRepo
 from .profile_repo import ProfileRepo
-from .trading_repo import TradingRepo
 
 __all__ = [
     "ProfileRepo",
@@ -14,6 +13,5 @@ __all__ = [
     "OddsRepo",
     "OpportunityRepo",
     "BetRepo",
-    "TradingRepo",
     "LimitRepo",
 ]
