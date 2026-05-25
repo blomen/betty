@@ -103,7 +103,7 @@ Surface the matched method in the debug dict so the log shows whether team-name 
 
 ## Frontend pending row contract
 
-Two render sites in [PlayPage.tsx](../arnold/frontend/src/pages/PlayPage.tsx) must stay synchronised:
+Two render sites in [PlayPage.tsx](../frontend/src/pages/PlayPage.tsx) must stay synchronised:
 - Soft-cluster pending list (~line 2879)
 - Unlimited-cluster pending list (~line 3690)
 
@@ -147,7 +147,7 @@ The **mirror** is a headed Playwright Chromium browser that runs locally on your
 | `arnold/mirror/sse.py` | Server-Sent Events broadcaster to frontend |
 | `arnold/mirror/router.py` | `/mirror/*` API endpoints (browser/play/run/pause/settlement) |
 | `arnold/mirror/workflows/` | Per-platform workflow implementations |
-| `arnold/frontend/src/pages/PlayPage.tsx` | UI: 5-state card, click handler, SSE ↔ card-color mapping |
+| `frontend/src/pages/PlayPage.tsx` | UI: 5-state card, click handler, SSE ↔ card-color mapping |
 
 ---
 
@@ -202,7 +202,7 @@ Tailwind utilities, sole owner of the active-state appearance:
 
 Both AMBER variants share the same hue; the "ready" variant has a slightly stronger background and bold border so the user can tell at a glance "this one is ready for the second press".
 
-Source of truth: `arnold/frontend/src/pages/PlayPage.tsx` `CARD_STATE_CLASSES`.
+Source of truth: `frontend/src/pages/PlayPage.tsx` `CARD_STATE_CLASSES`.
 
 ---
 
@@ -753,7 +753,7 @@ Pipeline:
 | `arb_leg_failed` | Any step fails | `provider_id, stage, reason` |
 | `arb_leg_odds` | Each tick where live odds drift | `provider_id, live_odds, planned_odds, user_picked: true, event_id` |
 
-**ALL of these MUST be in `useMirrorStream`'s allowlist** in [arnold/frontend/src/hooks/useMirrorStream.ts](../arnold/frontend/src/hooks/useMirrorStream.ts) — `EventSource.addEventListener` silently drops events whose type isn't registered. Pitfall #18 in §15.
+**ALL of these MUST be in `useMirrorStream`'s allowlist** in [frontend/src/hooks/useMirrorStream.ts](../frontend/src/hooks/useMirrorStream.ts) — `EventSource.addEventListener` silently drops events whose type isn't registered. Pitfall #18 in §15.
 
 ### Frontend integration
 
@@ -1121,7 +1121,7 @@ class PlatformWorkflow(BaseWorkflow):
 8. **`hasattr(workflow, "fetch_balance")` returning False** — graceful degradation, not a bug. The interceptor still picks up balance changes whenever the user touches the provider site. Don't add `fetch_balance` stubs that 404 — leave it absent and rely on the interceptor.
 9. **Stale `arnoldsports/mirror/...` paths in code/docs.** The project was renamed (firev → arnold, arnoldsports/ collapsed into arnold/) on 2026-04-23/24. All paths now live under `arnold/mirror/`.
 
-10. **`useMirrorStream` event-type allowlist out of date.** `EventSource.addEventListener('foo', cb)` only fires for events whose `event:` field == `foo` — events not in the registered list are **silently dropped**. When adding new SSE events on the backend, also add them to the array in [arnold/frontend/src/hooks/useMirrorStream.ts](../arnold/frontend/src/hooks/useMirrorStream.ts). Symptom: backend log shows `[POLL] FIRE odds=X.XX` and SSE captured via curl confirms the event fires, but the frontend's `[arb_leg_odds] received…` debug log never appears. Cost a session of debugging during the §8b live-odds wiring.
+10. **`useMirrorStream` event-type allowlist out of date.** `EventSource.addEventListener('foo', cb)` only fires for events whose `event:` field == `foo` — events not in the registered list are **silently dropped**. When adding new SSE events on the backend, also add them to the array in [frontend/src/hooks/useMirrorStream.ts](../frontend/src/hooks/useMirrorStream.ts). Symptom: backend log shows `[POLL] FIRE odds=X.XX` and SSE captured via curl confirms the event fires, but the frontend's `[arb_leg_odds] received…` debug log never appears. Cost a session of debugging during the §8b live-odds wiring.
 
 11. **Bare `avslutat` / `avslutad` in `_is_event_closed` phrase list.** Too broad — match menu chips ("avslutade matcher" tab), settled-bet history rows, live-match in-progress badges. Use full sentences only (`detta evenemang är avslutat`, `evenemanget är avslutat`, `denna match är avslutad`, `matchen är slut`). False positives strand live events in `drainedEventIds` and the operator can't click their hedges.
 

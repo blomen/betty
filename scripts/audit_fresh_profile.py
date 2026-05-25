@@ -23,10 +23,10 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent.parent / "backend" / "src"))
 from bankroll.stake_calculator import calculate_stake, dynamic_min_stake  # noqa: E402
 
-# Mirror of arnold/frontend/src/pages/PlayPage.tsx:6 — keep in sync.
+# Mirror of frontend/src/pages/PlayPage.tsx:6 — keep in sync.
 UNLIMITED_PROVIDERS = {"pinnacle", "polymarket", "cloudbet", "kalshi"}
 
-# Mirror of arnold/frontend/src/pages/PlayPage.tsx:24 — keep in sync.
+# Mirror of frontend/src/pages/PlayPage.tsx:24 — keep in sync.
 SOFT_CLUSTER_MEMBERS = {
     "kambi": ["unibet", "leovegas", "expekt", "betmgm", "speedybet", "x3000", "goldenbull", "1x2"],
     "spectate": ["888sport", "mrgreen"],

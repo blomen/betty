@@ -58,7 +58,7 @@ jobs:
             --ignore=tests/providers/test_comeon_dom_parser.py \
             -x
 
-  arnold-frontend-typecheck:
+  frontend-typecheck:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -67,12 +67,12 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: arnold/frontend/package-lock.json
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        working-directory: arnold/frontend
+        working-directory: frontend
         run: npm ci
 
       - name: TypeScript check
-        working-directory: arnold/frontend
+        working-directory: frontend
         run: npx tsc --noEmit

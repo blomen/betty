@@ -25,24 +25,24 @@ Hetzner Server (24/7, headless)              Your PC
 │   ├── providers/    # 16 extractors        │   ├── server.py         # FastAPI: /api proxy + /mirror + static
 │   ├── pipeline/     # orchestrator         │   ├── launch.py         # SSH tunnel + uvicorn + browser open
 │   ├── analysis/     # scanner, devig       │   ├── proxy.py          # /api/* reverse-proxy to server via tunnel
-│   ├── matching/     # Fuzzy matching       │   ├── mirror/
-│   ├── bankroll/     # Kelly sizing         │   │   ├── browser.py    # Playwright lifecycle + interception
-│   ├── api/          # FastAPI              │   │   ├── play_loop.py  # Automated betting state machine
-│   └── db/           # PostgreSQL ORM       │   │   ├── arb_runner.py
-└── docker-compose.yml                       │   │   ├── pending_loop.py
-                                             │   │   └── workflows/    # Provider DOM automation
-                                             │   └── frontend/         # React app
-                                             │       └── src/pages/
-                                             │           ├── PlayPage.tsx       (Sports tab)
-                                             │           ├── BankrollPage.tsx
-                                             │           └── StatsPage.tsx
+│   ├── matching/     # Fuzzy matching       │   └── mirror/
+│   ├── bankroll/     # Kelly sizing         │       ├── browser.py    # Playwright lifecycle + interception
+│   ├── api/          # FastAPI              │       ├── play_loop.py  # Automated betting state machine
+│   └── db/           # PostgreSQL ORM       │       ├── arb_runner.py
+└── docker-compose.yml                       │       ├── pending_loop.py
+                                             │       └── workflows/    # Provider DOM automation
+                                             ├── frontend/             # React app (Vite + TS)
+                                             │   └── src/pages/
+                                             │       ├── PlayPage.tsx       (Sports tab)
+                                             │       ├── BankrollPage.tsx
+                                             │       └── StatsPage.tsx
                                              │
                                              └── arnold.bat  → SSH tunnel → server API (port 18000)
 ```
 
 ### Frontend
 
-Single app at `arnold/frontend/`. Tabs:
+Single app at `frontend/`. Tabs:
 
 | Tab | Sub-tabs | What it shows |
 |-----|----------|---------------|
@@ -163,7 +163,7 @@ Multiple Claude Code agents may work on this repo concurrently. **Follow these r
     - `ssh root@148.251.40.251 "curl -sf http://localhost:8000/health"` — note the `boot_id` (changes on every container restart)
     - `ssh root@148.251.40.251 "cd /opt/arnold && docker compose ps backend --format json | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get(\"CreatedAt\"))'"` — container creation time should be after your deploy completed
     - If git HEAD is ahead of what your deploy pulled (e.g. another agent pushed mid-deploy), the running container is stale — re-deploy with `--no-cache` or wait for the next pull cycle.
-13. **Backend deploys vs frontend/local-client changes**: a commit touching ONLY `arnold/frontend/`, `arnold/mirror/`, `arnold/server.py`, `arnold/launch.py`, or `arnold/proxy.py` is **local-client only** and ships via `arnold.bat` (Vite + local FastAPI) — do NOT trigger a backend rebuild for these. Quick check: `git diff --name-only origin/main...HEAD | grep -v '^arnold/' | head -1` — if empty, no backend deploy needed.
+13. **Backend deploys vs frontend/local-client changes**: a commit touching ONLY `frontend/`, `arnold/mirror/`, `arnold/server.py`, `arnold/launch.py`, or `arnold/proxy.py` is **local-client only** and ships via `arnold.bat` (Vite + local FastAPI) — do NOT trigger a backend rebuild for these. Quick check: `git diff --name-only origin/main...HEAD | grep -vE '^(arnold|frontend)/' | head -1` — if empty, no backend deploy needed.
 14. **Background-deploy etiquette**: when running deploys via `Bash run_in_background=true` and SSH, the remote bash survives if you cancel the local task — always `pgrep -fa 'server-deploy.sh'` on the server BEFORE assuming the slot is free.
 
 ### Currencies (READ BEFORE ANY CROSS-PROVIDER MATH)
@@ -284,15 +284,15 @@ arnold/
 │   ├── router.py          # /mirror/* endpoints
 │   ├── sse.py             # Local SSE broadcaster
 │   └── workflows/         # Provider DOM automation
-├── frontend/              # React app
 └── data/                  # local cache (tunnel lock file, etc.)
 
+frontend/                  # React app (repo root) — served by arnold/server.py
 arnold.bat                 # Windows launcher at repo root — invokes arnold/launch.py
 ```
 
 ### Frontend (IMPORTANT)
-- **`arnold/frontend/`** is the only frontend. Sports play/bankroll/stats live under `src/pages/`.
-- **The server has no frontend.** It's API-only. All betting UI lives in `arnold/frontend/`.
+- **`frontend/`** (repo root) is the only frontend. Sports play/bankroll/stats live under `src/pages/`.
+- **The server has no frontend.** It's API-only. All betting UI lives in `frontend/`.
 
 ## WHY It's Structured This Way
 
