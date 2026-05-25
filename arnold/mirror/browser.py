@@ -404,21 +404,6 @@ class MirrorBrowser:
 
         print(f"[browser] Using profile: {_USER_DATA_DIR}", flush=True)
 
-        # Auto-load the Arnold TradingView Overlay extension so any TV tab
-        # opened in the mirror gets zone/position drawing for free. The
-        # extension's MV3 manifest only matches tradingview.com, so it's
-        # inert on every other tab (sportsbook flows are unaffected).
-        _tv_ext_dir = Path(__file__).resolve().parent.parent / "tv_overlay" / "extension"
-        ext_args: list[str] = []
-        if _tv_ext_dir.exists():
-            ext_args = [
-                f"--disable-extensions-except={_tv_ext_dir}",
-                f"--load-extension={_tv_ext_dir}",
-            ]
-            print(f"[browser] Loading TV overlay extension: {_tv_ext_dir}", flush=True)
-        else:
-            print(f"[browser] TV overlay extension dir missing: {_tv_ext_dir}", flush=True)
-
         self._context = await self._playwright.chromium.launch_persistent_context(
             user_data_dir=str(_USER_DATA_DIR),
             headless=False,
@@ -436,7 +421,6 @@ class MirrorBrowser:
                 "--start-maximized",
                 "--disable-session-crashed-bubble",
                 "--no-restore-state",
-                *ext_args,
             ],
             ignore_default_args=["--enable-automation"],
         )
