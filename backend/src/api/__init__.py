@@ -511,9 +511,34 @@ async def health_extraction():
                     }
                 )
 
-            # ── Unscannable markets (scope mismatch) ──
+            # ── Trust-gate counters ──
             from sqlalchemy import text
 
+            n_phantom_value = (
+                db.execute(
+                    text("SELECT COUNT(*) FROM opportunities WHERE is_active=true AND type='value' AND edge_pct > 10")
+                ).scalar()
+                or 0
+            )
+            n_phantom_arb = (
+                db.execute(
+                    text("SELECT COUNT(*) FROM opportunities WHERE is_active=true AND type='arb' AND profit_pct > 5")
+                ).scalar()
+                or 0
+            )
+            n_unvalidated_events = (
+                db.execute(
+                    text(
+                        "SELECT COUNT(*) FROM events "
+                        "WHERE home_away_validated = false "
+                        "AND start_time > NOW() AND start_time < NOW() + INTERVAL '24 hours'"
+                    )
+                ).scalar()
+                or 0
+            )
+            n_active_total = db.execute(text("SELECT COUNT(*) FROM opportunities WHERE is_active=true")).scalar() or 0
+
+            # ── Unscannable markets (scope mismatch) ──
             odds_rows = (
                 db.execute(
                     text(
@@ -532,6 +557,11 @@ async def health_extraction():
                 "issues": issues,
                 "providers": providers_health,
                 "runs": run_data,
+                "phantom_value_count": int(n_phantom_value),
+                "phantom_arb_count": int(n_phantom_arb),
+                "unvalidated_events_24h": int(n_unvalidated_events),
+                "active_opportunities_total": int(n_active_total),
+                "trust_gates_status": "WARNING" if (n_phantom_value + n_phantom_arb) > 5 else "OK",
                 "unscannable_markets": unscannable,
                 "unscannable_markets_status": "WARNING" if unscannable > 10 else "OK",
             }

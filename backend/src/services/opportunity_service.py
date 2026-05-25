@@ -80,6 +80,59 @@ def _resolve_leg_provider_meta(provider_meta_map: dict[tuple, dict], event_id: s
     return meta or {}
 
 
+def cleanup_stale_opportunities(session: Session) -> dict:
+    """Expire opportunities whose underlying data is stale.
+
+    Two rules:
+      1. Hard expire: event start_time has passed by > 1h
+      2. Soft expire: the opp's provider1 odds row hasn't been updated in > 4h
+
+    Returns {'expired_post_start': N, 'expired_stale_odds': M} for /health.
+    """
+    from sqlalchemy import text
+
+    expired_post_start = (
+        session.execute(
+            text("""
+        UPDATE opportunities SET is_active = false
+        WHERE is_active = true
+          AND event_id IN (
+            SELECT id FROM events WHERE start_time < NOW() - INTERVAL '1 hour'
+          )
+    """)
+        ).rowcount
+        or 0
+    )
+
+    expired_stale_odds = (
+        session.execute(
+            text("""
+        UPDATE opportunities SET is_active = false
+        WHERE is_active = true
+          AND id IN (
+            SELECT op.id FROM opportunities op
+            JOIN odds o
+              ON o.event_id = op.event_id
+              AND o.provider_id = op.provider1_id
+            WHERE op.is_active = true
+              AND o.updated_at < NOW() - INTERVAL '4 hours'
+          )
+    """)
+        ).rowcount
+        or 0
+    )
+
+    # Don't commit here — caller (analyzer) manages its own transaction
+    # lifetime. Committing inside would prematurely flush any pending writes
+    # from the same scan cycle. Caller flushes the updates as part of its
+    # normal commit.
+    session.flush()
+    return {
+        "expired_post_start": int(expired_post_start),
+        "expired_stale_odds": int(expired_stale_odds),
+    }
+
+
 class OpportunityService:
     """Business logic for opportunities: listing, stake calculation, hedging."""
 
@@ -481,6 +534,27 @@ class OpportunityService:
         # Filter to major leagues if requested
         if major_only:
             results = [r for r in results if r.get("league") in MAJOR_LEAGUES_FLAT]
+
+        # 2026-05-26: upper-bound sanity gate — drop arbs with implausibly
+        # high profit. Real arbs are low single digits per CLAUDE.md; anything
+        # above MAX_BATCH_ARB_PROFIT_PCT is almost certainly a phantom (scope,
+        # spread, inversion, currency, fuzzy-match bug). Logs for visibility.
+        from .batch_builder import MAX_BATCH_ARB_PROFIT_PCT, _is_phantom_arb
+
+        _pre_filter_count = len(results)
+        results = [
+            r
+            for r in results
+            if not _is_phantom_arb(r.get("guaranteed_profit_pct") or 0.0)
+            and not _is_phantom_arb(r.get("arb_profit_pct") or 0.0)
+        ]
+        _dropped = _pre_filter_count - len(results)
+        if _dropped:
+            logger.warning(
+                "[suspect_phantom] arb_workflow dropped %d arb(s) > %.1f%% profit cap",
+                _dropped,
+                MAX_BATCH_ARB_PROFIT_PCT,
+            )
 
         # Sort by edge desc
         results.sort(key=lambda x: x["combined_edge_pct"], reverse=True)

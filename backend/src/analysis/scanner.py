@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from ..bankroll.stake_calculator import StakeCalculator
+from ..config import get_provider_currency
 from ..constants import PLATFORM_MAP, PREDICTION_MARKETS, SHARP_PROVIDERS, SIGNAL_ONLY_PROVIDERS, canonical_scope_for
 from ..db.models import Event
 from ..repositories import EventRepo
@@ -43,6 +44,12 @@ MAX_ODDS_RATIO_SPREAD = 1.55
 # Hard safety net — edges above this are almost certainly data quality issues
 # (wrong event match, stale odds, prediction market divergence).
 MAX_EDGE_PCT = 50.0
+
+# 2026-05-26: spread quarter-handicap convention mismatches surface as
+# devigged-probability disagreement of >30pp on the same nominal outcome.
+# Refuse value bets for soft providers in such buckets — they're pricing a
+# different bet than Pinnacle, not offering value.
+SPREAD_DISAGREEMENT_MAX_PP = 0.30
 
 # Arb sanity ceiling — a *guaranteed* profit above this never reflects a real
 # cross-book arbitrage; it means a leg is mispriced (e.g. a Polymarket outcome
@@ -714,6 +721,11 @@ class OpportunityScanner:
         if len(pinnacle_market) > sharp_outcome_count:
             sharp_outcome_count = len(pinnacle_market)
 
+        # 2026-05-26: spread disagreement gate — drop soft providers whose
+        # devigged probability diverges from Pinnacle by >30pp on the same
+        # outcome (catches quarter-handicap convention mismatches by symptom).
+        self._drop_spread_disagreement_providers(market, odds_by_outcome, pinnacle_market)
+
         if sharp_outcome_count < 2:
             return None  # Need Pinnacle on 2+ outcomes for fair odds
 
@@ -904,6 +916,7 @@ class OpportunityScanner:
                     "stake_pct": stake_pct,
                     "is_sharp": data["is_sharp"],
                     "point": point_by_outcome.get(out),
+                    "currency": get_provider_currency(data["provider"]),
                 }
             )
 
@@ -949,6 +962,7 @@ class OpportunityScanner:
                                         "stake_pct": arb_stake_pct,
                                         "is_sharp": False,
                                         "point": point_by_outcome.get(out),
+                                        "currency": get_provider_currency(sdata["provider"]),
                                     }
                                 )
                             arb_legs.sort(key=lambda x: x["edge_pct"], reverse=True)
@@ -1137,6 +1151,18 @@ class OpportunityScanner:
 
         grouped = defaultdict(lambda: defaultdict(list))
 
+        # 2026-05-26: skip events where the home/away inversion check did
+        # not resolve cleanly. Only skip when EXPLICITLY False — None means
+        # an unflushed Python object (test fixtures) or a pre-migration row;
+        # both column default + server_default make True the real default.
+        if getattr(event, "home_away_validated", None) is False:
+            logger.debug(
+                "home_away_unvalidated: drop %s (sport=%s)",
+                event.id,
+                getattr(event, "sport", None),
+            )
+            return {}
+
         # Calculate staleness cutoff
         now = datetime.now(timezone.utc)
         staleness_cutoff = now - timedelta(hours=MAX_ODDS_AGE_HOURS)
@@ -1152,7 +1178,11 @@ class OpportunityScanner:
             if row_scope != canonical:
                 logger.debug(
                     "scope_filter: drop %s/%s scope=%s (canonical=%s for sport=%s)",
-                    event.id, odds.provider_id, row_scope, canonical, getattr(event, "sport", None),
+                    event.id,
+                    odds.provider_id,
+                    row_scope,
+                    canonical,
+                    getattr(event, "sport", None),
                 )
                 continue
 
@@ -1258,6 +1288,65 @@ class OpportunityScanner:
                         del odds_by_outcome[outcome_type]
                 logger.debug(f"Removed 3-way European handicap providers {european_providers} from {market_key}")
 
+    def _drop_spread_disagreement_providers(
+        self,
+        market: str,
+        odds_by_outcome: dict[str, list[dict]],
+        pinnacle_market: dict[str, float],
+    ) -> None:
+        """For each outcome in a spread market, drop soft providers whose
+        devigged probability disagrees with Pinnacle's by >SPREAD_DISAGREEMENT_MAX_PP.
+        Mutates odds_by_outcome in place. Non-spread markets are no-ops."""
+        if not market.startswith("spread"):
+            return
+
+        # Pinnacle devig per outcome
+        total_pinnacle_inv = sum(1.0 / o for o in pinnacle_market.values() if o > 1)
+        if total_pinnacle_inv <= 0:
+            return
+        pinnacle_devig = {out: (1.0 / odds) / total_pinnacle_inv for out, odds in pinnacle_market.items() if odds > 1}
+
+        # For each soft provider, compute their devig per outcome
+        soft_devig: dict[str, dict[str, float]] = {}
+        for outcome, providers in odds_by_outcome.items():
+            for po in providers:
+                if po["provider"] == "pinnacle" or po["provider"] in SIGNAL_ONLY_PROVIDERS:
+                    continue
+                soft_devig.setdefault(po["provider"], {})[outcome] = 1.0 / po["odds"]
+
+        # Normalize each soft provider's devig (sum to 1)
+        for _prov, devig in soft_devig.items():
+            total = sum(devig.values())
+            if total <= 0:
+                continue
+            for outcome in list(devig.keys()):
+                devig[outcome] = devig[outcome] / total
+
+        # Drop providers whose devig differs from Pinnacle by > threshold on any outcome
+        dropped = set()
+        for prov, devig in soft_devig.items():
+            for outcome, soft_p in devig.items():
+                pinnacle_p = pinnacle_devig.get(outcome)
+                if pinnacle_p is None:
+                    continue
+                if abs(soft_p - pinnacle_p) > SPREAD_DISAGREEMENT_MAX_PP:
+                    dropped.add(prov)
+                    logger.debug(
+                        "spread_disagreement: drop %s from %s (outcome=%s, soft_p=%.2f, sharp_p=%.2f)",
+                        prov,
+                        market,
+                        outcome,
+                        soft_p,
+                        pinnacle_p,
+                    )
+                    break
+
+        # Mutate odds_by_outcome to remove dropped providers
+        for outcome in list(odds_by_outcome.keys()):
+            odds_by_outcome[outcome] = [po for po in odds_by_outcome[outcome] if po["provider"] not in dropped]
+            if not odds_by_outcome[outcome]:
+                del odds_by_outcome[outcome]
+
     def _count_outcomes_per_provider(self, odds_by_outcome: dict[str, list[dict]]) -> dict[str, int]:
         """
         Count how many outcomes each provider has in this market.
@@ -1303,6 +1392,11 @@ class OpportunityScanner:
         # Update sharp count to reflect enriched market
         if len(pinnacle_market) > sharp_outcome_count:
             sharp_outcome_count = len(pinnacle_market)
+
+        # 2026-05-26: spread disagreement gate — drop soft providers whose
+        # devigged probability diverges from Pinnacle by >30pp on the same
+        # outcome (catches quarter-handicap convention mismatches by symptom).
+        self._drop_spread_disagreement_providers(market, odds_by_outcome, pinnacle_market)
 
         # Compute Pinnacle overround for ML features
         pinnacle_overround = (sum(1.0 / o for o in pinnacle_market.values() if o > 1) - 1.0) if pinnacle_market else 0

@@ -30,6 +30,7 @@ from ..constants import CANONICAL_MEMBERS, PROVIDER_CANONICAL
 from ..db.models import Opportunity, Profile
 from ..repositories import OpportunityRepo
 from ..services.bet_service import BetService
+from ..services.opportunity_service import cleanup_stale_opportunities
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,17 @@ class OpportunityAnalyzer:
 
         # Clean up stale opportunities before detection (incremental deactivation when provided)
         cleanup_stats = self.opp_repo.cleanup_stale(changed_event_ids=changed_event_ids)
+
+        # Expire opportunities with stale odds or past start times
+        try:
+            stale_cleanup = cleanup_stale_opportunities(self.session)
+            logger.info(
+                "[opp_cleanup] expired %d post-start, %d stale-odds",
+                stale_cleanup["expired_post_start"],
+                stale_cleanup["expired_stale_odds"],
+            )
+        except Exception as e:
+            logger.warning(f"[opp_cleanup] failed: {e}")
 
         # Pre-load events once — shared across all scan types (value, arb, reverse)
         events = self.scanner.get_multi_provider_events(min_providers=2)

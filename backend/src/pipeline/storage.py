@@ -135,6 +135,69 @@ def _update_event_cache(
         date_index[sport][date_str].add(event_id)
 
 
+# Enhanced inversion thresholds (2026-05-26)
+INVERSION_RATIO_THRESHOLD = 1.10  # was 1.50 — catches near-coinflip inversions
+INVERSION_DEVIG_DISAGREEMENT_PP = 0.25  # 25pp probability disagreement on home outcome
+POST_SWAP_DISAGREEMENT_PP = 0.15  # 15pp threshold after attempting swap
+
+
+def _devig_prob_home(home_odds: float, away_odds: float) -> float:
+    """Return de-vigged P(home) for a 2-way market, or 0.5 if odds invalid."""
+    if home_odds <= 1 or away_odds <= 1:
+        return 0.5
+    p_home_raw = 1.0 / home_odds
+    p_away_raw = 1.0 / away_odds
+    total = p_home_raw + p_away_raw
+    if total <= 0:
+        return 0.5
+    return p_home_raw / total
+
+
+def _is_inversion_detected(
+    sharp_home: float,
+    sharp_away: float,
+    soft_home: float,
+    soft_away: float,
+) -> bool:
+    """Detect home/away inversion using two signals:
+
+    1. Raw odds ratio: if sharp ratio > 1.10 AND books disagree on favored side.
+    2. Devig probability: if devigged P(home) differs by > 25pp between books.
+    """
+    if any(o <= 1 for o in (sharp_home, sharp_away, soft_home, soft_away)):
+        return False
+
+    # Signal 1: ratio + favorite-side disagreement
+    sharp_ratio = max(sharp_home, sharp_away) / min(sharp_home, sharp_away)
+    sharp_home_favored = sharp_home < sharp_away
+    soft_home_favored = soft_home < soft_away
+    if sharp_ratio > INVERSION_RATIO_THRESHOLD and sharp_home_favored != soft_home_favored:
+        return True
+
+    # Signal 2: devig probability disagreement
+    sharp_p_home = _devig_prob_home(sharp_home, sharp_away)
+    soft_p_home = _devig_prob_home(soft_home, soft_away)
+    if abs(sharp_p_home - soft_p_home) > INVERSION_DEVIG_DISAGREEMENT_PP:
+        return True
+
+    return False
+
+
+def _validate_post_swap(
+    sharp_home: float,
+    sharp_away: float,
+    soft_home: float,
+    soft_away: float,
+) -> bool:
+    """After swap (or with no swap needed), confirm the books agree within
+    POST_SWAP_DISAGREEMENT_PP. Returns True if validated."""
+    if any(o <= 1 for o in (sharp_home, sharp_away, soft_home, soft_away)):
+        return False
+    sharp_p = _devig_prob_home(sharp_home, sharp_away)
+    soft_p = _devig_prob_home(soft_home, soft_away)
+    return abs(sharp_p - soft_p) <= POST_SWAP_DISAGREEMENT_PP
+
+
 def detect_and_fix_inversion(
     session,
     event_id: str,
@@ -142,21 +205,24 @@ def detect_and_fix_inversion(
     home_odds: float | None,
     away_odds: float | None,
     sharp_odds_cache: dict = None,
-) -> bool:
-    """
-    Detect if provider odds are inverted vs sharp and return True if swap needed.
+) -> tuple[bool, bool]:
+    """Detect if provider odds are inverted vs sharp.
 
-    Silent operation - no warnings, just fixes the data.
-    Only triggers when sharp (Pinnacle) shows a clear favorite (odds ratio > 1.5).
+    Returns (swap_needed, validated):
+      - swap_needed: True if home/away should be swapped before storing
+      - validated: True if the final (post-swap-if-any) odds agree with Pinnacle
+        within POST_SWAP_DISAGREEMENT_PP; False means the event should be skipped
+        by the scanner (home_away_validated=False).
 
-    This catches cases where providers list teams in opposite home/away order
-    for neutral venue games (e.g., Super Bowl), resulting in odds being stored
-    under the wrong team. Even if the incoming provider's odds are close to 50/50,
-    if Pinnacle has a clear favorite, disagreement on which team is favored
-    indicates an inversion.
+    Uses two signals to detect inversion:
+      1. Sharp odds ratio > 1.10 AND books disagree on favored side.
+      2. Devigged P(home) differs by > 25pp between Pinnacle and soft book.
+
+    This catches near-coinflip inversions (e.g. SSG Landers v Samsung Lions,
+    Pinnacle ratio 1.06) that the old 1.5-threshold missed.
     """
     if home_odds is None or away_odds is None or home_odds <= 1 or away_odds <= 1:
-        return False
+        return False, True  # no swap, treat as validated (no data to check)
 
     # Check cache first (Pinnacle data is static during a run)
     if sharp_odds_cache is not None and event_id in sharp_odds_cache:
@@ -179,29 +245,30 @@ def detect_and_fix_inversion(
             sharp_odds_cache[event_id] = sharp
 
     if "home" not in sharp or "away" not in sharp:
-        return False
+        return False, True  # no sharp data to compare — treat as validated
 
-    # Determine favorites
-    new_fav = "home" if home_odds < away_odds else "away"
-    sharp_fav = "home" if sharp["home"] < sharp["away"] else "away"
+    sharp_home = sharp["home"]
+    sharp_away = sharp["away"]
 
-    if new_fav == sharp_fav:
-        return False  # Same favorite, no inversion
+    swap_needed = _is_inversion_detected(sharp_home, sharp_away, home_odds, away_odds)
 
-    # Only trigger if SHARP shows a clear favorite (ratio > 1.15)
-    # This catches cases where Pinnacle shows clear favorite but provider shows opposite
-    # e.g., Pinnacle home=7.38/away=1.11 (away fav) vs Polymarket home=1.94/away=2.06 (home fav)
-    # Threshold 1.15 catches cases like Pinnacle 1.81/2.23 (ratio 1.23) where team order is wrong
-    sharp_ratio = max(sharp["home"], sharp["away"]) / min(sharp["home"], sharp["away"])
-    if sharp_ratio < 1.15:
-        return False  # Sharp odds are close, could be legitimate difference
+    if swap_needed:
+        # After swap: soft home↔away are flipped for validation
+        validated = _validate_post_swap(sharp_home, sharp_away, away_odds, home_odds)
+        logger.debug(
+            "[%s] Fixing inverted odds for %s: H=%.2f/A=%.2f vs sharp H=%.2f/A=%.2f (validated=%s)",
+            provider,
+            event_id,
+            home_odds,
+            away_odds,
+            sharp_home,
+            sharp_away,
+            validated,
+        )
+    else:
+        validated = _validate_post_swap(sharp_home, sharp_away, home_odds, away_odds)
 
-    # Log at DEBUG level (silent in normal operation)
-    logger.debug(
-        f"[{provider}] Fixing inverted odds for {event_id}: "
-        f"H={home_odds:.2f}/A={away_odds:.2f} vs sharp H={sharp['home']:.2f}/A={sharp['away']:.2f}"
-    )
-    return True
+    return swap_needed, validated
 
 
 def swap_home_away_outcomes(outcomes: list[dict]) -> list[dict]:
@@ -553,13 +620,21 @@ def store_polymarket_event(
                 pre_ml_home = _odds
             elif _norm == "away":
                 pre_ml_away = _odds
-    poly_inverted = bool(
-        pre_ml_home
-        and pre_ml_away
-        and detect_and_fix_inversion(
+    if pre_ml_home and pre_ml_away:
+        _poly_swap, _poly_validated = detect_and_fix_inversion(
             session, matched_id, "polymarket", pre_ml_home, pre_ml_away, sharp_odds_cache=sharp_odds_cache
         )
-    )
+        poly_inverted = _poly_swap
+    else:
+        poly_inverted = False
+        _poly_validated = True
+    # Persist polymarket-derived validation on the Event row (best-effort —
+    # the same event may be re-validated by store_provider_event for other
+    # providers, which will overwrite this).
+    if matched_id:
+        _poly_event = session.query(Event).filter_by(id=matched_id).one_or_none()
+        if _poly_event is not None:
+            _poly_event.home_away_validated = _poly_validated
     if poly_inverted:
         logger.warning(f"[polymarket] Inverted odds for {matched_id} — correcting home/away on store")
 
@@ -1142,10 +1217,19 @@ def store_provider_event(
             canonical_away_odds = away_odds
 
         # Check for odds inversion against sharp source
-        if detect_and_fix_inversion(
-            session, matched_id, provider, canonical_home_odds, canonical_away_odds, sharp_odds_cache=sharp_odds_cache
-        ):
+        _swap, _validated = detect_and_fix_inversion(
+            session,
+            matched_id,
+            provider,
+            canonical_home_odds,
+            canonical_away_odds,
+            sharp_odds_cache=sharp_odds_cache,
+        )
+        if _swap:
             odds_inverted = True
+        # Persist validation result on the Event row so the scanner can skip
+        # events whose home/away assignment couldn't be reconciled with Pinnacle.
+        db_event.home_away_validated = _validated
 
     # Swap outcomes if:
     # - Team order is different from canonical (fuzzy_swapped), OR

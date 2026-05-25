@@ -51,6 +51,32 @@ SHARP_PROVIDERS = frozenset({"pinnacle", "polymarket"})
 
 MAX_TTK_HOURS = 168.0  # 1 week — frontend TTK filter handles the rest
 
+# 2026-05-26: upper-bound sanity gates. Even after scope/inversion/spread
+# disagreement fixes, anything above these is virtually always a bug —
+# currency mismatch in stake sizing, novel scope/handicap bug, fuzzy-match
+# false positive, etc. Refuse to surface and log so we can monitor.
+#
+# Thresholds:
+# - Value edge > 10%: real Pinnacle-anchored value bets above 10% are
+#   exceedingly rare; mostly tennis longshots that calibrate poorly.
+# - Arb profit > 8%: same-currency soft-vs-Pinnacle arbs are low single
+#   digits per CLAUDE.md, but cross-book Polymarket/Kalshi arbs against
+#   SEK softs can legitimately reach 6-8% (prediction-market liquidity
+#   dynamics, longshot pricing). 8% is the band that keeps real ones in
+#   while still refusing the obvious phantoms (20%+ from convention bugs).
+MAX_BATCH_VALUE_EDGE_PCT = 10.0
+MAX_BATCH_ARB_PROFIT_PCT = 8.0
+
+
+def _is_phantom_value_bet(edge_pct: float) -> bool:
+    """Return True if a value bet's edge is above the sanity cap."""
+    return edge_pct > MAX_BATCH_VALUE_EDGE_PCT
+
+
+def _is_phantom_arb(profit_pct: float) -> bool:
+    """Return True if an arb's guaranteed profit is above the sanity cap."""
+    return profit_pct > MAX_BATCH_ARB_PROFIT_PCT
+
 
 @dataclass
 class BatchBet:
@@ -95,6 +121,13 @@ class BatchBet:
     funded: bool = True  # False = needs deposit to play
     skip_reason: str | None = None
     bankroll_needed: float = 0.0
+
+    # Currency annotation — SEK is the bankroll-base and Kelly works in SEK,
+    # but cross-currency arbs (cloudbet=USDC, kalshi=USD, polymarket=USDC,
+    # smarkets=GBP) require the user to place stake_native at the provider,
+    # not stake. Frontend MUST present stake_native + stake_currency.
+    stake_currency: str = "SEK"
+    stake_native: float = 0.0
 
     # Provider metadata (for navigation — altenar event IDs, kambi matchup IDs, etc.)
     provider_meta: dict | None = None
@@ -502,6 +535,18 @@ class BatchBuilder:
         if (opp.edge_pct or 0.0) < prov_min_edge_pct:
             return None
 
+        # 2026-05-26: upper-bound sanity gate
+        if _is_phantom_value_bet(opp.edge_pct or 0.0):
+            logger.warning(
+                "[suspect_phantom] dropping value bet edge=%.2f%% > cap=%.2f%% (event=%s market=%s provider=%s)",
+                opp.edge_pct,
+                MAX_BATCH_VALUE_EDGE_PCT,
+                opp.event_id,
+                opp.market,
+                opp.provider1_id,
+            )
+            return None
+
         # Kelly bankroll:
         #   - Unlimited providers (pinnacle/cloudbet/kalshi/polymarket) share
         #     ONE pooled bankroll — total_bankroll (the unlimited-only sum from
@@ -565,13 +610,18 @@ class BatchBuilder:
         # Their balances and bet placements are in USDC/USD; the balance-vs-stake
         # check downstream compares native-to-native.
         from .. import bankroll
-        from ..config import get_exchange_rate
+        from ..config import get_exchange_rate, get_provider_currency
+
+        stake_currency = get_provider_currency(provider_id)
 
         prof = bankroll.stake_calculator.PROVIDER_STAKE_PROFILES.get(provider_id)
         if prof and prof.currency != "SEK" and stake > 0:
             exchange_rate = get_exchange_rate(provider_id)
             if exchange_rate > 0:
                 stake = stake / exchange_rate
+
+        # After conversion, stake is already in native units for non-SEK providers.
+        stake_native = round(stake, 2)
 
         expected_profit = stake * edge_raw
 
@@ -596,6 +646,8 @@ class BatchBuilder:
             edge_pct=opp.edge_pct or 0.0,
             stake=stake,
             expected_profit=expected_profit,
+            stake_currency=stake_currency,
+            stake_native=stake_native,
             is_bonus=False,
             bonus_type=None,
             display_home=event.display_home or event.home_team or "",
@@ -728,10 +780,15 @@ class BatchBuilder:
         Optional overrides for stake/bonus when the target provider has
         freebet or trigger constraints.
         """
+        from ..config import get_exchange_rate, get_provider_currency
+
         actual_stake = stake if stake is not None else bet.stake
         actual_is_bonus = is_bonus if is_bonus is not None else bet.is_bonus
         actual_bonus_type = bonus_type if bonus_type is not None else bet.bonus_type
         edge_raw = bet.edge_pct / 100.0
+        new_stake_currency = get_provider_currency(new_provider_id)
+        new_exchange_rate = get_exchange_rate(new_provider_id)
+        new_stake_native = round(actual_stake / new_exchange_rate, 2) if new_exchange_rate > 0 else actual_stake
         return BatchBet(
             rank=0,
             tier=bet.tier,
@@ -745,6 +802,8 @@ class BatchBuilder:
             edge_pct=bet.edge_pct,
             stake=actual_stake,
             expected_profit=actual_stake * edge_raw,
+            stake_currency=new_stake_currency,
+            stake_native=new_stake_native,
             is_bonus=actual_is_bonus,
             bonus_type=actual_bonus_type,
             display_home=bet.display_home,
@@ -1036,6 +1095,11 @@ class BatchBuilder:
             "fair_odds": round(bet.fair_odds, 3),
             "edge_pct": round(bet.edge_pct, 2),
             "stake": round(bet.stake, 2),
+            # Frontend should present stake_native + stake_currency for
+            # cross-currency providers (USDC/USD/GBP). stake stays in SEK
+            # (bankroll base) for sizing math.
+            "stake_currency": bet.stake_currency,
+            "stake_native": round(bet.stake_native, 2),
             "expected_profit": round(bet.expected_profit, 2),
             "is_bonus": bet.is_bonus,
             "bonus_type": bet.bonus_type,

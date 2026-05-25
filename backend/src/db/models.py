@@ -117,6 +117,13 @@ class Event(Base):
     match_period = Column(Integer, nullable=True)  # Period ID (1=1st half, 2=2nd half, etc.)
     stats_json = Column(Text, nullable=True)  # JSON blob: corners, cards, scoreByQuarter, etc.
 
+    # Enhanced inversion detection (2026-05-26): set True only when storage
+    # has verified the soft book's home/away assignment agrees with Pinnacle
+    # (after swap if needed). False means the scanner must skip this event's
+    # soft odds because we don't trust the side mapping. Defaults to True so
+    # historical events without the check still surface.
+    home_away_validated = Column(Boolean, nullable=False, server_default=text("true"), default=True)
+
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
@@ -1712,6 +1719,10 @@ def _run_pg_migrations(engine) -> None:
         # Added so the scanner can refuse to pair regulation-only with OT-inclusive
         # odds (the IIHF Slovenia v Italy false-arb bug).
         ("odds", "scope", "VARCHAR(16) NOT NULL DEFAULT 'ft'"),
+        # 2026-05-26 — enhanced inversion detector flag on events. Default true
+        # so historical events without verification stay visible until the next
+        # extraction cycle revalidates them.
+        ("events", "home_away_validated", "BOOLEAN NOT NULL DEFAULT TRUE"),
     ]
 
     # Tables dropped during the 2026-05-25 strip-trading work. Idempotent —
@@ -1781,14 +1792,16 @@ def _run_pg_migrations(engine) -> None:
         # is a no-op because period=6 hockey rows will already have scope='reg'.
         sp = conn.begin_nested()
         try:
-            conn.execute(text("""
+            conn.execute(
+                text("""
                 UPDATE odds
                 SET scope = 'reg'
                 WHERE provider_id = 'pinnacle'
                   AND scope = 'ft'
                   AND provider_meta::jsonb->>'period' = '6'
                   AND event_id IN (SELECT id FROM events WHERE sport = 'ice_hockey')
-            """))
+            """)
+            )
             sp.commit()
         except Exception:
             sp.rollback()
@@ -1806,11 +1819,13 @@ def _run_pg_migrations(engine) -> None:
 
         sp = conn.begin_nested()
         try:
-            conn.execute(text("""
+            conn.execute(
+                text("""
                 ALTER TABLE odds
                 ADD CONSTRAINT uq_odds_with_point_scope
                 UNIQUE NULLS NOT DISTINCT (event_id, provider_id, market, outcome, point, scope)
-            """))
+            """)
+            )
             sp.commit()
         except Exception:
             sp.rollback()
@@ -1819,10 +1834,12 @@ def _run_pg_migrations(engine) -> None:
         # 2026-05-25 — scanner-side join index for canonical-scope lookups.
         sp = conn.begin_nested()
         try:
-            conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_odds_event_market_point_scope "
-                "ON odds (event_id, market, point, scope)"
-            ))
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_odds_event_market_point_scope "
+                    "ON odds (event_id, market, point, scope)"
+                )
+            )
             sp.commit()
         except Exception:
             sp.rollback()
