@@ -1,10 +1,12 @@
-"""Alembic Environment Configuration for Arnold."""
+"""Alembic Environment Configuration for Betty."""
+
 import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
 
 from sqlalchemy import engine_from_config, pool
+
 from alembic import context
 
 # Add src to path
@@ -22,6 +24,7 @@ if db_url:
     config.set_main_option("sqlalchemy.url", sync_url)
 else:
     from src.db.models import DB_PATH
+
     config.set_main_option("sqlalchemy.url", f"sqlite:///{DB_PATH}")
 
 if config.config_file_name is not None:

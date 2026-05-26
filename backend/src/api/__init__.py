@@ -1,5 +1,5 @@
 """
-Arnold FastAPI Backend
+Betty FastAPI Backend
 
 REST API for the React frontend.
 Connects to SQLite database and analysis modules.
@@ -12,7 +12,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 # Dedicated executor for /health probes so they don't queue behind extraction
 # threads on the default asyncio loop executor.
@@ -215,7 +215,7 @@ async def lifespan(app: FastAPI):
 
         # Auto-start the server-side Polymarket position recorder. Pure HTTP
         # (public data-api, wallet-keyed) — runs 24/7 independent of the local
-        # arnold.bat client so manually-placed Polymarket bets are recorded
+        # betty.bat client so manually-placed Polymarket bets are recorded
         # within ~1.5 min instead of waiting on the local 5-min auto-poller.
         async def _start_position_recorder():
             try:
@@ -271,7 +271,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Arnold API",
+    title="Betty API",
     description="Betting analytics & value betting backend",
     version="0.1.0",
     lifespan=lifespan,
@@ -338,7 +338,7 @@ async def health():
     """Basic health check endpoint with boot ID for restart detection."""
     return {
         "status": "ok",
-        "time": datetime.now(timezone.utc).isoformat(),
+        "time": datetime.now(UTC).isoformat(),
         "boot_id": _boot_id,
         "uptime": round(time.time() - _startup_time) if _startup_time else 0,
     }
@@ -396,7 +396,7 @@ async def health_ready():
             asyncio.to_thread(_check_db), timeout=5.0
         )
         db_latency_ms = (time.time() - db_start) * 1000
-    except (asyncio.TimeoutError, Exception):
+    except (TimeoutError, Exception):
         status = "not_ready"
         database_ok = False
 
@@ -579,13 +579,13 @@ async def health_extraction():
             asyncio.get_running_loop().run_in_executor(_health_executor, _query),
             timeout=15.0,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return {"status": "error", "message": "Database query timed out"}
 
     if isinstance(data, dict) and "error" in data:
         return {"status": "error", "message": data["error"]}
 
-    data["checked_at"] = datetime.now(timezone.utc).isoformat()
+    data["checked_at"] = datetime.now(UTC).isoformat()
     return data
 
 
@@ -626,8 +626,8 @@ async def get_version():
 
 @app.get("/")
 async def root():
-    """Backend is API-only. The local arnold client renders the UI."""
-    return {"status": "arnold-api", "version": app.version}
+    """Backend is API-only. The local betty client renders the UI."""
+    return {"status": "betty-api", "version": app.version}
 
 
 # Dev entry point (no --reload). On Windows, --reload forces SelectorEventLoop

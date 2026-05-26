@@ -256,7 +256,7 @@ export default function PlayPage() {
   useEffect(() => { errorRef.current = error }, [error])
   const mirror = useMirrorStream()
   // Phase 2 platform-rebuild recovery floor: read authoritative provider/runner
-  // state from server DB. Survives SSE drops, browser refresh, arnold.bat
+  // state from server DB. Survives SSE drops, browser refresh, betty.bat
   // restart. Merged into loopProviderStatus by the effect below — SSE still
   // drives sub-5s updates between the 5s polls.
   const mirrorState = useMirrorState()
@@ -592,7 +592,7 @@ export default function PlayPage() {
   const startSkin = async (pid: string) => {
     // No-op if already active — clicking again should NOT toggle off.
     // Once selected, the runner auto-progresses (login → settle → bet loop)
-    // without further user interaction. To stop, the user closes arnold.
+    // without further user interaction. To stop, the user closes betty.
     if (activeProviders.has(pid)) return
     // Add provider — open tab and start/add to loop
     setActiveProviders(prev => new Set(prev).add(pid))
@@ -1316,7 +1316,7 @@ export default function PlayPage() {
   useEffect(() => {
     const runners = mirrorState.runners
     if (!runners || Object.keys(runners).length === 0) return
-    // DB state can be stale from a prior arnold.bat run that died without
+    // DB state can be stale from a prior betty.bat run that died without
     // writing state='idle'. Activity (i.e. activeProviders membership) must
     // come from the live in-memory runner via /mirror/play/status — NOT from
     // DB. Otherwise a previous session's "ready_to_run" leaks into a fresh
@@ -1550,7 +1550,7 @@ export default function PlayPage() {
       // User browsed the counter tab to a matchup page on their own.
       // Match the URL's team slugs against open opps and auto-pick the
       // first hit so the DUTCH ARB widget shows the right event without
-      // the user having to click anything in the arnold UI.
+      // the user having to click anything in the betty UI.
       const pid = data.provider_id
       const homeSlug = (data.home_slug ?? '') as string
       const awaySlug = (data.away_slug ?? '') as string
@@ -1573,11 +1573,11 @@ export default function PlayPage() {
       if (!matched) return  // no open arb for this matchup — ignore silently
       const eid = matched.eid
       setPickedEventByProvider(prev => prev[pid] === eid ? prev : { ...prev, [pid]: eid })
-      // Sync ONLY the leg the user already clicked in arnold UI (recorded
+      // Sync ONLY the leg the user already clicked in betty UI (recorded
       // at navigate-time in pickedLegMetaByProvider). Greening every leg
       // of the opp lit up all 3 sibling legs in 1X2 arbs which contradicts
       // the workflow: user picks soft anchor first → checks ONE specific
-      // sharp leg → places. Manual nav alone (no prior arnold click) just
+      // sharp leg → places. Manual nav alone (no prior betty click) just
       // sets pickedEventByProvider without auto-syncing any leg.
       const picked = pickedLegMetaByProvider.current[pid]
       if (picked && picked.eid === eid) {

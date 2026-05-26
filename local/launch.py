@@ -1,7 +1,7 @@
 """
-Arnold launcher -- local server with SSH tunnel to production API.
+Betty launcher -- local server with SSH tunnel to production API.
 
-Double-click arnold.bat or run `python launch.py` to start.
+Double-click betty.bat or run `python launch.py` to start.
 Kills any previous instance, opens SSH tunnel to production API,
 starts local server, and auto-opens browser.
 """
@@ -64,15 +64,21 @@ def _kill_port(port: int, label: str):
                 timeout=5,
             )
             if check.stdout.strip() == pid:
-                print(f"[arnold] Killing old {label} (PID {pid}) on port {port}")
+                print(f"[betty] Killing old {label} (PID {pid}) on port {port}")
                 subprocess.run(
-                    ["powershell.exe", "-Command", f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue"],
+                    [
+                        "powershell.exe",
+                        "-Command",
+                        f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue",
+                    ],
                     capture_output=True,
                     timeout=5,
                 )
                 killed = True
             else:
-                print(f"[arnold] Ghost socket on port {port} (PID {pid} no longer exists) — skipping kill")
+                print(
+                    f"[betty] Ghost socket on port {port} (PID {pid} no longer exists) — skipping kill"
+                )
     except Exception:
         pass
 
@@ -89,8 +95,14 @@ def _kill_port(port: int, label: str):
                 if f"127.0.0.1:{port}" in line and "LISTENING" in line:
                     pid = line.strip().split()[-1]
                     if pid.isdigit() and pid != "0":
-                        print(f"[arnold] Killing old {label} (PID {pid}) on port {port} [fallback]")
-                        subprocess.run(["taskkill", "/PID", pid, "/F"], capture_output=True, timeout=5)
+                        print(
+                            f"[betty] Killing old {label} (PID {pid}) on port {port} [fallback]"
+                        )
+                        subprocess.run(
+                            ["taskkill", "/PID", pid, "/F"],
+                            capture_output=True,
+                            timeout=5,
+                        )
                         killed = True
                         break
         except Exception:
@@ -130,10 +142,14 @@ def _kill_old_chromium():
                 if parts:
                     pid = parts[-1].strip()
                     if pid.isdigit():
-                        subprocess.run(["taskkill", "/PID", pid, "/F"], capture_output=True, timeout=5)
+                        subprocess.run(
+                            ["taskkill", "/PID", pid, "/F"],
+                            capture_output=True,
+                            timeout=5,
+                        )
                         killed += 1
         if killed:
-            print(f"[arnold] Killed {killed} orphaned Chromium process(es)")
+            print(f"[betty] Killed {killed} orphaned Chromium process(es)")
             time.sleep(1)  # Let profile lock release
     except Exception:
         pass
@@ -143,16 +159,24 @@ def _start_tunnel() -> bool:
     """Start SSH tunnel to production API. Returns True if ready."""
     if _port_in_use(TUNNEL_LOCAL_PORT):
         try:
-            urllib.request.urlopen(f"http://127.0.0.1:{TUNNEL_LOCAL_PORT}/health", timeout=3)
-            print(f"[arnold] Existing tunnel on localhost:{TUNNEL_LOCAL_PORT} is healthy")
+            urllib.request.urlopen(
+                f"http://127.0.0.1:{TUNNEL_LOCAL_PORT}/health", timeout=3
+            )
+            print(
+                f"[betty] Existing tunnel on localhost:{TUNNEL_LOCAL_PORT} is healthy"
+            )
             return True
         except Exception:
-            print(f"[arnold] Stale tunnel on localhost:{TUNNEL_LOCAL_PORT} -- killing it")
+            print(
+                f"[betty] Stale tunnel on localhost:{TUNNEL_LOCAL_PORT} -- killing it"
+            )
             _kill_port(TUNNEL_LOCAL_PORT, "stale tunnel")
             time.sleep(1)
 
     # Backend publishes 127.0.0.1:8000 on the server — tunnel straight through
-    print(f"[arnold] Opening SSH tunnel to {SERVER} -> localhost:{TUNNEL_REMOTE_PORT}...")
+    print(
+        f"[betty] Opening SSH tunnel to {SERVER} -> localhost:{TUNNEL_REMOTE_PORT}..."
+    )
 
     proc = subprocess.Popen(
         [
@@ -181,21 +205,25 @@ def _start_tunnel() -> bool:
         if _port_in_use(TUNNEL_LOCAL_PORT):
             # Port is open — tunnel is established. Verify API responds.
             try:
-                urllib.request.urlopen(f"http://127.0.0.1:{TUNNEL_LOCAL_PORT}/health", timeout=2)
-                print(f"[arnold] SSH tunnel ready on localhost:{TUNNEL_LOCAL_PORT}")
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{TUNNEL_LOCAL_PORT}/health", timeout=2
+                )
+                print(f"[betty] SSH tunnel ready on localhost:{TUNNEL_LOCAL_PORT}")
                 return True
             except Exception:
                 if i > 10:
                     # Port open for 5+ seconds but health not responding — accept anyway
-                    print(f"[arnold] SSH tunnel open on localhost:{TUNNEL_LOCAL_PORT} (health check skipped)")
+                    print(
+                        f"[betty] SSH tunnel open on localhost:{TUNNEL_LOCAL_PORT} (health check skipped)"
+                    )
                     return True
 
     # Check if SSH process died
     if proc.poll() is not None:
         stderr = proc.stderr.read().decode() if proc.stderr else ""
-        print(f"[arnold] ERROR: SSH tunnel exited: {stderr.strip()}")
+        print(f"[betty] ERROR: SSH tunnel exited: {stderr.strip()}")
     else:
-        print("[arnold] ERROR: Tunnel failed to start (port not open after 15s)")
+        print("[betty] ERROR: Tunnel failed to start (port not open after 15s)")
     return False
 
 
@@ -223,23 +251,35 @@ def _start_mirror():
             req = urllib.request.Request(f"{LOCAL_URL}/mirror/start", method="POST")
             urllib.request.urlopen(req, timeout=120).read()
             # Verify the unlimited tabs actually opened
-            tabs_resp = urllib.request.urlopen(f"{LOCAL_URL}/mirror/browser/tabs", timeout=5).read()
+            tabs_resp = urllib.request.urlopen(
+                f"{LOCAL_URL}/mirror/browser/tabs", timeout=5
+            ).read()
             import json as _json
 
-            tab_urls = [t.get("url", "") for t in _json.loads(tabs_resp).get("tabs", [])]
+            tab_urls = [
+                t.get("url", "") for t in _json.loads(tabs_resp).get("tabs", [])
+            ]
             unlimited_open = sum(
                 1
-                for d in ("pinnacle.se", "polymarket.com", "cloudbet.com", "kalshi.com", "rainbet.com")
+                for d in (
+                    "pinnacle.se",
+                    "polymarket.com",
+                    "cloudbet.com",
+                    "kalshi.com",
+                    "rainbet.com",
+                )
                 if any(d in u for u in tab_urls)
             )
             if unlimited_open >= 5:
-                print(f"[arnold] Mirror started — {unlimited_open}/5 unlimited tabs open")
+                print(
+                    f"[betty] Mirror started — {unlimited_open}/5 unlimited tabs open"
+                )
                 return
             last_err = f"only {unlimited_open}/5 unlimited tabs visible"
         except Exception as e:
             last_err = str(e)
         time.sleep(5)
-    print(f"[arnold] Mirror start did not reach 4 unlimited tabs in 60s: {last_err}")
+    print(f"[betty] Mirror start did not reach 4 unlimited tabs in 60s: {last_err}")
 
 
 def _open_browser_when_ready():
@@ -256,18 +296,18 @@ def _open_browser_when_ready():
             # Eager-open the unlimited counter tabs once the server is up
             _start_mirror()
             if is_restart:
-                print("[arnold] Restart detected — skipping browser open")
+                print("[betty] Restart detected — skipping browser open")
                 return
             webbrowser.open(LOCAL_URL)
             return
         except Exception:
             pass
-    print("[arnold] Server did not start in 60s -- open manually")
+    print("[betty] Server did not start in 60s -- open manually")
 
 
 def main(open_browser: bool = True):
-    print("[arnold] Arnold Launcher")
-    print(f"[arnold] Server: {SERVER}")
+    print("[betty] Betty Launcher")
+    print(f"[betty] Server: {SERVER}")
 
     # Kill any previous instance (server, tunnel, and stale Chromium)
     _kill_port(LOCAL_PORT, "server")
@@ -276,28 +316,36 @@ def main(open_browser: bool = True):
 
     # Check SSH connectivity
     if not _port_in_use(TUNNEL_LOCAL_PORT):
-        print(f"[arnold] Checking server {SERVER}...")
+        print(f"[betty] Checking server {SERVER}...")
         try:
             result = subprocess.run(
-                ["ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes", f"root@{SERVER}", "echo ok"],
+                [
+                    "ssh",
+                    "-o",
+                    "ConnectTimeout=10",
+                    "-o",
+                    "BatchMode=yes",
+                    f"root@{SERVER}",
+                    "echo ok",
+                ],
                 capture_output=True,
                 text=True,
                 timeout=15,
             )
             if result.returncode != 0:
-                print(f"[arnold] WARNING: Cannot SSH to {SERVER} — will retry tunnel")
+                print(f"[betty] WARNING: Cannot SSH to {SERVER} — will retry tunnel")
             else:
-                print("[arnold] Server reachable")
+                print("[betty] Server reachable")
         except subprocess.TimeoutExpired:
-            print("[arnold] WARNING: SSH timed out — will retry tunnel")
+            print("[betty] WARNING: SSH timed out — will retry tunnel")
         except FileNotFoundError:
-            print("[arnold] FAILED: ssh not found. Install OpenSSH.")
+            print("[betty] FAILED: ssh not found. Install OpenSSH.")
             input("Press Enter to exit...")
             return
 
     # Start SSH tunnel + watchdog that auto-restarts on drop
     if not _start_tunnel():
-        print("[arnold] Cannot connect to production API. Check SSH key and server.")
+        print("[betty] Cannot connect to production API. Check SSH key and server.")
         input("Press Enter to exit...")
         return
 
@@ -319,7 +367,7 @@ def main(open_browser: bool = True):
         while True:
             time.sleep(20)
             if not _port_in_use(TUNNEL_LOCAL_PORT):
-                print("[arnold] Tunnel port closed — restarting...")
+                print("[betty] Tunnel port closed — restarting...")
                 consecutive_fails = 0
                 _kill_port(TUNNEL_LOCAL_PORT, "dead tunnel")
                 time.sleep(1)
@@ -336,7 +384,7 @@ def main(open_browser: bool = True):
                 consecutive_fails += 1
                 if consecutive_fails >= 6:
                     print(
-                        f"[arnold] Tunnel zombie (port open, {consecutive_fails} health fails) "
+                        f"[betty] Tunnel zombie (port open, {consecutive_fails} health fails) "
                         f"— killing and restarting..."
                     )
                     _kill_port(TUNNEL_LOCAL_PORT, "zombie tunnel")
@@ -355,8 +403,8 @@ def main(open_browser: bool = True):
     if open_browser:
         threading.Thread(target=_open_browser_when_ready, daemon=True).start()
 
-    print("[arnold] Starting local server...")
-    print("[arnold] Press Ctrl+C to stop\n")
+    print("[betty] Starting local server...")
+    print("[betty] Press Ctrl+C to stop\n")
 
     import uvicorn
 
@@ -381,5 +429,5 @@ if __name__ == "__main__":
         except KeyboardInterrupt:
             break
         except Exception as e:
-            print(f"[arnold] Error: {e}")
+            print(f"[betty] Error: {e}")
             break

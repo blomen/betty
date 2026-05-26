@@ -1,6 +1,6 @@
-# Arnold local launcher (PowerShell)
+# Betty local launcher (PowerShell)
 #
-# Replaces arnold.bat's logic. PowerShell-only so we never go through cmd.exe's
+# Replaces betty.bat's logic. PowerShell-only so we never go through cmd.exe's
 # batch interpreter — that's where the "Terminate batch job (Y/N)?" prompt
 # comes from when Stop-Process inside kill.ps1 fires a CTRL_BREAK on the
 # console. PowerShell has no equivalent prompt.
@@ -22,14 +22,14 @@ if (-not (Test-Path $dataDir)) {
     New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
 }
 
-# Exclusive file lock — opens with FileShare.None so a second arnold.ps1 fails
+# Exclusive file lock — opens with FileShare.None so a second betty.ps1 fails
 # fast instead of racing into kill+launch.
 $lockStream = $null
 try {
     $lockStream = [System.IO.File]::Open($lockFile, 'OpenOrCreate', 'Write', 'None')
 } catch {
-    Write-Host "[arnold] another instance is already running (lock held: $lockFile)"
-    Write-Host '[arnold] close it first, or run .\kill.ps1 to clear stale state'
+    Write-Host "[betty] another instance is already running (lock held: $lockFile)"
+    Write-Host '[betty] close it first, or run .\kill.ps1 to clear stale state'
     Read-Host 'Press Enter to exit'
     exit 1
 }
@@ -37,7 +37,7 @@ try {
 try {
     & (Join-Path $localDir 'kill.ps1')
     if ($LASTEXITCODE -ne 0) {
-        Write-Host '[arnold] kill.ps1 reported leftover state — aborting launch'
+        Write-Host '[betty] kill.ps1 reported leftover state — aborting launch'
         Read-Host 'Press Enter to exit'
         exit 1
     }

@@ -108,7 +108,9 @@ async def _check_login(page: Page, intel: dict | None) -> bool:
                 }"""
             )
             if isinstance(result, dict) and result.get("logged_in"):
-                logger.info(f"[polymarket] Login detected (attempt {attempt + 1}, signals: {result.get('signals')})")
+                logger.info(
+                    f"[polymarket] Login detected (attempt {attempt + 1}, signals: {result.get('signals')})"
+                )
                 return True
         except Exception as e:
             logger.debug(f"[polymarket] check_login attempt {attempt + 1} raised: {e}")
@@ -337,7 +339,9 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
         return []
 
     if not raw:
-        logger.warning(f"[polymarket] history scrape returned 0 rows (url={current_url[:80]})")
+        logger.warning(
+            f"[polymarket] history scrape returned 0 rows (url={current_url[:80]})"
+        )
         return []
 
     _STATUS_MAP = {
@@ -377,7 +381,7 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
         # hardcoded "1x2" which broke per-bet market lookup downstream.
         # outcome stays as raw "Yes"/"No" — downstream _user_picked_opp
         # context (persisted across restarts) overrides with the correct
-        # home/away mapping when present. Bets placed outside arnold get
+        # home/away mapping when present. Bets placed outside betty get
         # the raw value and won't analyze cleanly until manually corrected.
         entries.append(
             HistoryEntry(
@@ -392,7 +396,9 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
             )
         )
 
-    logger.info(f"[polymarket] sync_history: {len(entries)} entries (from {len(raw)} scraped)")
+    logger.info(
+        f"[polymarket] sync_history: {len(entries)} entries (from {len(raw)} scraped)"
+    )
     return entries
 
 
@@ -404,7 +410,9 @@ async def _scrape_portfolio(page: Page, intel: dict | None) -> list[dict]:
     """
     current_url = page.url or ""
     if "/portfolio" not in current_url or "tab=history" in current_url:
-        logger.debug(f"[polymarket] _scrape_portfolio: tab is on {current_url[:80]} (not positions) — skipping")
+        logger.debug(
+            f"[polymarket] _scrape_portfolio: tab is on {current_url[:80]} (not positions) — skipping"
+        )
         return []
 
     # Polymarket SPA hydrates the positions list ~2-4s AFTER domcontentloaded.
@@ -474,7 +482,9 @@ async def _scrape_portfolio(page: Page, intel: dict | None) -> list[dict]:
         cents = [float(m) for m in re.findall(r"([\d.]+)\s*¢", text)]
         avg_price = cents[0] if cents else None
         now_price = cents[1] if len(cents) >= 2 else None
-        dollar_values = [float(m.replace(",", "")) for m in re.findall(r"\$([\d,.]+)", text)]
+        dollar_values = [
+            float(m.replace(",", "")) for m in re.findall(r"\$([\d,.]+)", text)
+        ]
         shares_match = re.search(r"([\d.]+)\s*shares", text)
         shares = float(shares_match.group(1)) if shares_match else None
         market = text[:60].split("\n")[0] if text else ""
@@ -557,15 +567,23 @@ async def _claim_banner(page: Page, intel: dict | None) -> dict:
             )
             if confirm_info.get("found"):
                 try:
-                    confirm_locator = page.get_by_role("button", name=re.compile(r"^Claim\s+\$"))
+                    confirm_locator = page.get_by_role(
+                        "button", name=re.compile(r"^Claim\s+\$")
+                    )
                     await confirm_locator.first.click(timeout=5000)
                     await asyncio.sleep(3)
                     await _dismiss_modal(page)
-                    logger.info(f"[polymarket] Claim confirmed: {confirm_info.get('text')}")
+                    logger.info(
+                        f"[polymarket] Claim confirmed: {confirm_info.get('text')}"
+                    )
                     return {"claimed": True, "amount": confirm_info.get("text")}
                 except Exception as e:
                     logger.warning(f"[polymarket] confirm click failed: {e}")
-                    return {"claimed": False, "amount": None, "error": f"confirm_failed:{e}"}
+                    return {
+                        "claimed": False,
+                        "amount": None,
+                        "error": f"confirm_failed:{e}",
+                    }
 
         # No confirm button appeared — banner click may have failed, or auto-confirmed.
         # Re-check if banner is gone (auto-success) vs still there (click ignored).
@@ -580,7 +598,9 @@ async def _claim_banner(page: Page, intel: dict | None) -> dict:
             }"""
         )
         if still_there:
-            logger.warning("[polymarket] Claim banner still visible — click didn't register")
+            logger.warning(
+                "[polymarket] Claim banner still visible — click didn't register"
+            )
             return {"claimed": False, "amount": None, "error": "banner_still_visible"}
         logger.info("[polymarket] Claim banner gone — assumed auto-confirmed")
         return {"claimed": True, "amount": row_text}
@@ -597,7 +617,9 @@ async def _redeem_all(page: Page, intel: dict | None) -> dict:
     next sync cycle clicks Redeem; otherwise we just leave it alone.
     """
     if "/portfolio" not in (page.url or "") or "tab=history" in (page.url or ""):
-        logger.debug(f"[polymarket] _redeem_all: tab is on {(page.url or '')[:80]} (not positions) — skipping")
+        logger.debug(
+            f"[polymarket] _redeem_all: tab is on {(page.url or '')[:80]} (not positions) — skipping"
+        )
         return {"redeemed": 0, "skipped_open": 0, "errors": 0, "total": 0}
 
     # Enumerate Won/Lost rows that have a visible Redeem button.
@@ -639,7 +661,9 @@ async def _redeem_all(page: Page, intel: dict | None) -> dict:
             # Re-fetch visible count (DOM may have changed after prior clicks)
             live_count = await redeem_buttons.count()
             if live_count == 0:
-                logger.info(f"[polymarket] No more Redeem buttons after {redeemed} clicks")
+                logger.info(
+                    f"[polymarket] No more Redeem buttons after {redeemed} clicks"
+                )
                 break
             # Click the first visible one — subsequent iterations get the next first
             # because the clicked one becomes non-finished after confirm.
@@ -672,7 +696,9 @@ async def _redeem_all(page: Page, intel: dict | None) -> dict:
                     break
             if confirmed:
                 try:
-                    confirm_locator = page.get_by_role("button", name=re.compile(r"^Redeem\s+\$"))
+                    confirm_locator = page.get_by_role(
+                        "button", name=re.compile(r"^Redeem\s+\$")
+                    )
                     await confirm_locator.first.click(timeout=5000)
                     await asyncio.sleep(3)
                     await _dismiss_modal(page)
@@ -683,7 +709,9 @@ async def _redeem_all(page: Page, intel: dict | None) -> dict:
                     errors += 1
                     await _dismiss_modal(page)
             else:
-                logger.warning(f"[polymarket] Redeem #{i + 1}: no confirm button appeared")
+                logger.warning(
+                    f"[polymarket] Redeem #{i + 1}: no confirm button appeared"
+                )
                 await _dismiss_modal(page)
                 errors += 1
         except Exception as e:
@@ -967,7 +995,9 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None):
     market = _g("market").lower()
     home = (_g("display_home") or _g("poly_home")).strip().lower()
     away = (_g("display_away") or _g("poly_away")).strip().lower()
-    bet_id = getattr(bet, "bet_id", 0) if not isinstance(bet, dict) else bet.get("bet_id", 0)
+    bet_id = (
+        getattr(bet, "bet_id", 0) if not isinstance(bet, dict) else bet.get("bet_id", 0)
+    )
     # Spread/total bets carry a `point` (line value). Fetch it from the bet
     # so the locator can disambiguate handicap buttons (e.g. KTC -1.5 vs +1.5)
     # and Over/Under buttons by their line.
@@ -1032,7 +1062,12 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None):
     try:
         target_info = await page.evaluate(
             _LOCATE_TARGET_JS,
-            {"targetName": target, "market": market, "point": point_val, "outcome": outcome},
+            {
+                "targetName": target,
+                "market": market,
+                "point": point_val,
+                "outcome": outcome,
+            },
         )
     except Exception as e:
         logger.warning(f"[polymarket] prep locate failed: {e}")
@@ -1174,7 +1209,12 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None):
     try:
         click_result = await page.evaluate(
             click_js,
-            {"targetName": target, "market": market, "point": point_val, "outcome": outcome},
+            {
+                "targetName": target,
+                "market": market,
+                "point": point_val,
+                "outcome": outcome,
+            },
         )
         if not click_result or not click_result.get("clicked"):
             logger.warning(f"[polymarket] JS click failed: {click_result}")
@@ -1183,7 +1223,9 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None):
                 locator = page.get_by_role("button", name=full_text, exact=True).first
                 await locator.scroll_into_view_if_needed(timeout=3000)
                 await locator.click(timeout=5000)
-                logger.info(f"[polymarket] Clicked '{full_text}' via locator (JS fallback)")
+                logger.info(
+                    f"[polymarket] Clicked '{full_text}' via locator (JS fallback)"
+                )
             except Exception:
                 return PlacementResult(
                     status="failed",
@@ -1194,7 +1236,9 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None):
             logger.info(f"[polymarket] Clicked '{click_result.get('text')}' via JS")
     except Exception as e:
         logger.warning(f"[polymarket] click eval raised: {e}")
-        return PlacementResult(status="failed", bet_id=bet_id, reason=f"click_eval_failed:{e}")
+        return PlacementResult(
+            status="failed", bet_id=bet_id, reason=f"click_eval_failed:{e}"
+        )
 
     # Cents must be 1-99 on Polymarket. Reject out-of-band values so a stray
     # greedy regex match (e.g. "519" from a concatenated line+cents) can't
@@ -1225,7 +1269,9 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None):
             try:
                 filled = await page.evaluate(_FILL_JS, stake_str)
             except Exception as e:
-                logger.warning(f"[polymarket] stake fill attempt {attempt + 1} failed: {e}")
+                logger.warning(
+                    f"[polymarket] stake fill attempt {attempt + 1} failed: {e}"
+                )
                 filled = None
             if filled and filled.get("filled"):
                 # Verify the value actually stuck (controlled-input race).
@@ -1246,16 +1292,22 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None):
                 except Exception:
                     current = ""
                 if current and current.replace(",", ".") == stake_str:
-                    logger.info(f"[polymarket] Filled Amount input: ${stake_str} (attempt {attempt + 1})")
+                    logger.info(
+                        f"[polymarket] Filled Amount input: ${stake_str} (attempt {attempt + 1})"
+                    )
                     break
                 logger.warning(
                     f"[polymarket] Fill cleared (attempt {attempt + 1}): set='{stake_str}' got='{current}' — retrying"
                 )
             else:
-                logger.warning(f"[polymarket] Amount input not found (attempt {attempt + 1})")
+                logger.warning(
+                    f"[polymarket] Amount input not found (attempt {attempt + 1})"
+                )
             await asyncio.sleep(0.8)
         else:
-            logger.warning(f"[polymarket] Amount fill failed after 3 attempts (stake=${stake_str})")
+            logger.warning(
+                f"[polymarket] Amount fill failed after 3 attempts (stake=${stake_str})"
+            )
 
     return PlacementResult(
         status="prepped",
@@ -1291,7 +1343,11 @@ async def _check_live_price(page: Page, bet, intel: dict | None = None):
                 val = meta.get(attr)
         return str(val or "")
 
-    fair_odds = getattr(bet, "fair_odds", None) if not isinstance(bet, dict) else bet.get("fair_odds")
+    fair_odds = (
+        getattr(bet, "fair_odds", None)
+        if not isinstance(bet, dict)
+        else bet.get("fair_odds")
+    )
     if not fair_odds:
         return None, None
 
@@ -1348,7 +1404,9 @@ async def restore_amount_if_cleared(page: Page, stake: float) -> bool:
         logger.debug(f"[polymarket] amount-keeper fill raised: {e}")
         return False
     if result and result.get("filled"):
-        logger.info(f"[polymarket] Amount auto-restored to ${stake_str} (was '{current}')")
+        logger.info(
+            f"[polymarket] Amount auto-restored to ${stake_str} (was '{current}')"
+        )
         return True
     return False
 

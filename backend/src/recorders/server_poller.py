@@ -1,7 +1,7 @@
 """Server-side 24/7 Polymarket position recorder.
 
 Runs the Polymarket wallet-API recorder on the Hetzner backend so positions
-are recorded whether or not the local ``arnold.bat`` client is open. The
+are recorded whether or not the local ``betty.bat`` client is open. The
 recorder is pure HTTP (public ``data-api.polymarket.com``, wallet-keyed — no
 auth, no browser, no Playwright), so it runs naturally as a backend asyncio
 task instead of inside the local client's auto-poller.
@@ -30,8 +30,8 @@ from . import polymarket_api
 logger = logging.getLogger(__name__)
 
 # The public data-api is free + cheap — poll often enough that a freshly
-# placed Polymarket bet shows in Arnold within ~1.5 min (vs the old 5-min
-# local poller, which also only ran while arnold.bat was open).
+# placed Polymarket bet shows in Betty within ~1.5 min (vs the old 5-min
+# local poller, which also only ran while betty.bat was open).
 POLL_INTERVAL_SEC = float(os.environ.get("POSITION_RECORDER_INTERVAL_SEC", "90"))
 # Let uvicorn finish binding + the app warm up before the first loopback call.
 STARTUP_DELAY_SEC = 30.0

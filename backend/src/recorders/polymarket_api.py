@@ -7,7 +7,7 @@ For each position:
 1. Compute decimal odds from avgPrice using the same fee formula as the
    polymarket extractor (so stored odds are POST-fee).
 2. Compute USDC stake = avgPrice × size.
-3. Match the position's market title against arnold's events table to find
+3. Match the position's market title against betty's events table to find
    event_id + map outcome to home/away.
 4. POST to /api/bets with external_placement=True (skips balance check).
 
@@ -118,7 +118,7 @@ async def fetch_open_positions(wallet: str) -> list[RecoveredPosition]:
 
 
 # ── Event matching ──
-# Given a polymarket market title + outcome name, find matching arnold event_id
+# Given a polymarket market title + outcome name, find matching betty event_id
 # and map outcome to home/away. Uses team-name fuzzy match: both teams must
 # appear in the title, then outcome_name is compared to home/away to pick side.
 
@@ -244,7 +244,7 @@ async def sync(
 
         event_id, outcome = match_event_and_outcome(pos, events)
         if not event_id or not outcome:
-            # NO arnold-event match — but this is a REAL on-chain position, so
+            # NO betty-event match — but this is a REAL on-chain position, so
             # it MUST still be recorded. Matching fails routinely: apostrophe /
             # punctuation gaps ("Anyone's Legend" vs "anyones legend"), and
             # un-extracted low-tier markets (ITF Doboj, minor esports). Gating

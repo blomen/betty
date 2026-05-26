@@ -1,8 +1,11 @@
-"""Shared test fixtures for Arnold tests."""
+"""Shared test fixtures for Betty tests."""
+
 import os
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
 from src.db.models import Base
 
 

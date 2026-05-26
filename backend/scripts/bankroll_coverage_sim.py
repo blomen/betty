@@ -1,5 +1,5 @@
 """
-Arnold — Bankroll Coverage & Min Expected Profit Simulation
+Betty — Bankroll Coverage & Min Expected Profit Simulation
 ================================================================
 How much bankroll do you need to play most value bets?
 What happens if you lower min_expected_profit from 2.0 to 0.5?
@@ -11,11 +11,10 @@ How many bets do we miss, and what's the profit impact?
 Run: python scripts/bankroll_coverage_sim.py
 """
 
+import io
 import random
 import sys
-import io
 from dataclasses import dataclass
-from typing import List, Tuple
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
@@ -28,36 +27,36 @@ DEFAULT_MIN_EXPECTED_PROFIT = 2.0
 
 # ── Edge distributions (from growth_simulation.py) ──
 SOFT_VALUE_EDGE_DIST = [
-    (2.0,  4.0,  0.35, 3.50),
-    (4.0,  6.0,  0.25, 4.10),
-    (6.0, 10.0,  0.20, 5.50),
+    (2.0, 4.0, 0.35, 3.50),
+    (4.0, 6.0, 0.25, 4.10),
+    (6.0, 10.0, 0.20, 5.50),
     (10.0, 20.0, 0.15, 8.10),
     (20.0, 35.0, 0.05, 11.40),
 ]
 POLYMARKET_EDGE_DIST = [
-    (3.0,  5.0,  0.40, 2.80),
-    (5.0,  8.0,  0.30, 3.40),
-    (8.0, 15.0,  0.20, 4.50),
+    (3.0, 5.0, 0.40, 2.80),
+    (5.0, 8.0, 0.30, 3.40),
+    (8.0, 15.0, 0.20, 4.50),
     (15.0, 30.0, 0.10, 6.00),
 ]
 PINNACLE_REVERSE_EDGE_DIST = [
-    (3.0,  5.0,  0.35, 4.50),
-    (5.0,  8.0,  0.30, 6.00),
-    (8.0, 12.0,  0.25, 8.50),
+    (3.0, 5.0, 0.35, 4.50),
+    (5.0, 8.0, 0.30, 6.00),
+    (8.0, 12.0, 0.25, 8.50),
     (12.0, 20.0, 0.10, 11.00),
 ]
 SPECIALS_EDGE_DIST = [
-    (4.0,  8.0,  0.40, 3.00),
-    (8.0, 15.0,  0.35, 4.00),
+    (4.0, 8.0, 0.40, 3.00),
+    (8.0, 15.0, 0.35, 4.00),
     (15.0, 30.0, 0.20, 5.50),
     (30.0, 50.0, 0.05, 8.00),
 ]
 
 STREAM_WEIGHTS = [
-    ("soft_value",       0.913, SOFT_VALUE_EDGE_DIST),
-    ("polymarket",       0.071, POLYMARKET_EDGE_DIST),
+    ("soft_value", 0.913, SOFT_VALUE_EDGE_DIST),
+    ("polymarket", 0.071, POLYMARKET_EDGE_DIST),
     ("pinnacle_reverse", 0.014, PINNACLE_REVERSE_EDGE_DIST),
-    ("specials",         0.002, SPECIALS_EDGE_DIST),
+    ("specials", 0.002, SPECIALS_EDGE_DIST),
 ]
 
 NUM_SIMS = 5000
@@ -130,7 +129,7 @@ def calculate_stake_with_guards(
     odds: float,
     min_expected_profit: float,
     single_bet_cap_pct: float = 0.03,
-) -> Tuple[float, str]:
+) -> tuple[float, str]:
     """Returns (stake, skip_reason). skip_reason="" if playable."""
     edge = edge_pct / 100.0
     frac = kelly_fraction(edge_pct)
@@ -154,6 +153,7 @@ def calculate_stake_with_guards(
 # SIMULATION 1: Coverage analysis — what % of bets can you play?
 # =====================================================================
 
+
 def coverage_analysis():
     """For each bankroll level and min_expected_profit, sample 10k bets
     and check how many pass the guards."""
@@ -172,9 +172,9 @@ def coverage_analysis():
     for mev in min_evs:
         print(f"  {'mEP=%.1f' % mev:>10s}", end="")
     print()
-    print(f"  {'-'*10}", end="")
+    print(f"  {'-' * 10}", end="")
     for _ in min_evs:
-        print(f"  {'-'*10}", end="")
+        print(f"  {'-' * 10}", end="")
     print()
 
     for bankroll in bankrolls:
@@ -190,13 +190,14 @@ def coverage_analysis():
             print(f"  {pct_play:>9.1f}%", end="")
         print()
 
-    print(f"\n  mEP = min expected profit (stake * edge). Default = 2.0 kr")
-    print(f"  mEP=0.0 means only min_stake guard applies (no EV filter)")
+    print("\n  mEP = min expected profit (stake * edge). Default = 2.0 kr")
+    print("  mEP=0.0 means only min_stake guard applies (no EV filter)")
 
 
 # =====================================================================
 # SIMULATION 2: Which bets get skipped? Profile of missed bets
 # =====================================================================
+
 
 def skipped_bet_profile():
     """Analyze the characteristics of bets skipped by min_expected_profit."""
@@ -227,37 +228,42 @@ def skipped_bet_profile():
             played.append(bet_info)
 
     total = n_samples
-    print(f"\n  Played:           {len(played):>6,}  ({len(played)/total*100:.1f}%)")
-    print(f"  Skipped (min EV): {len(skipped_by_ev):>6,}  ({len(skipped_by_ev)/total*100:.1f}%)")
-    print(f"  Skipped (stake):  {len(skipped_by_stake):>6,}  ({len(skipped_by_stake)/total*100:.1f}%)")
+    print(f"\n  Played:           {len(played):>6,}  ({len(played) / total * 100:.1f}%)")
+    print(f"  Skipped (min EV): {len(skipped_by_ev):>6,}  ({len(skipped_by_ev) / total * 100:.1f}%)")
+    print(f"  Skipped (stake):  {len(skipped_by_stake):>6,}  ({len(skipped_by_stake) / total * 100:.1f}%)")
 
     if skipped_by_ev:
         edges = [b[0] for b in skipped_by_ev]
         odds_list = [b[1] for b in skipped_by_ev]
         print(f"\n  SKIPPED BY MIN EV (n={len(skipped_by_ev):,}):")
-        print(f"    Edge:  min={min(edges):.1f}%  median={sorted(edges)[len(edges)//2]:.1f}%  max={max(edges):.1f}%")
-        print(f"    Odds:  min={min(odds_list):.2f}  median={sorted(odds_list)[len(odds_list)//2]:.2f}  max={max(odds_list):.2f}")
+        print(f"    Edge:  min={min(edges):.1f}%  median={sorted(edges)[len(edges) // 2]:.1f}%  max={max(edges):.1f}%")
+        print(
+            f"    Odds:  min={min(odds_list):.2f}  median={sorted(odds_list)[len(odds_list) // 2]:.2f}  max={max(odds_list):.2f}"
+        )
 
         # By stream
         stream_counts = {}
         for _, _, s in skipped_by_ev:
             stream_counts[s] = stream_counts.get(s, 0) + 1
-        print(f"    By stream:")
+        print("    By stream:")
         for s in ["soft_value", "polymarket", "pinnacle_reverse", "specials"]:
             c = stream_counts.get(s, 0)
-            print(f"      {s:<20s}  {c:>5,}  ({c/len(skipped_by_ev)*100:.1f}%)")
+            print(f"      {s:<20s}  {c:>5,}  ({c / len(skipped_by_ev) * 100:.1f}%)")
 
     if played:
         edges = [b[0] for b in played]
         odds_list = [b[1] for b in played]
         print(f"\n  PLAYED (n={len(played):,}):")
-        print(f"    Edge:  min={min(edges):.1f}%  median={sorted(edges)[len(edges)//2]:.1f}%  max={max(edges):.1f}%")
-        print(f"    Odds:  min={min(odds_list):.2f}  median={sorted(odds_list)[len(odds_list)//2]:.2f}  max={max(odds_list):.2f}")
+        print(f"    Edge:  min={min(edges):.1f}%  median={sorted(edges)[len(edges) // 2]:.1f}%  max={max(edges):.1f}%")
+        print(
+            f"    Odds:  min={min(odds_list):.2f}  median={sorted(odds_list)[len(odds_list) // 2]:.2f}  max={max(odds_list):.2f}"
+        )
 
 
 # =====================================================================
 # SIMULATION 3: Monte Carlo — growth with different min_expected_profit
 # =====================================================================
+
 
 @dataclass
 class GrowthResult:
@@ -355,16 +361,16 @@ def growth_simulation():
     min_evs = [0.0, 0.5, 1.0, 2.0]
 
     for bankroll in bankrolls:
-        print(f"\n  {'─'*86}")
+        print(f"\n  {'─' * 86}")
         print(f"  Starting bankroll: {bankroll:,} kr")
-        print(f"  {'─'*86}")
+        print(f"  {'─' * 86}")
 
-        print(f"\n  {'mEP':>5s}  {'Med Final':>10s}  {'Med Profit':>11s}  {'Growth':>8s}  "
-              f"{'Played':>7s}  {'Skipped':>8s}  {'Play%':>6s}  "
-              f"{'Missed EV':>10s}  {'Ruin%':>6s}")
-        print(f"  {'-'*5}  {'-'*10}  {'-'*11}  {'-'*8}  "
-              f"{'-'*7}  {'-'*8}  {'-'*6}  "
-              f"{'-'*10}  {'-'*6}")
+        print(
+            f"\n  {'mEP':>5s}  {'Med Final':>10s}  {'Med Profit':>11s}  {'Growth':>8s}  "
+            f"{'Played':>7s}  {'Skipped':>8s}  {'Play%':>6s}  "
+            f"{'Missed EV':>10s}  {'Ruin%':>6s}"
+        )
+        print(f"  {'-' * 5}  {'-' * 10}  {'-' * 11}  {'-' * 8}  {'-' * 7}  {'-' * 8}  {'-' * 6}  {'-' * 10}  {'-' * 6}")
 
         for mev in min_evs:
             results = []
@@ -387,14 +393,17 @@ def growth_simulation():
             play_pct = med_played / max(1, med_played + med_skipped) * 100
             growth = (med_final / bankroll - 1) * 100
 
-            print(f"  {mev:>5.1f}  {med_final:>10,.0f}  {med_profit:>+10,.0f}  {growth:>+7.0f}%  "
-                  f"{med_played:>7,.0f}  {med_skipped:>8,.0f}  {play_pct:>5.1f}%  "
-                  f"{med_missed:>+9,.0f}  {ruin_pct:>5.1f}%")
+            print(
+                f"  {mev:>5.1f}  {med_final:>10,.0f}  {med_profit:>+10,.0f}  {growth:>+7.0f}%  "
+                f"{med_played:>7,.0f}  {med_skipped:>8,.0f}  {play_pct:>5.1f}%  "
+                f"{med_missed:>+9,.0f}  {ruin_pct:>5.1f}%"
+            )
 
 
 # =====================================================================
 # SIMULATION 4: Bankroll needed to play X% of bets
 # =====================================================================
+
 
 def bankroll_threshold_analysis():
     """Find the bankroll needed to play 90%, 95%, 99% of all bets."""
@@ -411,7 +420,7 @@ def bankroll_threshold_analysis():
     for mev in min_evs:
         print(f"\n  min_expected_profit = {mev:.1f} kr")
         print(f"  {'Bankroll':>10s}  {'Playable':>9s}  {'Skipped':>8s}  {'Avg stake':>10s}  {'Avg EV/bet':>11s}")
-        print(f"  {'-'*10}  {'-'*9}  {'-'*8}  {'-'*10}  {'-'*11}")
+        print(f"  {'-' * 10}  {'-' * 9}  {'-' * 8}  {'-' * 10}  {'-' * 11}")
 
         for bankroll in bankrolls:
             playable = 0
@@ -439,12 +448,15 @@ def bankroll_threshold_analysis():
             elif pct_play >= 90:
                 marker = " <-- 90%+"
 
-            print(f"  {bankroll:>9,}  {pct_play:>8.1f}%  {skipped:>7,}  {avg_stake:>9.0f} kr  {avg_ev:>10.2f} kr{marker}")
+            print(
+                f"  {bankroll:>9,}  {pct_play:>8.1f}%  {skipped:>7,}  {avg_stake:>9.0f} kr  {avg_ev:>10.2f} kr{marker}"
+            )
 
 
 # =====================================================================
 # SIMULATION 5: Variance impact — does playing more bets reduce variance?
 # =====================================================================
+
 
 def variance_analysis():
     """Compare variance of outcomes with different min_expected_profit."""
@@ -457,10 +469,14 @@ def variance_analysis():
     bankroll = 10000
     min_evs = [0.0, 0.5, 1.0, 2.0]
 
-    print(f"\n  {'mEP':>5s}  {'P5':>9s}  {'P10':>9s}  {'P25':>9s}  {'Median':>9s}  "
-          f"{'P75':>9s}  {'P90':>9s}  {'P95':>9s}  {'Ruin%':>6s}  {'Bets':>6s}")
-    print(f"  {'-'*5}  {'-'*9}  {'-'*9}  {'-'*9}  {'-'*9}  "
-          f"{'-'*9}  {'-'*9}  {'-'*9}  {'-'*6}  {'-'*6}")
+    print(
+        f"\n  {'mEP':>5s}  {'P5':>9s}  {'P10':>9s}  {'P25':>9s}  {'Median':>9s}  "
+        f"{'P75':>9s}  {'P90':>9s}  {'P95':>9s}  {'Ruin%':>6s}  {'Bets':>6s}"
+    )
+    print(
+        f"  {'-' * 5}  {'-' * 9}  {'-' * 9}  {'-' * 9}  {'-' * 9}  "
+        f"{'-' * 9}  {'-' * 9}  {'-' * 9}  {'-' * 6}  {'-' * 6}"
+    )
 
     for mev in min_evs:
         results = []
@@ -472,21 +488,24 @@ def variance_analysis():
         bets = [r.bets_played for r in results]
         ruin_pct = sum(1 for r in results if r.ruin) / len(results) * 100
 
-        print(f"  {mev:>5.1f}  {pct(finals,5):>9,.0f}  {pct(finals,10):>9,.0f}  {pct(finals,25):>9,.0f}  "
-              f"{pct(finals,50):>9,.0f}  {pct(finals,75):>9,.0f}  {pct(finals,90):>9,.0f}  "
-              f"{pct(finals,95):>9,.0f}  {ruin_pct:>5.1f}%  {pct(bets,50):>5,.0f}")
+        print(
+            f"  {mev:>5.1f}  {pct(finals, 5):>9,.0f}  {pct(finals, 10):>9,.0f}  {pct(finals, 25):>9,.0f}  "
+            f"{pct(finals, 50):>9,.0f}  {pct(finals, 75):>9,.0f}  {pct(finals, 90):>9,.0f}  "
+            f"{pct(finals, 95):>9,.0f}  {ruin_pct:>5.1f}%  {pct(bets, 50):>5,.0f}"
+        )
 
 
 # =====================================================================
 # SIMULATION 6: Optimal min_expected_profit by bankroll
 # =====================================================================
 
+
 def optimal_threshold():
     """For each bankroll, find the min_expected_profit that maximizes median profit."""
 
     print("\n\n" + "=" * 90)
     print("  SIMULATION 6: OPTIMAL min_expected_profit BY BANKROLL")
-    print(f"  Which threshold maximizes median profit at each bankroll level?")
+    print("  Which threshold maximizes median profit at each bankroll level?")
     print(f"  {NUM_SIMS:,} runs | 35 bets/week | 52 weeks | no bonuses")
     print("=" * 90)
 
@@ -495,8 +514,10 @@ def optimal_threshold():
 
     for bankroll in bankrolls:
         print(f"\n  Bankroll: {bankroll:,} kr")
-        print(f"  {'mEP':>5s}  {'Med Profit':>11s}  {'Med Growth':>10s}  {'Play%':>6s}  {'Ruin%':>6s}  {'P10 Profit':>11s}")
-        print(f"  {'-'*5}  {'-'*11}  {'-'*10}  {'-'*6}  {'-'*6}  {'-'*11}")
+        print(
+            f"  {'mEP':>5s}  {'Med Profit':>11s}  {'Med Growth':>10s}  {'Play%':>6s}  {'Ruin%':>6s}  {'P10 Profit':>11s}"
+        )
+        print(f"  {'-' * 5}  {'-' * 11}  {'-' * 10}  {'-' * 6}  {'-' * 6}  {'-' * 11}")
 
         best_mev = 0.0
         best_profit = -999999
@@ -524,7 +545,9 @@ def optimal_threshold():
                 best_profit = med_profit
                 best_mev = mev
 
-            print(f"  {mev:>5.2f}  {med_profit:>+10,.0f}  {growth:>+9.0f}%  {play_pct:>5.1f}%  {ruin_pct:>5.1f}%  {p10_profit:>+10,.0f}")
+            print(
+                f"  {mev:>5.2f}  {med_profit:>+10,.0f}  {growth:>+9.0f}%  {play_pct:>5.1f}%  {ruin_pct:>5.1f}%  {p10_profit:>+10,.0f}"
+            )
 
         print(f"  >>> Best: mEP={best_mev:.2f} (median profit {best_profit:+,.0f} kr)")
 
@@ -532,6 +555,7 @@ def optimal_threshold():
 # =====================================================================
 # MAIN
 # =====================================================================
+
 
 def main():
     random.seed(42)

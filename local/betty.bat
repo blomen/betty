@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-REM Single-instance lock — prevents two arnold.bat invocations from racing each
+REM Single-instance lock — prevents two betty.bat invocations from racing each
 REM other into kill.bat + launch.py (the bug that left two zombie launchers
 REM fighting over port 8000). Uses an exclusive file handle on a lock file.
 set "LOCKFILE=%~dp0data\.launch.lock"
@@ -15,7 +15,7 @@ REM Open lockfile for exclusive write — call fails immediately if held.
   REM survived; non-zero exit means cleanup failed.
   call "%~dp0kill.bat"
   if errorlevel 1 (
-    echo [arnold] kill.bat reported leftover state — aborting launch
+    echo [betty] kill.bat reported leftover state — aborting launch
     pause
     exit /b 1
   )
@@ -36,8 +36,8 @@ REM Open lockfile for exclusive write — call fails immediately if held.
     start "" /WAIT /B python launch.py < nul
   )
 ) || (
-  echo [arnold] another instance is already running ^(lock held: %LOCKFILE%^)
-  echo [arnold] close it first, or run kill.bat to clear stale state
+  echo [betty] another instance is already running ^(lock held: %LOCKFILE%^)
+  echo [betty] close it first, or run kill.bat to clear stale state
   pause
   exit /b 1
 )

@@ -1,16 +1,16 @@
 @echo off
-REM Arnold local kill script — terminates everything spawned by arnold.bat:
+REM Betty local kill script — terminates everything spawned by betty.bat:
 REM   - python launch.py (launcher process) + ALL descendants
 REM   - uvicorn / FastAPI child of launcher
 REM   - SSH tunnel on port 18000 (any cmdline containing 18000:localhost)
-REM   - Chromium / Camoufox using arnold's persistent profile
+REM   - Chromium / Camoufox using betty's persistent profile
 REM   - Anything still listening on port 8000 / 18000
 REM
 REM Idempotent + safe to run multiple times. Polls up to 5s for ports to free.
 
 setlocal EnableDelayedExpansion
 
-echo [arnold-kill] killing local arnold processes...
+echo [betty-kill] killing local betty processes...
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ErrorActionPreference = 'SilentlyContinue';" ^
@@ -38,7 +38,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "  $pids = $conns | Select-Object -ExpandProperty OwningProcess -Unique | Where-Object { $_ -gt 0 -and $_ -ne $PID };" ^
   "  foreach ($procId in $pids) { Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue; [void]$killed.Add(\"port $port PID $procId\") }" ^
   "};" ^
-  "if ($killed.Count -eq 0) { Write-Host '[arnold-kill] nothing to kill' } else { foreach ($k in $killed) { Write-Host \"[arnold-kill] killed $k\" } };" ^
+  "if ($killed.Count -eq 0) { Write-Host '[betty-kill] nothing to kill' } else { foreach ($k in $killed) { Write-Host \"[betty-kill] killed $k\" } };" ^
   "$deadline = (Get-Date).AddSeconds(5);" ^
   "while ((Get-Date) -lt $deadline) {" ^
   "  $b8 = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue;" ^
@@ -49,9 +49,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$still8000 = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue;" ^
   "$still18000 = Get-NetTCPConnection -LocalPort 18000 -State Listen -ErrorAction SilentlyContinue;" ^
   "$stillLaunch = Get-CimInstance Win32_Process -Filter \"Name='python.exe' OR Name='pythonw.exe'\" | Where-Object { $_.CommandLine -match 'launch\.py' };" ^
-  "if ($still8000) { Write-Host '[arnold-kill] WARNING: port 8000 still listening' };" ^
-  "if ($still18000) { Write-Host '[arnold-kill] WARNING: port 18000 still listening' };" ^
-  "if ($stillLaunch) { Write-Host \"[arnold-kill] WARNING: $($stillLaunch.Count) launcher(s) still alive\"; exit 1 };" ^
-  "if (-not $still8000 -and -not $still18000 -and -not $stillLaunch) { Write-Host '[arnold-kill] all clear (ports 8000 + 18000 free, no launchers)' }"
+  "if ($still8000) { Write-Host '[betty-kill] WARNING: port 8000 still listening' };" ^
+  "if ($still18000) { Write-Host '[betty-kill] WARNING: port 18000 still listening' };" ^
+  "if ($stillLaunch) { Write-Host \"[betty-kill] WARNING: $($stillLaunch.Count) launcher(s) still alive\"; exit 1 };" ^
+  "if (-not $still8000 -and -not $still18000 -and -not $stillLaunch) { Write-Host '[betty-kill] all clear (ports 8000 + 18000 free, no launchers)' }"
 
 endlocal & exit /b %ERRORLEVEL%

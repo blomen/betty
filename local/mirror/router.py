@@ -131,7 +131,13 @@ def _persist_live_odds(
     changed value since last push — keeps the tunnel quiet during quiet
     markets.
     """
-    if not event_id or not market or not outcome or not isinstance(odds, (int, float)) or odds <= 1:
+    if (
+        not event_id
+        or not market
+        or not outcome
+        or not isinstance(odds, (int, float))
+        or odds <= 1
+    ):
         return
     key = (provider_id, event_id, market, outcome, point)
     last = _LAST_PUSHED_ODDS.get(key)
@@ -158,7 +164,9 @@ def _persist_live_odds(
                 timeout=5.0,
             )
         except Exception as e:
-            logger.debug(f"[live-odds DB push] {provider_id} {event_id} {market}/{outcome}: {e!r}")
+            logger.debug(
+                f"[live-odds DB push] {provider_id} {event_id} {market}/{outcome}: {e!r}"
+            )
 
     try:
         _asyncio.ensure_future(_do_push())
@@ -211,7 +219,9 @@ class PlayStartRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster, proxy_url: str) -> APIRouter:
+def create_mirror_router(
+    browser: MirrorBrowser, broadcaster: MirrorBroadcaster, proxy_url: str
+) -> APIRouter:
     """Return an APIRouter with mirror browser control and placement endpoints."""
 
     router = APIRouter(prefix="/mirror", tags=["mirror"])
@@ -289,24 +299,37 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                     try:
                         touched = wf.update_odds_states(body)
                         if touched:
-                            print(f"[odds_states] {pid} merged {touched} odd updates", flush=True)
+                            print(
+                                f"[odds_states] {pid} merged {touched} odd updates",
+                                flush=True,
+                            )
                     except Exception as e:
                         print(f"[odds_states] {pid} merge raised: {e!r}", flush=True)
                 # Extract {outcome_id: price} flat map and broadcast so the
-                # arnold UI can update displayed leg odds in real time without
+                # betty UI can update displayed leg odds in real time without
                 # waiting for a server-side re-scan. Match by leg.provider_meta.
                 # outcome_id (Altenar's odd id) which the scanner stamps into
                 # every leg it emits.
                 try:
                     updates: dict[str, float] = {}
-                    states = body.get("oddStates") or body.get("OddStates") or body.get("odds") or []
+                    states = (
+                        body.get("oddStates")
+                        or body.get("OddStates")
+                        or body.get("odds")
+                        or []
+                    )
                     if isinstance(body, list):
                         states = body
                     if isinstance(states, list):
                         for s in states:
                             if not isinstance(s, dict):
                                 continue
-                            oid = s.get("id") or s.get("Id") or s.get("oddId") or s.get("OddId")
+                            oid = (
+                                s.get("id")
+                                or s.get("Id")
+                                or s.get("oddId")
+                                or s.get("OddId")
+                            )
                             price = s.get("price") or s.get("Price")
                             if oid is None or price is None:
                                 continue
@@ -354,7 +377,10 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 now = _time.monotonic()
                 last = debouncer.get(pid, 0.0)
                 if now - last < 5.0:
-                    print(f"[history_intercepted] {pid} debounced (last={now - last:.2f}s ago)", flush=True)
+                    print(
+                        f"[history_intercepted] {pid} debounced (last={now - last:.2f}s ago)",
+                        flush=True,
+                    )
                     return
                 debouncer[pid] = now
                 browser._reactive_sync_debouncer = debouncer
@@ -362,7 +388,10 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                     asyncio.ensure_future(_reactive_history_sync(pid))
                     print(f"[history_intercepted] {pid} sync task spawned", flush=True)
                 except RuntimeError as exc:
-                    print(f"[history_intercepted] {pid} ensure_future RuntimeError: {exc!r}", flush=True)
+                    print(
+                        f"[history_intercepted] {pid} ensure_future RuntimeError: {exc!r}",
+                        flush=True,
+                    )
 
     # Per-provider lock so concurrent intercepts can't double-record even
     # if they slip past the 5s callback debounce (network glitch, manual
@@ -396,7 +425,10 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             lock = _asyncio.Lock()
             _reactive_sync_locks[provider_id] = lock
         if lock.locked():
-            print(f"[reactive_sync] {provider_id} another sync in flight — skipping", flush=True)
+            print(
+                f"[reactive_sync] {provider_id} another sync in flight — skipping",
+                flush=True,
+            )
             return
 
         # Only fire the "scanning pending..." badge when the user is actually
@@ -415,7 +447,10 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                     workflow = get_workflow(provider_id)
                     page = await workflow.find_tab(browser.context)
                     if page is None:
-                        print(f"[reactive_sync] {provider_id} no tab found — skipping", flush=True)
+                        print(
+                            f"[reactive_sync] {provider_id} no tab found — skipping",
+                            flush=True,
+                        )
                         return
                     page_url = (page.url or "").lower()
                     on_history_page = any(
@@ -437,7 +472,10 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                             "settling_pending",
                             {"provider_id": provider_id, "source": "reactive"},
                         )
-                    print(f"[reactive_sync] {provider_id} calling sync_history on {page_url[:60]}", flush=True)
+                    print(
+                        f"[reactive_sync] {provider_id} calling sync_history on {page_url[:60]}",
+                        flush=True,
+                    )
                     history = await workflow.sync_history(page)
                     print(
                         f"[reactive_sync] {provider_id} sync_history returned {len(history) if history else 0} entries",
@@ -460,7 +498,9 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                     # failed — fail-closed: skip BOTH reconcile and record.
                     # Recording against an unknown DB state re-inserts every
                     # open bet as a duplicate (BETINIA ×3 dup bug, 2026-05-12).
-                    db_pending = await pending_loop._fetch_pending_for_provider(provider_id)
+                    db_pending = await pending_loop._fetch_pending_for_provider(
+                        provider_id
+                    )
                     if db_pending is None:
                         print(
                             f"[reactive_sync] {provider_id} db_pending fetch failed — "
@@ -483,7 +523,9 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                         workflow=workflow,
                     )
                     # Insert pending entries that aren't in the DB yet
-                    await pending_loop._record_unknown_open_bets(provider_id, history_dicts, db_pending)
+                    await pending_loop._record_unknown_open_bets(
+                        provider_id, history_dicts, db_pending
+                    )
                 except Exception as exc:
                     print(f"[reactive_sync] {provider_id} raised: {exc!r}", flush=True)
         finally:
@@ -538,7 +580,10 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             raise HTTPException(400, "provider_id required")
         # Rainbet is signal-only — no playable mirror workflow. Reject opens.
         if pid == "rainbet":
-            raise HTTPException(400, "rainbet is signal-only (data consensus) — not playable in the mirror")
+            raise HTTPException(
+                400,
+                "rainbet is signal-only (data consensus) — not playable in the mirror",
+            )
         if not browser.running:
             await browser.start()
         from ._urls import hostname_matches
@@ -557,7 +602,11 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                             await page.bring_to_front()
                         except Exception:
                             pass
-                        return {"status": "already_open", "url": page.url, "provider_id": pid}
+                        return {
+                            "status": "already_open",
+                            "url": page.url,
+                            "provider_id": pid,
+                        }
                 except Exception:
                     continue
         domain = workflow.domain
@@ -655,13 +704,20 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
 
         async def api_settle(bet_id: int, res: str, payout: float):
             return await tunnel_client().put(
-                f"/api/bets/{bet_id}", json={"result": res, "payout": payout}, timeout=10.0
+                f"/api/bets/{bet_id}",
+                json={"result": res, "payout": payout},
+                timeout=10.0,
             )
 
         if provider_id == "kalshi":
             from .recorders import kalshi_api
 
-            result = await kalshi_api.sync(api_post, fetch_events, fetch_db_pending, fetch_known_ids=fetch_known_ids)
+            result = await kalshi_api.sync(
+                api_post,
+                fetch_events,
+                fetch_db_pending,
+                fetch_known_ids=fetch_known_ids,
+            )
             try:
                 settle_summary = await kalshi_api.settle(api_settle, fetch_db_pending)
             except Exception as exc:
@@ -688,7 +744,9 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 settle_summary = {
                     "won": 0,
                     "lost": 0,
-                    "errors": ["browser not running — cookie-based providers need an active context"],
+                    "errors": [
+                        "browser not running — cookie-based providers need an active context"
+                    ],
                 }
             else:
                 workflow = get_workflow(provider_id)
@@ -697,7 +755,9 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                     settle_summary = {
                         "won": 0,
                         "lost": 0,
-                        "errors": [f"no open tab for {provider_id} — open the provider once to authenticate"],
+                        "errors": [
+                            f"no open tab for {provider_id} — open the provider once to authenticate"
+                        ],
                     }
                 else:
                     try:
@@ -715,7 +775,9 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                         ]
                         result.fetched = len(history_dicts)
 
-                        db_pending = await pending_loop._fetch_pending_for_provider(provider_id)
+                        db_pending = await pending_loop._fetch_pending_for_provider(
+                            provider_id
+                        )
                         if db_pending is not None:
                             synced = await reconcile_and_publish(
                                 pending_loop._proxy_url,
@@ -729,14 +791,26 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                                 workflow=workflow,
                             )
                             pre_count = len(db_pending)
-                            await pending_loop._record_unknown_open_bets(provider_id, history_dicts, db_pending)
-                            post = await pending_loop._fetch_pending_for_provider(provider_id)
+                            await pending_loop._record_unknown_open_bets(
+                                provider_id, history_dicts, db_pending
+                            )
+                            post = await pending_loop._fetch_pending_for_provider(
+                                provider_id
+                            )
                             if post is not None:
                                 result.inserted = max(0, len(post) - pre_count)
                             # reconcile_and_publish returns settled count via SSE deltas
-                            settle_summary = {"won": 0, "lost": 0, "reconciled": synced, "errors": []}
+                            settle_summary = {
+                                "won": 0,
+                                "lost": 0,
+                                "reconciled": synced,
+                                "errors": [],
+                            }
                     except Exception as exc:
-                        print(f"[sync-positions] {provider_id} sync raised: {exc!r}", flush=True)
+                        print(
+                            f"[sync-positions] {provider_id} sync raised: {exc!r}",
+                            flush=True,
+                        )
                         settle_summary = {"won": 0, "lost": 0, "errors": [repr(exc)]}
         else:
             raise HTTPException(400, f"sync-positions not supported for {provider_id}")
@@ -799,7 +873,10 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         try:
             raw_history_primary = await workflow.sync_history(page) or []
         except Exception as exc:
-            print(f"[poll-portfolio] {provider_id} primary sync raised: {exc!r}", flush=True)
+            print(
+                f"[poll-portfolio] {provider_id} primary sync raised: {exc!r}",
+                flush=True,
+            )
 
         # Step 3: providers whose settlement state lives on a SECOND URL
         # (polymarket: activity/history tab) — navigate there and merge.
@@ -809,10 +886,15 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         secondary_url = _SECONDARY_PORTFOLIO_URL.get(provider_id)
         if secondary_url:
             try:
-                await page.goto(secondary_url, wait_until="domcontentloaded", timeout=20000)
+                await page.goto(
+                    secondary_url, wait_until="domcontentloaded", timeout=20000
+                )
                 raw_history_secondary = await workflow.sync_history(page) or []
             except Exception as exc:
-                print(f"[poll-portfolio] {provider_id} secondary sync raised: {exc!r}", flush=True)
+                print(
+                    f"[poll-portfolio] {provider_id} secondary sync raised: {exc!r}",
+                    flush=True,
+                )
 
         raw_history = list(raw_history_primary) + list(raw_history_secondary)
 
@@ -847,12 +929,16 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 )
                 # Snapshot pending count before insert so we can report new rows.
                 pre_count = len(db_pending)
-                await pending_loop._record_unknown_open_bets(provider_id, history_dicts, db_pending)
+                await pending_loop._record_unknown_open_bets(
+                    provider_id, history_dicts, db_pending
+                )
                 post = await pending_loop._fetch_pending_for_provider(provider_id)
                 if post is not None:
                     recorded = max(0, len(post) - pre_count)
         except Exception as exc:
-            print(f"[poll-portfolio] {provider_id} reconcile raised: {exc!r}", flush=True)
+            print(
+                f"[poll-portfolio] {provider_id} reconcile raised: {exc!r}", flush=True
+            )
 
         return {
             "navigated": nav_error is None,
@@ -880,7 +966,12 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
     async def browser_provider_state(provider_id: str):
         """Live state of a provider — from intercepted/cached data only. Never opens tabs."""
         if not browser.running or not browser.context:
-            return {"found": False, "logged_in": False, "balance": None, "reason": "browser_not_started"}
+            return {
+                "found": False,
+                "logged_in": False,
+                "balance": None,
+                "reason": "browser_not_started",
+            }
         # Check if we have a tab for this provider
         workflow = get_workflow(provider_id)
         tab_url = None
@@ -889,7 +980,12 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 tab_url = page.url
                 break
         if not tab_url:
-            return {"found": False, "logged_in": False, "balance": None, "domain": workflow.domain}
+            return {
+                "found": False,
+                "logged_in": False,
+                "balance": None,
+                "domain": workflow.domain,
+            }
         # Detection order: intercepted cache → workflow.check_login (intel JSON) → DOM scrape.
         # Balance: always attempt workflow.sync_balance when logged in (strategy/intel driven).
         intercepted = browser.provider_data.get(provider_id, {})
@@ -929,7 +1025,10 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                     # from what we last POSTed (not from provider_data, which
                     # may already hold the live value while the DB is stale).
                     last_pushed = _LAST_PUSHED_BALANCE.get(provider_id)
-                    if last_pushed is None or abs(float(last_pushed) - float(bal)) > 0.01:
+                    if (
+                        last_pushed is None
+                        or abs(float(last_pushed) - float(bal)) > 0.01
+                    ):
                         _LAST_PUSHED_BALANCE[provider_id] = float(bal)
                         _fire_balance_post(provider_id, bal)
             except Exception:
@@ -957,7 +1056,9 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 pdata_summary[k] = {
                     "urls": list(v.keys()),
                     "coupons_per_url": {
-                        u: len((b.get("data") or {}).get("coupons", []) or []) if isinstance(b, dict) else "?"
+                        u: len((b.get("data") or {}).get("coupons", []) or [])
+                        if isinstance(b, dict)
+                        else "?"
                         for u, b in v.items()
                     },
                 }
@@ -984,7 +1085,9 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 }
                 pdata_summary[k] = {
                     "top_keys": list(v.keys())[:20],
-                    "data_keys": list((v.get("data") or {}).keys())[:20] if isinstance(v.get("data"), dict) else None,
+                    "data_keys": list((v.get("data") or {}).keys())[:20]
+                    if isinstance(v.get("data"), dict)
+                    else None,
                     "coupons_len": len(coupons),
                     "first_coupon_keys": list(first.keys())[:40] if first else None,
                     "first_coupon_sample": first_sample,
@@ -1040,7 +1143,13 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             return {
                 "count": len(history),
                 "entries": [
-                    {"event": e.event_name, "status": e.status, "odds": e.odds, "stake": e.stake, "payout": e.payout}
+                    {
+                        "event": e.event_name,
+                        "status": e.status,
+                        "odds": e.odds,
+                        "stake": e.stake,
+                        "payout": e.payout,
+                    }
                     for e in history[:10]
                 ],
             }
@@ -1087,7 +1196,7 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         Auto-follows the pre-match → live successor chain: if the
         requested matchup has gone live, returns markets for the live
         matchup_id (frontend keys overrides on the original matchup_id
-        that's stored in arnold's DB, so it doesn't care).
+        that's stored in betty's DB, so it doesn't care).
 
         Returns shape:
           {
@@ -1141,7 +1250,9 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         # If pre-match has gone live, fetch markets from the live successor.
         if m.get("hasLive") and m.get("status") == "pending":
             league_id = m["league"]["id"]
-            league_matchups = await _fetch_json(f"{_PINNACLE_API_BASE}/leagues/{league_id}/matchups")
+            league_matchups = await _fetch_json(
+                f"{_PINNACLE_API_BASE}/leagues/{league_id}/matchups"
+            )
             if isinstance(league_matchups, list):
                 live = next(
                     (
@@ -1161,7 +1272,9 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                     m = live  # use the live matchup's metadata too
 
         # Step 2: markets/straight for the (live) matchup.
-        markets_raw = await _fetch_json(f"{_PINNACLE_API_BASE}/matchups/{target_id}/markets/straight")
+        markets_raw = await _fetch_json(
+            f"{_PINNACLE_API_BASE}/matchups/{target_id}/markets/straight"
+        )
         if not isinstance(markets_raw, list):
             return {"error": "markets_not_found", "matchup_id": target_id}
 
@@ -1201,7 +1314,9 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             "requested_id": matchup_id,
             "league": (m.get("league") or {}).get("name"),
             "sport": ((m.get("league") or {}).get("sport") or {}).get("name"),
-            "participants": [p.get("name") if isinstance(p, dict) else p for p in parts],
+            "participants": [
+                p.get("name") if isinstance(p, dict) else p for p in parts
+            ],
             "is_live": bool(m.get("isLive")),
             "status": m.get("status"),
             "markets": markets,
@@ -1210,7 +1325,7 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
     @router.get("/browser/eval-on-tab")
     async def eval_on_tab(url_contains: str, js: str = "document.title"):
         """Debug: evaluate JS on the first tab whose URL contains `url_contains`.
-        Lets us inspect non-provider tabs (e.g. the local arnold UI at
+        Lets us inspect non-provider tabs (e.g. the local betty UI at
         127.0.0.1:8000) without needing a registered workflow."""
         if not browser.running or not browser.context:
             return {"error": "browser not running"}
@@ -1257,7 +1372,11 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             return m ? m[0] : null;
         }""")
         await page.screenshot(path="debug_screenshot.png")
-        return {"url": page.url, "balance_text": balance_text, "screenshot": "debug_screenshot.png"}
+        return {
+            "url": page.url,
+            "balance_text": balance_text,
+            "screenshot": "debug_screenshot.png",
+        }
 
     @router.post("/browser/eval/{provider_id}")
     async def browser_eval(provider_id: str, body: dict[str, Any]):
@@ -1336,7 +1455,7 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         await browser.start()
         # Restore the user_picked_opp cache from disk so reactive-sync bet
         # recording (after a placement that intercept missed) can still fill
-        # event_id/market/outcome on bets placed in a previous arnold session.
+        # event_id/market/outcome on bets placed in a previous betty session.
         _restore_picked_opps(browser)
         # Defensive sweep BEFORE re-opening unlimited tabs so we don't end up
         # with both a stray dbet AND a fresh cloudbet (Chromium can refuse to
@@ -1429,7 +1548,8 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             real_tabs = sum(
                 1
                 for p in browser.context.pages
-                if not p.is_closed() and (p.url or "").startswith(("http://", "https://"))
+                if not p.is_closed()
+                and (p.url or "").startswith(("http://", "https://"))
             )
             if real_tabs >= 1:
                 for p in list(browser.context.pages):
@@ -1439,7 +1559,9 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                         url = p.url or ""
                         if url == "about:blank" or url == "chrome://newtab/":
                             await p.close()
-                            print(f"[mirror/start] Closed keeper tab: {url}", flush=True)
+                            print(
+                                f"[mirror/start] Closed keeper tab: {url}", flush=True
+                            )
                     except Exception:
                         pass
         return browser.get_status()
@@ -1476,7 +1598,7 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         # Stash the picked-opp context per-provider so the subsequent placement
         # (intercepted via play_loop._record_manual_bet) or the reactive history
         # sync (pending_loop._record_unknown_open_bets) can fill event_id /
-        # market / outcome. Persisted to disk so this survives arnold restarts.
+        # market / outcome. Persisted to disk so this survives betty restarts.
         _set_picked_opp(
             browser,
             req.provider_id,
@@ -1694,12 +1816,16 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         if not provider_id:
             raise HTTPException(status_code=400, detail="provider_id required")
         if not explicit_leg and not isinstance(opp, dict):
-            raise HTTPException(status_code=400, detail="opp dict required when leg is omitted")
+            raise HTTPException(
+                status_code=400, detail="opp dict required when leg is omitted"
+            )
 
         # Resolve which leg's meta to use for navigation. Frontend may inline
         # the picked leg as `opp._picked_leg` (per-leg click) or pass `leg` at
         # top level (programmatic call). Both win over auto-resolution.
-        legs = opp.get("arb_legs") or opp.get("legs", []) if isinstance(opp, dict) else []
+        legs = (
+            opp.get("arb_legs") or opp.get("legs", []) if isinstance(opp, dict) else []
+        )
         anchor_leg = (
             explicit_leg
             or (opp.get("_picked_leg") if isinstance(opp, dict) else None)
@@ -1712,7 +1838,11 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             target_cluster = _PROVIDER_TO_CLUSTER.get(provider_id)
             if target_cluster:
                 anchor_leg = next(
-                    (l for l in legs if _PROVIDER_TO_CLUSTER.get(l.get("provider")) == target_cluster),
+                    (
+                        l
+                        for l in legs
+                        if _PROVIDER_TO_CLUSTER.get(l.get("provider")) == target_cluster
+                    ),
                     None,
                 )
         if not anchor_leg:
@@ -1730,13 +1860,21 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         if existing_runner is not None and getattr(existing_runner, "running", False):
             try:
                 existing_runner.stop()
-                logger.info(f"[/arb/navigate-opp] stopped existing runner for {provider_id}")
+                logger.info(
+                    f"[/arb/navigate-opp] stopped existing runner for {provider_id}"
+                )
             except Exception as e:
-                logger.warning(f"[/arb/navigate-opp] failed to stop runner for {provider_id}: {e!r}")
+                logger.warning(
+                    f"[/arb/navigate-opp] failed to stop runner for {provider_id}: {e!r}"
+                )
         try:
             if provider_id in getattr(play_loop, "_provider_ids", []):
-                play_loop._provider_ids = [p for p in play_loop._provider_ids if p != provider_id]
-                logger.info(f"[/arb/navigate-opp] removed {provider_id} from coordinator provider_ids")
+                play_loop._provider_ids = [
+                    p for p in play_loop._provider_ids if p != provider_id
+                ]
+                logger.info(
+                    f"[/arb/navigate-opp] removed {provider_id} from coordinator provider_ids"
+                )
             play_loop._runners.pop(provider_id, None)
         except Exception as e:
             logger.debug(f"[/arb/navigate-opp] cleanup raised: {e!r}")
@@ -1762,9 +1900,11 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             bet["stake"] = round(balance, 2)
         bet_ns = _bet_ns(bet)
 
-        leg_event_id = (anchor_leg.get("provider_meta") or {}).get("event_id") or opp.get("event_id")
+        leg_event_id = (anchor_leg.get("provider_meta") or {}).get(
+            "event_id"
+        ) or opp.get("event_id")
         # Stash the picked-opp context per-provider (persisted to disk so the
-        # context survives an arnold restart and reactive-sync bet recording
+        # context survives a betty restart and reactive-sync bet recording
         # in a later session still preserves event_id). Without this any bet
         # recorded via reactive sync after a restart loses event_id and lands
         # in the "unknown" sport analytics bucket with no edge/CLV breakdown.
@@ -1775,7 +1915,9 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 "event_id": opp.get("event_id"),
                 "market": anchor_leg.get("market") or opp.get("market"),
                 "outcome": anchor_leg.get("outcome"),
-                "point": anchor_leg.get("point") if anchor_leg.get("point") is not None else opp.get("point"),
+                "point": anchor_leg.get("point")
+                if anchor_leg.get("point") is not None
+                else opp.get("point"),
                 "planned_odds": anchor_leg.get("odds"),
                 "planned_stake": bet["stake"],
                 "start_time": opp.get("starts_at") or opp.get("start_time"),
@@ -1804,7 +1946,9 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             # the frontend drains the row, instead of leaving the user with a
             # "nav failed" status they can't act on.
             if provider_id == "pinnacle":
-                event_id_pn = (anchor_leg.get("provider_meta") or {}).get("event_id") or opp.get("event_id")
+                event_id_pn = (anchor_leg.get("provider_meta") or {}).get(
+                    "event_id"
+                ) or opp.get("event_id")
                 broadcaster.publish(
                     "arb_leg_event_closed",
                     {
@@ -1822,12 +1966,21 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 }
             broadcaster.publish(
                 "arb_leg_failed",
-                {"provider_id": provider_id, "stage": "navigate", "reason": "navigate_failed"},
+                {
+                    "provider_id": provider_id,
+                    "stage": "navigate",
+                    "reason": "navigate_failed",
+                },
             )
             raise HTTPException(status_code=502, detail="navigate_to_event failed")
         broadcaster.publish(
             "arb_leg_navigated",
-            {"provider_id": provider_id, "url": page.url, "user_picked": True, "event_id": opp.get("event_id")},
+            {
+                "provider_id": provider_id,
+                "url": page.url,
+                "user_picked": True,
+                "event_id": opp.get("event_id"),
+            },
         )
 
         # Event-closed detection: bookmaker shows "Detta evenemang är avslutat"
@@ -1849,7 +2002,9 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             except Exception as e:
                 logger.debug(f"[/arb/navigate-opp] pinnacle empty-check raised: {e!r}")
         if pinnacle_empty or await ProviderRunner._is_event_closed(page):
-            event_id = (anchor_leg.get("provider_meta") or {}).get("event_id") or opp.get("event_id")
+            event_id = (anchor_leg.get("provider_meta") or {}).get(
+                "event_id"
+            ) or opp.get("event_id")
             broadcaster.publish(
                 "arb_leg_event_closed",
                 {
@@ -1872,7 +2027,9 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         # the full prep + stream chain so we have drift detection.
         is_unlimited = provider_id in UNLIMITED_PROVIDERS
         is_autonomous = bool(getattr(wf, "autonomous_placement", False))
-        is_soft_anchor = (not is_unlimited) and _PROVIDER_TO_CLUSTER.get(provider_id) is not None
+        is_soft_anchor = (not is_unlimited) and _PROVIDER_TO_CLUSTER.get(
+            provider_id
+        ) is not None
         if not (is_soft_anchor or is_autonomous):
             # Guided counters STILL get a live-odds poll task so the frontend
             # sees the counter's odds drift in real time. Without this, only
@@ -1900,7 +2057,9 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 # would keep showing extraction-time odds while the slip
                 # stream knows the live value (the 56-vs-58 mismatch).
                 fair_g = anchor_leg.get("fair_odds")
-                live_edge_g = ((o / fair_g - 1) * 100) if fair_g and fair_g > 0 else None
+                live_edge_g = (
+                    ((o / fair_g - 1) * 100) if fair_g and fair_g > 0 else None
+                )
                 if captured_market_g and captured_outcome_g:
                     broadcaster.publish(
                         "live_price",
@@ -1919,7 +2078,12 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                 # devices / browser data clear. Fire-and-forget so the poll
                 # cadence isn't blocked on tunnel latency.
                 _persist_live_odds(
-                    provider_id, captured_event_id_g, captured_market_g, captured_outcome_g, captured_point_g, o
+                    provider_id,
+                    captured_event_id_g,
+                    captured_market_g,
+                    captured_outcome_g,
+                    captured_point_g,
+                    o,
                 )
 
             async def _poll_guided_live_price():
@@ -1938,26 +2102,36 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                         # page shows multiple moneyline-shaped markets
                         # stacked (Winner-Enhanced / Vinnare / First-Set).
                         if hasattr(wf, "read_slip_odds"):
-                            slip_event_id_g = getattr(bet_ns, "altenar_event_id", None) or (
-                                getattr(bet_ns, "provider_meta", None) or {}
-                            ).get("event_id")
+                            slip_event_id_g = getattr(
+                                bet_ns, "altenar_event_id", None
+                            ) or (getattr(bet_ns, "provider_meta", None) or {}).get(
+                                "event_id"
+                            )
                             try:
                                 live = (
-                                    await wf.read_slip_odds(page, expected_event_id=slip_event_id_g)
+                                    await wf.read_slip_odds(
+                                        page, expected_event_id=slip_event_id_g
+                                    )
                                     if slip_event_id_g
                                     else await wf.read_slip_odds(page)
                                 )
                                 if live is not None:
                                     src = "slip"
                             except Exception as e:
-                                print(f"[POLL {provider_id}] read_slip_odds raised: {e!r}", flush=True)
+                                print(
+                                    f"[POLL {provider_id}] read_slip_odds raised: {e!r}",
+                                    flush=True,
+                                )
                         if live is None and hasattr(wf, "read_outcome_odds_dom"):
                             try:
                                 live = await wf.read_outcome_odds_dom(page, bet_ns)
                                 if live is not None:
                                     src = "dom"
                             except Exception as e:
-                                print(f"[POLL {provider_id}] read_outcome_odds_dom raised: {e!r}", flush=True)
+                                print(
+                                    f"[POLL {provider_id}] read_outcome_odds_dom raised: {e!r}",
+                                    flush=True,
+                                )
                         if live is None and hasattr(wf, "check_live_price"):
                             try:
                                 live, _ = await wf.check_live_price(page, bet_ns)
@@ -1975,16 +2149,26 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                             try:
                                 _on_odds_g(live)
                             except Exception as e:
-                                print(f"[POLL {provider_id}] _on_odds raised: {e!r}", flush=True)
+                                print(
+                                    f"[POLL {provider_id}] _on_odds raised: {e!r}",
+                                    flush=True,
+                                )
                 except asyncio.CancelledError:
-                    print(f"[POLL {provider_id}] CANCELLED after {ticks} ticks", flush=True)
+                    print(
+                        f"[POLL {provider_id}] CANCELLED after {ticks} ticks",
+                        flush=True,
+                    )
                 except Exception as e:
                     print(f"[POLL {provider_id}] crashed: {e!r}", flush=True)
 
-            existing_task_g = getattr(browser, "_user_picked_tasks", {}).get(provider_id)
+            existing_task_g = getattr(browser, "_user_picked_tasks", {}).get(
+                provider_id
+            )
             if existing_task_g and not existing_task_g.done():
                 existing_task_g.cancel()
-            task_g = asyncio.create_task(_poll_guided_live_price(), name=f"live_price_{provider_id}")
+            task_g = asyncio.create_task(
+                _poll_guided_live_price(), name=f"live_price_{provider_id}"
+            )
             if not hasattr(browser, "_user_picked_tasks"):
                 browser._user_picked_tasks = {}
             browser._user_picked_tasks[provider_id] = task_g
@@ -2069,7 +2253,14 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             # Persist to DB. Same rationale as the guided counter — make
             # mirror updates the canonical source on the server side, not
             # just a frontend overlay that disappears on refresh.
-            _persist_live_odds(provider_id, captured_event_id, captured_market, captured_outcome, captured_point, o)
+            _persist_live_odds(
+                provider_id,
+                captured_event_id,
+                captured_market,
+                captured_outcome,
+                captured_point,
+                o,
+            )
 
         # Live-odds polling. Order matters:
         # 1. read_slip_odds — when the user has clicked an outcome the slip
@@ -2100,14 +2291,19 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                         ).get("event_id")
                         try:
                             live = (
-                                await wf.read_slip_odds(page, expected_event_id=slip_event_id)
+                                await wf.read_slip_odds(
+                                    page, expected_event_id=slip_event_id
+                                )
                                 if slip_event_id
                                 else await wf.read_slip_odds(page)
                             )
                             if live is not None:
                                 src = "slip"
                         except Exception as e:
-                            print(f"[POLL {provider_id}] read_slip_odds raised: {e!r}", flush=True)
+                            print(
+                                f"[POLL {provider_id}] read_slip_odds raised: {e!r}",
+                                flush=True,
+                            )
                     # 2. DOM scrape — read the rendered OddValue directly from
                     # the bookmaker widget's shadow DOM. This is what the user
                     # SEES on the tab, kept in sync by the widget itself with
@@ -2119,7 +2315,10 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                             if live is not None:
                                 src = "dom"
                         except Exception as e:
-                            print(f"[POLL {provider_id}] read_outcome_odds_dom raised: {e!r}", flush=True)
+                            print(
+                                f"[POLL {provider_id}] read_outcome_odds_dom raised: {e!r}",
+                                flush=True,
+                            )
                     # 3. check_live_price — cached GetEventDetails. Falls
                     # behind on bookmakers that don't re-fetch on drift.
                     if live is None and hasattr(wf, "check_live_price"):
@@ -2128,20 +2327,28 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                             if live is not None:
                                 src = "live_price"
                         except Exception as e:
-                            print(f"[POLL {provider_id}] check_live_price raised: {e!r}", flush=True)
+                            print(
+                                f"[POLL {provider_id}] check_live_price raised: {e!r}",
+                                flush=True,
+                            )
                     if False and live is None and hasattr(wf, "read_slip_odds"):
                         slip_event_id = getattr(bet_ns, "altenar_event_id", None) or (
                             getattr(bet_ns, "provider_meta", None) or {}
                         ).get("event_id")
                         try:
                             try:
-                                live = await wf.read_slip_odds(page, expected_event_id=slip_event_id)
+                                live = await wf.read_slip_odds(
+                                    page, expected_event_id=slip_event_id
+                                )
                             except TypeError:
                                 live = await wf.read_slip_odds(page)
                             if live is not None:
                                 src = "slip"
                         except Exception as e:
-                            print(f"[POLL {provider_id}] read_slip_odds raised: {e!r}", flush=True)
+                            print(
+                                f"[POLL {provider_id}] read_slip_odds raised: {e!r}",
+                                flush=True,
+                            )
                     if ticks % 5 == 0:
                         print(
                             f"[POLL {provider_id}] tick={ticks} live={live} src={src!r} last={last}",
@@ -2149,11 +2356,17 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
                         )
                     if live is not None and live != last:
                         last = live
-                        print(f"[POLL {provider_id}] FIRE odds={live} src={src!r}", flush=True)
+                        print(
+                            f"[POLL {provider_id}] FIRE odds={live} src={src!r}",
+                            flush=True,
+                        )
                         try:
                             _on_odds(live)
                         except Exception as e:
-                            print(f"[POLL {provider_id}] _on_odds raised: {e!r}", flush=True)
+                            print(
+                                f"[POLL {provider_id}] _on_odds raised: {e!r}",
+                                flush=True,
+                            )
             except asyncio.CancelledError:
                 print(f"[POLL {provider_id}] CANCELLED after {ticks} ticks", flush=True)
             except Exception as e:
@@ -2209,7 +2422,9 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
         wf = get_workflow(provider_id)
         page = await wf.find_tab(browser.context)
         if page is None:
-            raise HTTPException(status_code=404, detail=f"No open tab for {provider_id}")
+            raise HTTPException(
+                status_code=404, detail=f"No open tab for {provider_id}"
+            )
 
         stream = ProviderDataStream(provider_id, wf, page, broadcaster, proxy_url)
         stream.start()
@@ -2334,7 +2549,10 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             pos = await wf.fetch_positions(page)
             results["positions"] = {
                 "count": len(pos),
-                "items": [{"event": p.event_name, "odds": p.odds, "stake": p.stake} for p in pos[:5]],
+                "items": [
+                    {"event": p.event_name, "odds": p.odds, "stake": p.stake}
+                    for p in pos[:5]
+                ],
             }
         except Exception as e:
             results["positions"] = {"error": str(e)}
@@ -2345,7 +2563,13 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
             results["history"] = {
                 "count": len(hist),
                 "items": [
-                    {"event": h.event_name, "status": h.status, "odds": h.odds, "stake": h.stake} for h in hist[:5]
+                    {
+                        "event": h.event_name,
+                        "status": h.status,
+                        "odds": h.odds,
+                        "stake": h.stake,
+                    }
+                    for h in hist[:5]
                 ],
             }
         except Exception as e:
@@ -2391,7 +2615,9 @@ def create_mirror_router(browser: MirrorBrowser, broadcaster: MirrorBroadcaster,
 
         try:
             if method == "locator":
-                await page.locator("#STB_SPORTSBOOK > div").click(position={"x": ox, "y": oy}, timeout=5000)
+                await page.locator("#STB_SPORTSBOOK > div").click(
+                    position={"x": ox, "y": oy}, timeout=5000
+                )
             elif method == "mouse":
                 await page.mouse.click(vx, vy)
             else:

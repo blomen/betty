@@ -1,8 +1,8 @@
-# Arnold local kill script — terminates everything spawned by arnold.bat:
+# Betty local kill script — terminates everything spawned by betty.bat:
 #   - python launch.py (launcher process) + ALL descendants
 #   - uvicorn / FastAPI child of launcher
 #   - SSH tunnel on port 18000 (any cmdline containing 18000:localhost)
-#   - Chromium / Camoufox using arnold's persistent profile
+#   - Chromium / Camoufox using betty's persistent profile
 #   - Anything still listening on port 8000 / 18000
 #
 # Idempotent + safe to run multiple times. Polls up to 5s for ports to free.
@@ -14,7 +14,7 @@
 $ErrorActionPreference = 'SilentlyContinue'
 $killed = New-Object System.Collections.ArrayList
 
-Write-Host '[arnold-kill] killing local arnold processes...'
+Write-Host '[betty-kill] killing local betty processes...'
 
 function Kill-Tree([int]$ParentId, [string]$Label) {
     $children = Get-CimInstance Win32_Process -Filter "ParentProcessId=$ParentId"
@@ -63,9 +63,9 @@ foreach ($port in 8000, 18000) {
 }
 
 if ($killed.Count -eq 0) {
-    Write-Host '[arnold-kill] nothing to kill'
+    Write-Host '[betty-kill] nothing to kill'
 } else {
-    foreach ($k in $killed) { Write-Host "[arnold-kill] killed $k" }
+    foreach ($k in $killed) { Write-Host "[betty-kill] killed $k" }
 }
 
 $deadline = (Get-Date).AddSeconds(5)
@@ -81,14 +81,14 @@ $still18000 = Get-NetTCPConnection -LocalPort 18000 -State Listen -ErrorAction S
 $stillLaunch = Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" |
     Where-Object { $_.CommandLine -match 'launch\.py' }
 
-if ($still8000) { Write-Host '[arnold-kill] WARNING: port 8000 still listening' }
-if ($still18000) { Write-Host '[arnold-kill] WARNING: port 18000 still listening' }
+if ($still8000) { Write-Host '[betty-kill] WARNING: port 8000 still listening' }
+if ($still18000) { Write-Host '[betty-kill] WARNING: port 18000 still listening' }
 if ($stillLaunch) {
-    Write-Host "[arnold-kill] WARNING: $($stillLaunch.Count) launcher(s) still alive"
+    Write-Host "[betty-kill] WARNING: $($stillLaunch.Count) launcher(s) still alive"
     exit 1
 }
 if (-not $still8000 -and -not $still18000 -and -not $stillLaunch) {
-    Write-Host '[arnold-kill] all clear (ports 8000 + 18000 free, no launchers)'
+    Write-Host '[betty-kill] all clear (ports 8000 + 18000 free, no launchers)'
 }
 
 exit 0

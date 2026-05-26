@@ -1,5 +1,5 @@
 """
-Arnold — Risk Level Simulation
+Betty — Risk Level Simulation
 ====================================
 What happens if we increase Kelly fraction and single bet cap
 to play more bets with a smaller bankroll?
@@ -10,46 +10,45 @@ Question: can we just crank up risk instead of lowering mEP?
 Run: python scripts/risk_level_sim.py
 """
 
+import io
 import random
 import sys
-import io
 from dataclasses import dataclass, field
-from typing import List, Tuple
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 # ── Edge distributions (from growth_simulation.py) ──
 SOFT_VALUE_EDGE_DIST = [
-    (2.0,  4.0,  0.35, 3.50),
-    (4.0,  6.0,  0.25, 4.10),
-    (6.0, 10.0,  0.20, 5.50),
+    (2.0, 4.0, 0.35, 3.50),
+    (4.0, 6.0, 0.25, 4.10),
+    (6.0, 10.0, 0.20, 5.50),
     (10.0, 20.0, 0.15, 8.10),
     (20.0, 35.0, 0.05, 11.40),
 ]
 POLYMARKET_EDGE_DIST = [
-    (3.0,  5.0,  0.40, 2.80),
-    (5.0,  8.0,  0.30, 3.40),
-    (8.0, 15.0,  0.20, 4.50),
+    (3.0, 5.0, 0.40, 2.80),
+    (5.0, 8.0, 0.30, 3.40),
+    (8.0, 15.0, 0.20, 4.50),
     (15.0, 30.0, 0.10, 6.00),
 ]
 PINNACLE_REVERSE_EDGE_DIST = [
-    (3.0,  5.0,  0.35, 4.50),
-    (5.0,  8.0,  0.30, 6.00),
-    (8.0, 12.0,  0.25, 8.50),
+    (3.0, 5.0, 0.35, 4.50),
+    (5.0, 8.0, 0.30, 6.00),
+    (8.0, 12.0, 0.25, 8.50),
     (12.0, 20.0, 0.10, 11.00),
 ]
 SPECIALS_EDGE_DIST = [
-    (4.0,  8.0,  0.40, 3.00),
-    (8.0, 15.0,  0.35, 4.00),
+    (4.0, 8.0, 0.40, 3.00),
+    (8.0, 15.0, 0.35, 4.00),
     (15.0, 30.0, 0.20, 5.50),
     (30.0, 50.0, 0.05, 8.00),
 ]
 
 STREAM_WEIGHTS = [
-    ("soft_value",       0.913, SOFT_VALUE_EDGE_DIST),
-    ("polymarket",       0.071, POLYMARKET_EDGE_DIST),
+    ("soft_value", 0.913, SOFT_VALUE_EDGE_DIST),
+    ("polymarket", 0.071, POLYMARKET_EDGE_DIST),
     ("pinnacle_reverse", 0.014, PINNACLE_REVERSE_EDGE_DIST),
-    ("specials",         0.002, SPECIALS_EDGE_DIST),
+    ("specials", 0.002, SPECIALS_EDGE_DIST),
 ]
 
 ABSOLUTE_MIN_STAKE = 5.0
@@ -61,23 +60,23 @@ NUM_SIMS = 2000
 @dataclass
 class RiskProfile:
     name: str
-    max_kelly: float        # Kelly scaling ceiling (0.25=quarter, 0.75=3/4, 1.0=full)
-    min_kelly: float        # Kelly scaling floor
-    single_bet_cap: float   # Max % of bankroll per bet
+    max_kelly: float  # Kelly scaling ceiling (0.25=quarter, 0.75=3/4, 1.0=full)
+    min_kelly: float  # Kelly scaling floor
+    single_bet_cap: float  # Max % of bankroll per bet
     min_expected_profit: float  # mEP guard
     description: str = ""
 
 
 RISK_PROFILES = [
-    RiskProfile("Conservative",   0.50, 0.15, 0.02, 2.0, "Low risk, current-ish"),
-    RiskProfile("Current",        0.75, 0.25, 0.03, 2.0, "Current defaults"),
-    RiskProfile("Current+mEP0.75",0.75, 0.25, 0.03, 0.75,"Current kelly, lower mEP"),
-    RiskProfile("Higher Kelly",   1.00, 0.25, 0.03, 2.0, "Full Kelly, same cap"),
-    RiskProfile("Higher Cap",     0.75, 0.25, 0.05, 2.0, "Same Kelly, 5% cap"),
-    RiskProfile("Aggressive",     1.00, 0.25, 0.05, 2.0, "Full Kelly + 5% cap"),
-    RiskProfile("Aggressive+mEP0",1.00, 0.25, 0.05, 0.0, "Full Kelly + 5% cap + no mEP"),
-    RiskProfile("YOLO",           1.25, 0.30, 0.07, 0.0, "1.25x Kelly + 7% cap"),
-    RiskProfile("Full Send",      1.50, 0.35, 0.10, 0.0, "1.5x Kelly + 10% cap"),
+    RiskProfile("Conservative", 0.50, 0.15, 0.02, 2.0, "Low risk, current-ish"),
+    RiskProfile("Current", 0.75, 0.25, 0.03, 2.0, "Current defaults"),
+    RiskProfile("Current+mEP0.75", 0.75, 0.25, 0.03, 0.75, "Current kelly, lower mEP"),
+    RiskProfile("Higher Kelly", 1.00, 0.25, 0.03, 2.0, "Full Kelly, same cap"),
+    RiskProfile("Higher Cap", 0.75, 0.25, 0.05, 2.0, "Same Kelly, 5% cap"),
+    RiskProfile("Aggressive", 1.00, 0.25, 0.05, 2.0, "Full Kelly + 5% cap"),
+    RiskProfile("Aggressive+mEP0", 1.00, 0.25, 0.05, 0.0, "Full Kelly + 5% cap + no mEP"),
+    RiskProfile("YOLO", 1.25, 0.30, 0.07, 0.0, "1.25x Kelly + 7% cap"),
+    RiskProfile("Full Send", 1.50, 0.35, 0.10, 0.0, "1.5x Kelly + 10% cap"),
 ]
 
 
@@ -170,7 +169,7 @@ class SimResult:
     min_bankroll: float = 0.0
     max_drawdown_pct: float = 0.0  # Worst peak-to-trough %
     ruin: bool = False
-    weekly_bankrolls: List[float] = field(default_factory=list)
+    weekly_bankrolls: list[float] = field(default_factory=list)
 
 
 def simulate(starting_bankroll, bets_per_week, weeks, profile: RiskProfile, track_weekly=False):
@@ -191,11 +190,16 @@ def simulate(starting_bankroll, bets_per_week, weeks, profile: RiskProfile, trac
         for _ in range(n_bets):
             if bankroll < ABSOLUTE_MIN_STAKE:
                 return SimResult(
-                    final_bankroll=bankroll, profit=profit,
-                    bets_played=bets_played, bets_skipped=bets_skipped,
-                    total_staked=total_staked, peak_bankroll=peak,
-                    min_bankroll=trough, max_drawdown_pct=max_dd_pct,
-                    ruin=True, weekly_bankrolls=weekly,
+                    final_bankroll=bankroll,
+                    profit=profit,
+                    bets_played=bets_played,
+                    bets_skipped=bets_skipped,
+                    total_staked=total_staked,
+                    peak_bankroll=peak,
+                    min_bankroll=trough,
+                    max_drawdown_pct=max_dd_pct,
+                    ruin=True,
+                    weekly_bankrolls=weekly,
                 )
 
             edge_pct, odds, _ = sample_bet_all_streams()
@@ -224,11 +228,16 @@ def simulate(starting_bankroll, bets_per_week, weeks, profile: RiskProfile, trac
             weekly.append(bankroll)
 
     return SimResult(
-        final_bankroll=bankroll, profit=profit,
-        bets_played=bets_played, bets_skipped=bets_skipped,
-        total_staked=total_staked, peak_bankroll=peak,
-        min_bankroll=trough, max_drawdown_pct=max_dd_pct,
-        ruin=bankroll < ABSOLUTE_MIN_STAKE, weekly_bankrolls=weekly,
+        final_bankroll=bankroll,
+        profit=profit,
+        bets_played=bets_played,
+        bets_skipped=bets_skipped,
+        total_staked=total_staked,
+        peak_bankroll=peak,
+        min_bankroll=trough,
+        max_drawdown_pct=max_dd_pct,
+        ruin=bankroll < ABSOLUTE_MIN_STAKE,
+        weekly_bankrolls=weekly,
     )
 
 
@@ -246,6 +255,7 @@ def run_monte_carlo(starting_bankroll, bets_per_week, weeks, profile, n_sims=NUM
 # SIMULATION 1: Risk profile comparison at each bankroll level
 # =====================================================================
 
+
 def risk_comparison():
     print("=" * 120)
     print("  SIMULATION 1: RISK PROFILE COMPARISON")
@@ -255,22 +265,26 @@ def risk_comparison():
     bankrolls = [5000, 10000, 20000]
 
     for bankroll in bankrolls:
-        print(f"\n  {'━'*116}")
+        print(f"\n  {'━' * 116}")
         print(f"  Starting bankroll: {bankroll:,} kr")
-        print(f"  {'━'*116}")
+        print(f"  {'━' * 116}")
 
-        print(f"\n  {'Profile':<19s}  {'Kelly':>5s}  {'Cap':>4s}  {'mEP':>4s}  "
-              f"{'Med Final':>10s}  {'Growth':>7s}  "
-              f"{'P10 Final':>10s}  {'P5 Final':>9s}  "
-              f"{'Play%':>6s}  {'Ruin%':>6s}  "
-              f"{'Med MaxDD':>9s}  {'P90 MaxDD':>9s}  "
-              f"{'Med Trough':>11s}")
-        print(f"  {'-'*19}  {'-'*5}  {'-'*4}  {'-'*4}  "
-              f"{'-'*10}  {'-'*7}  "
-              f"{'-'*10}  {'-'*9}  "
-              f"{'-'*6}  {'-'*6}  "
-              f"{'-'*9}  {'-'*9}  "
-              f"{'-'*11}")
+        print(
+            f"\n  {'Profile':<19s}  {'Kelly':>5s}  {'Cap':>4s}  {'mEP':>4s}  "
+            f"{'Med Final':>10s}  {'Growth':>7s}  "
+            f"{'P10 Final':>10s}  {'P5 Final':>9s}  "
+            f"{'Play%':>6s}  {'Ruin%':>6s}  "
+            f"{'Med MaxDD':>9s}  {'P90 MaxDD':>9s}  "
+            f"{'Med Trough':>11s}"
+        )
+        print(
+            f"  {'-' * 19}  {'-' * 5}  {'-' * 4}  {'-' * 4}  "
+            f"{'-' * 10}  {'-' * 7}  "
+            f"{'-' * 10}  {'-' * 9}  "
+            f"{'-' * 6}  {'-' * 6}  "
+            f"{'-' * 9}  {'-' * 9}  "
+            f"{'-' * 11}"
+        )
 
         for profile in RISK_PROFILES:
             results = run_monte_carlo(bankroll, 35, 52, profile)
@@ -293,17 +307,20 @@ def risk_comparison():
             p90_dd = pct(drawdowns, 90)
             med_trough = pct(troughs, 50)
 
-            print(f"  {profile.name:<19s}  {profile.max_kelly:>5.2f}  {profile.single_bet_cap*100:>3.0f}%  {profile.min_expected_profit:>4.1f}  "
-                  f"{med_final:>10,.0f}  {growth:>+6.0f}%  "
-                  f"{p10_final:>10,.0f}  {p5_final:>9,.0f}  "
-                  f"{play_pct:>5.1f}%  {ruin_pct:>5.1f}%  "
-                  f"{med_dd:>8.1f}%  {p90_dd:>8.1f}%  "
-                  f"{med_trough:>10,.0f}")
+            print(
+                f"  {profile.name:<19s}  {profile.max_kelly:>5.2f}  {profile.single_bet_cap * 100:>3.0f}%  {profile.min_expected_profit:>4.1f}  "
+                f"{med_final:>10,.0f}  {growth:>+6.0f}%  "
+                f"{p10_final:>10,.0f}  {p5_final:>9,.0f}  "
+                f"{play_pct:>5.1f}%  {ruin_pct:>5.1f}%  "
+                f"{med_dd:>8.1f}%  {p90_dd:>8.1f}%  "
+                f"{med_trough:>10,.0f}"
+            )
 
 
 # =====================================================================
 # SIMULATION 2: Drawdown deep dive
 # =====================================================================
+
 
 def drawdown_analysis():
     print("\n\n" + "=" * 120)
@@ -313,12 +330,16 @@ def drawdown_analysis():
 
     bankroll = 10000
 
-    print(f"\n  {'Profile':<19s}  {'Med DD':>7s}  {'P75 DD':>7s}  {'P90 DD':>7s}  {'P95 DD':>7s}  {'P99 DD':>7s}  "
-          f"{'Worst':>7s}  {'Ruin%':>6s}  "
-          f"{'Med Trough':>11s}  {'P10 Trough':>11s}  {'P5 Trough':>10s}")
-    print(f"  {'-'*19}  {'-'*7}  {'-'*7}  {'-'*7}  {'-'*7}  {'-'*7}  "
-          f"{'-'*7}  {'-'*6}  "
-          f"{'-'*11}  {'-'*11}  {'-'*10}")
+    print(
+        f"\n  {'Profile':<19s}  {'Med DD':>7s}  {'P75 DD':>7s}  {'P90 DD':>7s}  {'P95 DD':>7s}  {'P99 DD':>7s}  "
+        f"{'Worst':>7s}  {'Ruin%':>6s}  "
+        f"{'Med Trough':>11s}  {'P10 Trough':>11s}  {'P5 Trough':>10s}"
+    )
+    print(
+        f"  {'-' * 19}  {'-' * 7}  {'-' * 7}  {'-' * 7}  {'-' * 7}  {'-' * 7}  "
+        f"{'-' * 7}  {'-' * 6}  "
+        f"{'-' * 11}  {'-' * 11}  {'-' * 10}"
+    )
 
     for profile in RISK_PROFILES:
         results = run_monte_carlo(bankroll, 35, 52, profile)
@@ -326,16 +347,19 @@ def drawdown_analysis():
         troughs = [r.min_bankroll for r in results]
         ruin_pct = sum(1 for r in results if r.ruin) / len(results) * 100
 
-        print(f"  {profile.name:<19s}  "
-              f"{pct(dds,50):>6.1f}%  {pct(dds,75):>6.1f}%  {pct(dds,90):>6.1f}%  "
-              f"{pct(dds,95):>6.1f}%  {pct(dds,99):>6.1f}%  {pct(dds,100):>6.1f}%  "
-              f"{ruin_pct:>5.1f}%  "
-              f"{pct(troughs,50):>10,.0f}  {pct(troughs,10):>10,.0f}  {pct(troughs,5):>9,.0f}")
+        print(
+            f"  {profile.name:<19s}  "
+            f"{pct(dds, 50):>6.1f}%  {pct(dds, 75):>6.1f}%  {pct(dds, 90):>6.1f}%  "
+            f"{pct(dds, 95):>6.1f}%  {pct(dds, 99):>6.1f}%  {pct(dds, 100):>6.1f}%  "
+            f"{ruin_pct:>5.1f}%  "
+            f"{pct(troughs, 50):>10,.0f}  {pct(troughs, 10):>10,.0f}  {pct(troughs, 5):>9,.0f}"
+        )
 
 
 # =====================================================================
 # SIMULATION 3: Risk vs reward efficiency (Sharpe-like)
 # =====================================================================
+
 
 def risk_reward_efficiency():
     print("\n\n" + "=" * 120)
@@ -347,10 +371,11 @@ def risk_reward_efficiency():
 
     for bankroll in bankrolls:
         print(f"\n  Starting: {bankroll:,} kr")
-        print(f"  {'Profile':<19s}  {'Med Profit':>11s}  {'P10 Profit':>11s}  {'Med DD':>7s}  "
-              f"{'Profit/DD':>10s}  {'EV/Risk':>8s}  {'Play%':>6s}  {'Ruin':>5s}")
-        print(f"  {'-'*19}  {'-'*11}  {'-'*11}  {'-'*7}  "
-              f"{'-'*10}  {'-'*8}  {'-'*6}  {'-'*5}")
+        print(
+            f"  {'Profile':<19s}  {'Med Profit':>11s}  {'P10 Profit':>11s}  {'Med DD':>7s}  "
+            f"{'Profit/DD':>10s}  {'EV/Risk':>8s}  {'Play%':>6s}  {'Ruin':>5s}"
+        )
+        print(f"  {'-' * 19}  {'-' * 11}  {'-' * 11}  {'-' * 7}  {'-' * 10}  {'-' * 8}  {'-' * 6}  {'-' * 5}")
 
         for profile in RISK_PROFILES:
             results = run_monte_carlo(bankroll, 35, 52, profile)
@@ -373,13 +398,16 @@ def risk_reward_efficiency():
             ev_risk = med_profit / max(1, abs(p10_profit)) if p10_profit < 0 else med_profit / 1000
 
             marker = ""
-            print(f"  {profile.name:<19s}  {med_profit:>+10,.0f}  {p10_profit:>+10,.0f}  {med_dd:>6.1f}%  "
-                  f"{profit_per_dd:>9,.0f}  {ev_risk:>7.1f}  {play_pct:>5.1f}%  {ruin_pct:>4.1f}%{marker}")
+            print(
+                f"  {profile.name:<19s}  {med_profit:>+10,.0f}  {p10_profit:>+10,.0f}  {med_dd:>6.1f}%  "
+                f"{profit_per_dd:>9,.0f}  {ev_risk:>7.1f}  {play_pct:>5.1f}%  {ruin_pct:>4.1f}%{marker}"
+            )
 
 
 # =====================================================================
 # SIMULATION 4: Weekly equity curves for select profiles
 # =====================================================================
+
 
 def equity_curves():
     print("\n\n" + "=" * 120)
@@ -405,9 +433,11 @@ def equity_curves():
         max_w = max(len(r.weekly_bankrolls) for r in tracked)
         ruin_pct = sum(1 for r in results if r.ruin) / len(results) * 100
 
-        print(f"\n  {profile.name} (kelly={profile.max_kelly}, cap={profile.single_bet_cap*100:.0f}%, mEP={profile.min_expected_profit})  Ruin: {ruin_pct:.1f}%")
+        print(
+            f"\n  {profile.name} (kelly={profile.max_kelly}, cap={profile.single_bet_cap * 100:.0f}%, mEP={profile.min_expected_profit})  Ruin: {ruin_pct:.1f}%"
+        )
         print(f"  {'Week':>6s}  {'P10':>9s}  {'P25':>9s}  {'Median':>9s}  {'P75':>9s}  {'P90':>9s}")
-        print(f"  {'-'*6}  {'-'*9}  {'-'*9}  {'-'*9}  {'-'*9}  {'-'*9}")
+        print(f"  {'-' * 6}  {'-' * 9}  {'-' * 9}  {'-' * 9}  {'-' * 9}  {'-' * 9}")
 
         for w in range(max_w):
             if w == 0 or w % 8 == 0 or w == max_w - 1:
@@ -418,19 +448,22 @@ def equity_curves():
                     elif r.weekly_bankrolls:
                         vals.append(r.weekly_bankrolls[-1])
                 if vals:
-                    print(f"  {w:>6d}  {pct(vals,10):>9,.0f}  {pct(vals,25):>9,.0f}  "
-                          f"{pct(vals,50):>9,.0f}  {pct(vals,75):>9,.0f}  {pct(vals,90):>9,.0f}")
+                    print(
+                        f"  {w:>6d}  {pct(vals, 10):>9,.0f}  {pct(vals, 25):>9,.0f}  "
+                        f"{pct(vals, 50):>9,.0f}  {pct(vals, 75):>9,.0f}  {pct(vals, 90):>9,.0f}"
+                    )
 
 
 # =====================================================================
 # SIMULATION 5: Sweet spot finder — grid search
 # =====================================================================
 
+
 def sweet_spot_finder():
     print("\n\n" + "=" * 120)
     print("  SIMULATION 5: SWEET SPOT GRID SEARCH")
-    print(f"  Find the best (kelly, cap, mEP) combo for each bankroll")
-    print(f"  Optimizing: median profit while keeping P90 max drawdown < 60%")
+    print("  Find the best (kelly, cap, mEP) combo for each bankroll")
+    print("  Optimizing: median profit while keeping P90 max drawdown < 60%")
     print(f"  {NUM_SIMS:,} runs | 35 bets/week | 52 weeks")
     print("=" * 120)
 
@@ -440,18 +473,22 @@ def sweet_spot_finder():
     bankrolls = [5000, 10000, 20000]
 
     for bankroll in bankrolls:
-        print(f"\n  {'━'*110}")
+        print(f"\n  {'━' * 110}")
         print(f"  Starting bankroll: {bankroll:,} kr")
-        print(f"  {'━'*110}")
+        print(f"  {'━' * 110}")
 
-        print(f"\n  {'Kelly':>6s}  {'Cap':>4s}  {'mEP':>4s}  "
-              f"{'Med Profit':>11s}  {'Growth':>7s}  {'P10 Profit':>11s}  "
-              f"{'Play%':>6s}  {'Ruin%':>6s}  "
-              f"{'Med DD':>7s}  {'P90 DD':>7s}  {'Score':>7s}")
-        print(f"  {'-'*6}  {'-'*4}  {'-'*4}  "
-              f"{'-'*11}  {'-'*7}  {'-'*11}  "
-              f"{'-'*6}  {'-'*6}  "
-              f"{'-'*7}  {'-'*7}  {'-'*7}")
+        print(
+            f"\n  {'Kelly':>6s}  {'Cap':>4s}  {'mEP':>4s}  "
+            f"{'Med Profit':>11s}  {'Growth':>7s}  {'P10 Profit':>11s}  "
+            f"{'Play%':>6s}  {'Ruin%':>6s}  "
+            f"{'Med DD':>7s}  {'P90 DD':>7s}  {'Score':>7s}"
+        )
+        print(
+            f"  {'-' * 6}  {'-' * 4}  {'-' * 4}  "
+            f"{'-' * 11}  {'-' * 7}  {'-' * 11}  "
+            f"{'-' * 6}  {'-' * 6}  "
+            f"{'-' * 7}  {'-' * 7}  {'-' * 7}"
+        )
 
         best_score = -999999
         best_combo = ""
@@ -490,13 +527,15 @@ def sweet_spot_finder():
                     marker = ""
                     if score > best_score:
                         best_score = score
-                        best_combo = f"kelly={mk}, cap={cap*100:.0f}%, mEP={mep}"
+                        best_combo = f"kelly={mk}, cap={cap * 100:.0f}%, mEP={mep}"
                         marker = "  ★"
 
-                    print(f"  {mk:>6.2f}  {cap*100:>3.0f}%  {mep:>4.1f}  "
-                          f"{med_profit:>+10,.0f}  {growth:>+6.0f}%  {p10_profit:>+10,.0f}  "
-                          f"{play_pct:>5.1f}%  {ruin_pct:>5.1f}%  "
-                          f"{med_dd:>6.1f}%  {p90_dd:>6.1f}%  {score:>7,.0f}{marker}")
+                    print(
+                        f"  {mk:>6.2f}  {cap * 100:>3.0f}%  {mep:>4.1f}  "
+                        f"{med_profit:>+10,.0f}  {growth:>+6.0f}%  {p10_profit:>+10,.0f}  "
+                        f"{play_pct:>5.1f}%  {ruin_pct:>5.1f}%  "
+                        f"{med_dd:>6.1f}%  {p90_dd:>6.1f}%  {score:>7,.0f}{marker}"
+                    )
 
         print(f"\n  >>> BEST COMBO: {best_combo} (score: {best_score:,.0f})")
 
@@ -511,13 +550,15 @@ def main():
 
     print(f"""
   RISK PROFILES TESTED:
-  {'─'*90}
-  {'Profile':<19s}  {'Max Kelly':>10s}  {'Bet Cap':>8s}  {'mEP':>5s}  {'Description'}
-  {'─'*19}  {'─'*10}  {'─'*8}  {'─'*5}  {'─'*40}""")
+  {"─" * 90}
+  {"Profile":<19s}  {"Max Kelly":>10s}  {"Bet Cap":>8s}  {"mEP":>5s}  {"Description"}
+  {"─" * 19}  {"─" * 10}  {"─" * 8}  {"─" * 5}  {"─" * 40}""")
     for p in RISK_PROFILES:
-        print(f"  {p.name:<19s}  {p.max_kelly:>10.2f}  {p.single_bet_cap*100:>7.0f}%  {p.min_expected_profit:>5.1f}  {p.description}")
+        print(
+            f"  {p.name:<19s}  {p.max_kelly:>10.2f}  {p.single_bet_cap * 100:>7.0f}%  {p.min_expected_profit:>5.1f}  {p.description}"
+        )
 
-    print(f"""
+    print("""
   WHAT CHANGES WITH HIGHER RISK:
   - Higher Kelly → bigger stakes relative to edge → bigger swings
   - Higher cap → single bet can be larger % of bankroll → more concentration risk

@@ -1,5 +1,5 @@
 """
-Arnold Database Models
+Betty Database Models
 
 Database schema for:
 - Canonical events (provider-agnostic)
@@ -14,7 +14,7 @@ Supports PostgreSQL (via DATABASE_URL env var) and SQLite fallback.
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 def _utcnow():
     """Timezone-aware UTC now for column defaults."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 from sqlalchemy import (
@@ -426,7 +426,7 @@ class MirrorProviderState(Base):
     Phase 2 of the platform rebuild (2026-05-08). Local mirror writes on
     every login/balance/tab change so the frontend reads from the DB
     instead of trying to reconstruct state from in-memory + ephemeral SSE
-    + React state. Survives `arnold.bat` restart, browser hard-refresh,
+    + React state. Survives `betty.bat` restart, browser hard-refresh,
     SSH tunnel wedges. Replaces the brittle state-seeding effects.
     """
 

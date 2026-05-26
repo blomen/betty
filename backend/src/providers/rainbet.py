@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 from ..core.browser_retriever import BrowserRetriever
@@ -59,9 +59,9 @@ _TOTAL_PREF: dict[str, list[str]] = {
 }
 
 
-# Betby integer sport_id -> arnold internal sport key.
+# Betby integer sport_id -> betty internal sport key.
 # Reference: discovery doc Section 1 (the 17-row table). Sports not listed here
-# are not extracted by arnold (handball, golf, motorsports, cricket variants,
+# are not extracted by betty (handball, golf, motorsports, cricket variants,
 # etc. - see CLAUDE.md scope).
 _SPORT_ID_TO_ARNOLD: dict[int, str] = {
     1: "football",  # soccer
@@ -72,7 +72,7 @@ _SPORT_ID_TO_ARNOLD: dict[int, str] = {
     10: "boxing",
     16: "american_football",
     117: "mma",  # NOTE: distinct bucket from `esports` despite Betby grouping
-    # All esports collapse to a single arnold sport key:
+    # All esports collapse to a single betty sport key:
     109: "esports",  # Counter-Strike
     110: "esports",  # League of Legends
     111: "esports",  # Dota 2
@@ -86,9 +86,9 @@ _SPORT_ID_TO_ARNOLD: dict[int, str] = {
 
 
 def betby_sport_id_to_arnold(sport_id: int | str | None) -> str | None:
-    """Map a Betby sport_id (int or string-encoded int) to arnold's sport key.
+    """Map a Betby sport_id (int or string-encoded int) to betty's sport key.
 
-    Returns None if the sport is not in arnold's extraction scope (see
+    Returns None if the sport is not in betty's extraction scope (see
     discovery doc Section 1) or if the input cannot be parsed as an integer.
     """
     if sport_id is None or sport_id == "":
@@ -101,7 +101,7 @@ def betby_sport_id_to_arnold(sport_id: int | str | None) -> str | None:
 
 
 def categorize_market(descriptor: dict) -> str | None:
-    """Classify a Betby market descriptor into an arnold market type.
+    """Classify a Betby market descriptor into a betty market type.
 
     The descriptor is one entry from the descriptions catalogue (e.g.
     descriptions["1"], descriptions["219"]). Returns one of
@@ -197,7 +197,7 @@ def pick_main_market(
             shape.
         variants: dict from variant_key (e.g. ``"hcp=-1.5"``) to the variant's
             outcome dict (e.g. ``{"1714": {"k": "1.9"}, "1715": {"k": "1.9"}}``).
-        market_type: arnold market type from :func:`categorize_market`.
+        market_type: betty market type from :func:`categorize_market`.
 
     Returns:
         ``(variant_key, variant_data)`` of the chosen line, or ``None`` if no
@@ -473,13 +473,13 @@ def parse_event(
     start_time = ""
     if isinstance(scheduled, (int, float)):
         try:
-            dt = datetime.fromtimestamp(scheduled, tz=timezone.utc)
+            dt = datetime.fromtimestamp(scheduled, tz=UTC)
             start_time = dt.isoformat().replace("+00:00", "Z")
         except (OverflowError, OSError, ValueError):
             start_time = ""
 
     # ----- Markets -----
-    # Build a dict keyed by arnold market_type, where the value is a dict from
+    # Build a dict keyed by betty market_type, where the value is a dict from
     # market_id -> parsed market dict. After the first pass we run sport-specific
     # preference resolution to pick exactly one market per type (e.g. tennis
     # ships 187 + 188; only 188 survives).

@@ -1,8 +1,8 @@
-# Arnold - Betting Analytics Platform
+# Betty - Betting Analytics Platform
 
 ## WHAT This Project Is
 
-Arnold compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to find value bets.
+Betty compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to find value bets.
 
 **Tech stack:** Python 3.12+ / FastAPI / PostgreSQL / Docker / Playwright | React 19 / TypeScript / Vite / Tailwind
 
@@ -11,11 +11,11 @@ Arnold compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to 
 | Program | Where it runs | What it does | How to start |
 |---------|--------------|--------------|--------------|
 | **Server** | Hetzner 24/7 | Headless data engine: extraction, analysis, DB, API | `docker compose up -d` |
-| **Arnold (local)** | Your PC | Betting client: Sports, Bankroll, Stats, Playwright mirror | `arnold.bat` |
+| **Betty (local)** | Your PC | Betting client: Sports, Bankroll, Stats, Playwright mirror | `betty.bat` |
 
 **Server** is a pure compute/data engine — no UI. Extraction, analysis, opportunity scanning live here.
 
-**Arnold (local)** is one FastAPI process + one React SPA. Tabs: **Sports** (unified arb + value bet play), **Bankroll** (provider balances + Kelly sizing), **Stats** (historical bet performance). The launcher opens an SSH tunnel to the server API, starts the local FastAPI (which reverse-proxies `/api/*` to the tunnel and mounts `/mirror/*` for the Playwright browser control), and then opens the browser.
+**Betty (local)** is one FastAPI process + one React SPA. Tabs: **Sports** (unified arb + value bet play), **Bankroll** (provider balances + Kelly sizing), **Stats** (historical bet performance). The launcher opens an SSH tunnel to the server API, starts the local FastAPI (which reverse-proxies `/api/*` to the tunnel and mounts `/mirror/*` for the Playwright browser control), and then opens the browser.
 
 ## Architecture
 
@@ -37,7 +37,7 @@ Hetzner Server (24/7, headless)              Your PC
                                              │       ├── BankrollPage.tsx
                                              │       └── StatsPage.tsx
                                              │
-                                             └── arnold.bat  → SSH tunnel → server API (port 18000)
+                                             └── betty.bat  → SSH tunnel → server API (port 18000)
 ```
 
 ### Frontend
@@ -73,7 +73,7 @@ backend/src/
 
 ## Production Deployment (IMPORTANT — READ FIRST)
 
-**Arnold runs in production on a Hetzner server. Do NOT try to run the backend locally — it's deployed.**
+**Betty runs in production on a Hetzner server. Do NOT try to run the backend locally — it's deployed.**
 
 ### Server Details
 - **Server**: Hetzner Dedicated i7-7700 (4c/8t, 64 GB RAM, 2x 256 GB SSD RAID 1), Ubuntu 24.04
@@ -164,7 +164,7 @@ Multiple Claude Code agents may work on this repo concurrently. **Follow these r
     - `ssh root@148.251.40.251 "curl -sf http://localhost:8000/health"` — note the `boot_id` (changes on every container restart)
     - `ssh root@148.251.40.251 "cd /opt/arnold/backend && docker compose ps backend --format json | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get(\"CreatedAt\"))'"` — container creation time should be after your deploy completed (docker-compose.yml lives at /opt/arnold/backend)
     - If git HEAD is ahead of what your deploy pulled (e.g. another agent pushed mid-deploy), the running container is stale — re-deploy with `--no-cache` or wait for the next pull cycle.
-13. **Backend deploys vs frontend/local-client changes**: a commit touching ONLY `local/`, `frontend/`, `docs/`, or `CLAUDE.md` is **local-client / docs only** and ships via `arnold.bat` (Vite + local FastAPI) — do NOT trigger a backend rebuild for these. Quick check: `git diff --name-only origin/main...HEAD | grep -vE '^(local|frontend|docs)/|^CLAUDE\.md$|^\.gitignore$|^\.dockerignore$' | head -1` — if empty, no backend deploy needed. Note: ANY change under `backend/` triggers a backend rebuild — after PR A2b this includes `backend/Dockerfile`, `backend/docker-compose*.yml`, `backend/pyproject.toml`, plus `backend/src/`, `backend/scripts/`, `backend/docker/`, `backend/nginx/`.
+13. **Backend deploys vs frontend/local-client changes**: a commit touching ONLY `local/`, `frontend/`, `docs/`, or `CLAUDE.md` is **local-client / docs only** and ships via `betty.bat` (Vite + local FastAPI) — do NOT trigger a backend rebuild for these. Quick check: `git diff --name-only origin/main...HEAD | grep -vE '^(local|frontend|docs)/|^CLAUDE\.md$|^\.gitignore$|^\.dockerignore$' | head -1` — if empty, no backend deploy needed. Note: ANY change under `backend/` triggers a backend rebuild — after PR A2b this includes `backend/Dockerfile`, `backend/docker-compose*.yml`, `backend/pyproject.toml`, plus `backend/src/`, `backend/scripts/`, `backend/docker/`, `backend/nginx/`.
 14. **Background-deploy etiquette**: when running deploys via `Bash run_in_background=true` and SSH, the remote bash survives if you cancel the local task — always `pgrep -fa 'server-deploy.sh'` on the server BEFORE assuming the slot is free.
 
 ### Currencies (READ BEFORE ANY CROSS-PROVIDER MATH)
@@ -209,9 +209,9 @@ The server runs 24/7 without intervention:
 
 If the backend exceeds 48 GB, Docker kills the **container** (not the kernel) and `restart: unless-stopped` brings it back. Without these limits, the OOM killer takes down SSH and requires a Hetzner Robot hard reset.
 
-## Arnold — Local Client
+## Betty — Local Client
 
-**Run `arnold.bat` (repo root) to start.** Opens SSH tunnel to server API + local FastAPI + Playwright browser.
+**Run `betty.bat` (repo root) to start.** Opens SSH tunnel to server API + local FastAPI + Playwright browser.
 
 ### How It Works
 1. SSH tunnel to server API (port 18000 → Docker backend:8000)
@@ -289,7 +289,7 @@ local/
 └── data/                  # local cache (tunnel lock file, etc.)
 
 frontend/                  # React app (repo root) — served by local/server.py
-arnold.bat                 # Windows launcher at repo root — invokes local/launch.py
+betty.bat                 # Windows launcher at repo root — invokes local/launch.py
 ```
 
 ### Frontend (IMPORTANT)

@@ -1,4 +1,4 @@
-"""Arnold local server — sports mirror + static frontend.
+"""Betty local server — sports mirror + static frontend.
 
 Serves one FastAPI process on port 8000:
 - /mirror/*  → Playwright browser control (sports)
@@ -46,10 +46,12 @@ for _name in ("httpx", "httpcore", "playwright", "urllib3", "asyncio"):
 
 logger = logging.getLogger(__name__)
 
-TUNNEL_URL = os.environ.get("ARNOLD_TUNNEL_URL") or os.environ.get("ARNOLDSPORTS_TUNNEL_URL", "http://localhost:18000")
+TUNNEL_URL = os.environ.get("ARNOLD_TUNNEL_URL") or os.environ.get(
+    "ARNOLDSPORTS_TUNNEL_URL", "http://localhost:18000"
+)
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 
-app = FastAPI(title="Arnold", docs_url=None, redoc_url=None)
+app = FastAPI(title="Betty", docs_url=None, redoc_url=None)
 
 browser = MirrorBrowser()
 browser.set_event_callback(mirror_broadcaster.publish)
@@ -89,14 +91,14 @@ if os.path.isdir(FRONTEND_DIR):
 
 @app.on_event("startup")
 async def startup():
-    logger.info("Arnold starting — tunnel: %s", TUNNEL_URL)
+    logger.info("Betty starting — tunnel: %s", TUNNEL_URL)
 
     # Server-side play-loop autostart: polls every 30s and kicks off the
     # polymarket runner whenever it's not running AND polymarket is logged in
     # AND there are +EV opportunities.
     asyncio.create_task(_auto_start_play_loop(), name="play-loop-autostart")
 
-    # Reset stale runner_state rows on launch — a previous arnold.bat that
+    # Reset stale runner_state rows on launch — a previous betty.bat that
     # died abnormally leaves "ready_to_run"/"running" in `mirror_runner_state`.
     asyncio.create_task(_reset_stale_runner_state(), name="reset-runner-state")
 
@@ -113,7 +115,7 @@ async def startup():
 
 
 async def _reset_stale_runner_state() -> None:
-    """Clear stale mirror_runner_state rows on every arnold.bat launch."""
+    """Clear stale mirror_runner_state rows on every betty.bat launch."""
     try:
         from mirror.state_writer import write_runner_state
 
@@ -124,7 +126,9 @@ async def _reset_stale_runner_state() -> None:
         try:
             r = await client.get("/api/mirror/state", timeout=10.0)
             if r.status_code != 200:
-                logger.debug(f"[reset-runner-state] GET /api/mirror/state status={r.status_code}")
+                logger.debug(
+                    f"[reset-runner-state] GET /api/mirror/state status={r.status_code}"
+                )
                 return
             payload = r.json()
         except Exception as e:
@@ -168,9 +172,15 @@ async def _auto_start_play_loop() -> None:
             if pstatus.status_code == 200:
                 pdata = pstatus.json()
                 poly_runner = (pdata.get("providers") or {}).get("polymarket") or {}
-                if poly_runner.get("state") and poly_runner.get("state") not in ("idle", "none", None):
+                if poly_runner.get("state") and poly_runner.get("state") not in (
+                    "idle",
+                    "none",
+                    None,
+                ):
                     continue  # already running
-            bresp = await tunnel.post("/api/opportunities/play/batch", json={}, timeout=10.0)
+            bresp = await tunnel.post(
+                "/api/opportunities/play/batch", json={}, timeout=10.0
+            )
             if bresp.status_code != 200:
                 continue
             bdata = bresp.json()
@@ -183,7 +193,9 @@ async def _auto_start_play_loop() -> None:
                 "batch": poly_bets,
                 "balances": {"polymarket": balance},
             }
-            sresp = await local.post("/mirror/play/start", json=start_payload, timeout=10.0)
+            sresp = await local.post(
+                "/mirror/play/start", json=start_payload, timeout=10.0
+            )
             if sresp.status_code == 200:
                 print(
                     f"[play-autostart] kicked off polymarket runner — "
@@ -212,4 +224,4 @@ async def shutdown():
         await close_proxy_clients()
     except Exception:
         logger.exception("HTTP client shutdown raised")
-    logger.info("Arnold stopped")
+    logger.info("Betty stopped")

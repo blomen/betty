@@ -1,5 +1,5 @@
 """
-Arnold Growth Simulation — Pure +EV Model (All Streams)
+Betty Growth Simulation — Pure +EV Model (All Streams)
 =============================================================
 All bets are +EV. No hedging, no arb, no churning.
 

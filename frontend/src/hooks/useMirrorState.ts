@@ -9,7 +9,7 @@
  * 5s thereafter.
  *
  * Why this matters:
- *  - Survives `arnold.bat` restart (state persists in DB, not in-memory)
+ *  - Survives `betty.bat` restart (state persists in DB, not in-memory)
  *  - Survives browser hard-refresh (frontend reads DB instead of waiting for SSE)
  *  - Survives SSH tunnel wedges (eventually-consistent recovery once the
  *    tunnel comes back, vs the previous all-or-nothing failure mode)

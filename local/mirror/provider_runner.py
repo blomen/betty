@@ -115,7 +115,9 @@ READY_BALANCE_SYNC_INTERVAL_S = 60.0
 READY_PENDING_SYNC_INTERVAL_S = 300.0
 
 
-def should_redirect_to_top(live_edge: float | None, queue_top_edge: float | None) -> bool:
+def should_redirect_to_top(
+    live_edge: float | None, queue_top_edge: float | None
+) -> bool:
     """Zero-hysteresis convergence check.
 
     Returns True iff live_edge < queue_top_edge AND both values are present.
@@ -131,7 +133,9 @@ def should_redirect_to_top(live_edge: float | None, queue_top_edge: float | None
     return queue_top_edge > live_edge
 
 
-def should_dethrone_at_ready(live_edge: float | None, queue_top_edge: float | None) -> bool:
+def should_dethrone_at_ready(
+    live_edge: float | None, queue_top_edge: float | None
+) -> bool:
     """At-READY dethrone with DETHRONE_HYSTERESIS_PCT buffer.
 
     Returns True iff queue_top_edge >= live_edge + hysteresis. Used by
@@ -186,7 +190,9 @@ class ProviderRunner:
         self._intercepted_request_body: dict | None = None
 
         self._task: asyncio.Task | None = None
-        self._slip_stream = None  # Set when a slip is loaded; cleared when bet ready/placed/skipped
+        self._slip_stream = (
+            None  # Set when a slip is loaded; cleared when bet ready/placed/skipped
+        )
         # Per-bet convergence iteration counter — reset to 0 each time we
         # successfully reach READY. Used as a hard cap so a flapping queue
         # can't cause infinite re-navigation. See should_redirect_to_top.
@@ -254,7 +260,9 @@ class ProviderRunner:
                 self.provider_id,
                 state=value,
                 mode="value",
-                current_opp_id=(self.current_bet or {}).get("bet_id") if self.current_bet else None,
+                current_opp_id=(self.current_bet or {}).get("bet_id")
+                if self.current_bet
+                else None,
             )
         except Exception as e:
             logger.debug(f"[Runner:{self.provider_id}] state_writer failed: {e!r}")
@@ -287,19 +295,25 @@ class ProviderRunner:
 
     def on_bet_intercepted(self, body: dict, request_body: dict | None = None) -> None:
         if self.state in (STATE_READY, STATE_NAVIGATING, STATE_PLACING):
-            logger.info(f"[Runner:{self.provider_id}] Bet intercepted (state={self.state})")
+            logger.info(
+                f"[Runner:{self.provider_id}] Bet intercepted (state={self.state})"
+            )
             self._intercepted_body = body
             self._intercepted_request_body = request_body
             self._bet_intercepted_event.set()
         else:
             # Runner busy (settling/login/idle) — record asynchronously so the bet isn't lost
-            logger.warning(f"[Runner:{self.provider_id}] Bet intercepted in state={self.state} — recording async")
+            logger.warning(
+                f"[Runner:{self.provider_id}] Bet intercepted in state={self.state} — recording async"
+            )
             asyncio.create_task(
                 self._record_async_interception(body, request_body),
                 name=f"async_bet_{self.provider_id}",
             )
 
-    async def _record_async_interception(self, body: dict, request_body: dict | None) -> None:
+    async def _record_async_interception(
+        self, body: dict, request_body: dict | None
+    ) -> None:
         """Record a bet intercepted while the runner wasn't in READY state."""
         from .workflows import get_workflow
 
@@ -311,7 +325,9 @@ class ProviderRunner:
             try:
                 pstatus = workflow.parse_placement_status(body)
                 if not pstatus["success"]:
-                    logger.info(f"[Runner:{pid}] Async interception was a failed placement — ignoring")
+                    logger.info(
+                        f"[Runner:{pid}] Async interception was a failed placement — ignoring"
+                    )
                     return
             except Exception:
                 pass
@@ -331,7 +347,11 @@ class ProviderRunner:
                 actual_stake = details.get("actual_stake")
             except Exception:
                 pass
-        if not actual_stake and request_body and hasattr(workflow, "parse_placement_request_stake"):
+        if (
+            not actual_stake
+            and request_body
+            and hasattr(workflow, "parse_placement_request_stake")
+        ):
             try:
                 actual_stake = workflow.parse_placement_request_stake(request_body)
             except Exception:
@@ -417,7 +437,9 @@ class ProviderRunner:
             stake = cached_bal
         cap = self._stake_caps.get(pid)
         if cap is not None and cap > 0 and stake > cap:
-            logger.info(f"[Runner:{pid}] Capping stake {stake} → {cap} (provider limit)")
+            logger.info(
+                f"[Runner:{pid}] Capping stake {stake} → {cap} (provider limit)"
+            )
             stake = cap
         bet["stake"] = stake
         bet_ns.stake = stake
@@ -425,7 +447,11 @@ class ProviderRunner:
 
         live_odds = prep_result.actual_odds if prep_result else None
         live_edge = bet.get("edge_pct")
-        if prep_result and prep_result.status != "failed" and hasattr(workflow, "check_live_price"):
+        if (
+            prep_result
+            and prep_result.status != "failed"
+            and hasattr(workflow, "check_live_price")
+        ):
             try:
                 lo, le = await workflow.check_live_price(page, bet_ns)
                 if lo is not None:
@@ -451,7 +477,9 @@ class ProviderRunner:
                         try:
                             await workflow.fetch_balance(page)
                         except Exception as e:
-                            logger.debug(f"[Runner:{pid}] ready balance sync failed: {e!r}")
+                            logger.debug(
+                                f"[Runner:{pid}] ready balance sync failed: {e!r}"
+                            )
                     last_balance = now
                 if now - last_pending >= READY_PENDING_SYNC_INTERVAL_S:
                     try:
@@ -537,7 +565,9 @@ class ProviderRunner:
 
             if page is None:
                 logger.warning(f"[Runner:{pid}] No tab found — stopping")
-                self._broadcaster.publish("provider_skipped", {"provider_id": pid, "reason": "no_tab"})
+                self._broadcaster.publish(
+                    "provider_skipped", {"provider_id": pid, "reason": "no_tab"}
+                )
                 return
 
             # 2. Wait for login
@@ -546,7 +576,9 @@ class ProviderRunner:
             logged_in = await self._wait_for_login(workflow, page)
             if not logged_in:
                 logger.warning(f"[Runner:{pid}] Login timeout — stopping")
-                self._broadcaster.publish("provider_skipped", {"provider_id": pid, "reason": "login_timeout"})
+                self._broadcaster.publish(
+                    "provider_skipped", {"provider_id": pid, "reason": "login_timeout"}
+                )
                 return
 
             # 3. Detect settlements (broadcast only — user confirms from UI)
@@ -557,10 +589,15 @@ class ProviderRunner:
                 await self._fetch_placed_today(pid)
                 placed = self._placed_today.get(pid, 0)
                 if placed >= DAILY_BET_CAP:
-                    logger.info(f"[Runner:{pid}] At daily cap ({placed}/{DAILY_BET_CAP})")
+                    logger.info(
+                        f"[Runner:{pid}] At daily cap ({placed}/{DAILY_BET_CAP})"
+                    )
                     self._broadcaster.publish(
                         "provider_complete",
-                        {"provider_id": pid, "reason": f"daily cap ({placed}/{DAILY_BET_CAP})"},
+                        {
+                            "provider_id": pid,
+                            "reason": f"daily cap ({placed}/{DAILY_BET_CAP})",
+                        },
                     )
                     return
 
@@ -582,7 +619,10 @@ class ProviderRunner:
                     if placed >= DAILY_BET_CAP:
                         self._broadcaster.publish(
                             "provider_complete",
-                            {"provider_id": pid, "reason": f"daily cap ({placed}/{DAILY_BET_CAP})"},
+                            {
+                                "provider_id": pid,
+                                "reason": f"daily cap ({placed}/{DAILY_BET_CAP})",
+                            },
                         )
                         break
 
@@ -605,9 +645,13 @@ class ProviderRunner:
                             break
                     bet = self._pop_bet()
                     if bet is None:
-                        logger.info(f"[Runner:{pid}] Queue still empty after 10min idle — done")
+                        logger.info(
+                            f"[Runner:{pid}] Queue still empty after 10min idle — done"
+                        )
                         break
-                    logger.info(f"[Runner:{pid}] Resumed from idle — {idle_seconds}s wait")
+                    logger.info(
+                        f"[Runner:{pid}] Resumed from idle — {idle_seconds}s wait"
+                    )
 
                 # Release the tab back to home_url so the pending loop can sync
                 # history while we wait for the next bet to be popped/processed.
@@ -615,32 +659,53 @@ class ProviderRunner:
                 # Only do this between bets (not on the very first bet).
                 if self.stats["total"] > 0:
                     try:
-                        page_release = await workflow.find_tab(self._browser.context) if self._browser.context else None
-                        if page_release and workflow.home_url and workflow.domain not in (page_release.url or ""):
+                        page_release = (
+                            await workflow.find_tab(self._browser.context)
+                            if self._browser.context
+                            else None
+                        )
+                        if (
+                            page_release
+                            and workflow.home_url
+                            and workflow.domain not in (page_release.url or "")
+                        ):
                             pass  # Already away from provider — let the user / pending_loop drive
                         elif page_release and workflow.home_url:
                             current = (page_release.url or "").rstrip("/")
                             home = workflow.home_url.rstrip("/")
                             if current != home:
-                                await page_release.goto(workflow.home_url, wait_until="domcontentloaded", timeout=10000)
+                                await page_release.goto(
+                                    workflow.home_url,
+                                    wait_until="domcontentloaded",
+                                    timeout=10000,
+                                )
                     except Exception:
                         pass
 
                 if self._is_blocked(bet):
-                    logger.debug(f"[Runner:{pid}] Skipping blocked bet: {bet.get('event_id')} {bet.get('market')}")
+                    logger.debug(
+                        f"[Runner:{pid}] Skipping blocked bet: {bet.get('event_id')} {bet.get('market')}"
+                    )
                     continue
 
                 # Skip events where provider already has an open position
                 meta = bet.get("provider_meta") or {}
                 provider_eid = str(meta.get("event_id", ""))
-                if provider_eid and hasattr(workflow, "_open_kambi_eids") and provider_eid in workflow._open_kambi_eids:
+                if (
+                    provider_eid
+                    and hasattr(workflow, "_open_kambi_eids")
+                    and provider_eid in workflow._open_kambi_eids
+                ):
                     logger.info(
                         f"[Runner:{pid}] Skipping — already have open bet on event {provider_eid} "
                         f"({bet.get('display_home')} v {bet.get('display_away')})"
                     )
                     self._broadcaster.publish(
                         "bet_skipped",
-                        {"bet": bet, "reason": f"existing open position on event {provider_eid}"},
+                        {
+                            "bet": bet,
+                            "reason": f"existing open position on event {provider_eid}",
+                        },
                     )
                     self.stats["skipped"] += 1
                     continue
@@ -667,12 +732,18 @@ class ProviderRunner:
                         "provider_id": pid,
                         "bet": bet,
                         "skipped_so_far": self.stats["skipped"],
-                        "consecutive_hard_fails": getattr(self, "_consecutive_hard_fails", 0),
+                        "consecutive_hard_fails": getattr(
+                            self, "_consecutive_hard_fails", 0
+                        ),
                     },
                 )
 
                 workflow = get_workflow(pid)
-                page = await workflow.find_tab(self._browser.context) if self._browser.context else None
+                page = (
+                    await workflow.find_tab(self._browser.context)
+                    if self._browser.context
+                    else None
+                )
                 if page is None:
                     logger.warning(f"[Runner:{pid}] Lost tab mid-run — skipping bet")
                     self.stats["skipped"] += 1
@@ -682,13 +753,17 @@ class ProviderRunner:
                 nav_ok = await workflow.navigate_to_event(page, bet_ns)
                 if not nav_ok:
                     logger.warning(f"[Runner:{pid}] Navigation failed — skipping bet")
-                    self._broadcaster.publish("bet_skipped", {"bet": bet, "reason": "navigation_failed"})
+                    self._broadcaster.publish(
+                        "bet_skipped", {"bet": bet, "reason": "navigation_failed"}
+                    )
                     self.stats["skipped"] += 1
                     self._track_hard_fail(pid)
                     continue
 
                 if await self._is_event_closed(page):
-                    self._broadcaster.publish("bet_skipped", {"bet": bet, "reason": "event_closed"})
+                    self._broadcaster.publish(
+                        "bet_skipped", {"bet": bet, "reason": "event_closed"}
+                    )
                     self.stats["skipped"] += 1
                     # Closed events go through the same 60s TTL as prep hard-fails
                     # so they don't immediately re-pop on the next _refresh_batch.
@@ -700,11 +775,15 @@ class ProviderRunner:
                 # this in a convergence loop: re-pop the queue's new top whenever
                 # live edge drops below it. Cap iterations at CONVERGENCE_MAX_ITER.
                 # Single-pass providers (cloudbet/kalshi) skip the loop.
-                prep_result, live_odds, live_edge = await self._prep_and_read_live_edge(bet, pid, workflow, page)
+                prep_result, live_odds, live_edge = await self._prep_and_read_live_edge(
+                    bet, pid, workflow, page
+                )
 
                 # Hard-fail handling (any provider).
                 if prep_result and prep_result.status == "failed":
-                    logger.warning(f"[Runner:{pid}] Prep failed: {prep_result.reason} — skipping bet")
+                    logger.warning(
+                        f"[Runner:{pid}] Prep failed: {prep_result.reason} — skipping bet"
+                    )
                     self._broadcaster.publish(
                         "bet_skipped",
                         {"bet": bet, "reason": f"prep_failed: {prep_result.reason}"},
@@ -724,12 +803,20 @@ class ProviderRunner:
                     while self._convergence_iter < CONVERGENCE_MAX_ITER:
                         try:
                             queue_top = (
-                                self._peek_top_edge((bet.get("event_id"), bet.get("market"), bet.get("outcome")))
+                                self._peek_top_edge(
+                                    (
+                                        bet.get("event_id"),
+                                        bet.get("market"),
+                                        bet.get("outcome"),
+                                    )
+                                )
                                 if self._peek_top_edge
                                 else None
                             )
                         except TypeError:
-                            queue_top = self._peek_top_edge() if self._peek_top_edge else None
+                            queue_top = (
+                                self._peek_top_edge() if self._peek_top_edge else None
+                            )
                         if not should_redirect_to_top(live_edge, queue_top):
                             break  # Active bet IS top — proceed to READY.
                         # Stamp live edge on the bet and push back.
@@ -739,7 +826,7 @@ class ProviderRunner:
                         # Broadcast live_price so the frontend's livePrices map
                         # picks up the new edge and re-sorts the list. Without
                         # this, the UI shows the bet at its stale cached edge
-                        # (e.g. 14.7%) while local arnold's queue has it stamped
+                        # (e.g. 14.7%) while local betty's queue has it stamped
                         # at the live value (e.g. 12.0%) — visible mismatch.
                         if live_edge is not None:
                             self._broadcaster.publish(
@@ -780,7 +867,9 @@ class ProviderRunner:
                             # READY on it. Duplicate-in-queue is OK: the dethrone watcher
                             # excludes the active bet's own _active_key, and _refresh_batch
                             # dedups by (event_id, market, outcome) on the next 10s tick.
-                            logger.warning(f"[Runner:{pid}] Queue empty mid-convergence — falling through")
+                            logger.warning(
+                                f"[Runner:{pid}] Queue empty mid-convergence — falling through"
+                            )
                             break
                         bet = new_bet
                         bet["provider_id"] = pid
@@ -788,23 +877,35 @@ class ProviderRunner:
                         bet_ns = _bet_ns(bet)
                         nav_ok = await workflow.navigate_to_event(page, bet_ns)
                         if not nav_ok:
-                            self._broadcaster.publish("bet_skipped", {"bet": bet, "reason": "navigation_failed"})
+                            self._broadcaster.publish(
+                                "bet_skipped",
+                                {"bet": bet, "reason": "navigation_failed"},
+                            )
                             self.stats["skipped"] += 1
                             redirected = True
                             break
                         if await self._is_event_closed(page):
-                            self._broadcaster.publish("bet_skipped", {"bet": bet, "reason": "event_closed"})
+                            self._broadcaster.publish(
+                                "bet_skipped", {"bet": bet, "reason": "event_closed"}
+                            )
                             self.stats["skipped"] += 1
                             self._mark_recently_skipped(bet)
                             redirected = True
                             break
-                        prep_result, live_odds, live_edge = await self._prep_and_read_live_edge(
+                        (
+                            prep_result,
+                            live_odds,
+                            live_edge,
+                        ) = await self._prep_and_read_live_edge(
                             bet, pid, workflow, page
                         )
                         if prep_result and prep_result.status == "failed":
                             self._broadcaster.publish(
                                 "bet_skipped",
-                                {"bet": bet, "reason": f"prep_failed: {prep_result.reason}"},
+                                {
+                                    "bet": bet,
+                                    "reason": f"prep_failed: {prep_result.reason}",
+                                },
                             )
                             self.stats["skipped"] += 1
                             if is_hard_fail_reason(prep_result.reason):
@@ -905,7 +1006,9 @@ class ProviderRunner:
                     # Auto-skip logic
                     if edge is not None:
                         if edge < 0:
-                            _auto_skip_reason = f"negative EV ({odds:.2f}, edge {edge:.1f}%)"
+                            _auto_skip_reason = (
+                                f"negative EV ({odds:.2f}, edge {edge:.1f}%)"
+                            )
                             self._skip_event.set()
                             return
                         # Edge-drift from intent: live odds moved against us so
@@ -928,7 +1031,11 @@ class ProviderRunner:
                             return
                         if self._peek_top_edge:
                             top_edge = self._peek_top_edge()
-                            if top_edge is not None and top_edge > 0 and edge < top_edge * 0.5:
+                            if (
+                                top_edge is not None
+                                and top_edge > 0
+                                and edge < top_edge * 0.5
+                            ):
                                 _auto_skip_reason = f"edge dropped ({edge:.1f}% < 50% of top {top_edge:.1f}%)"
                                 self._skip_event.set()
 
@@ -950,7 +1057,11 @@ class ProviderRunner:
                 # top edge. Without this exclusion, refresh_batch re-adds the
                 # active bet at its cached edge and dethrone fires falsely
                 # whenever the live edge dips below the cached value.
-                _active_key = (bet.get("event_id"), bet.get("market"), bet.get("outcome"))
+                _active_key = (
+                    bet.get("event_id"),
+                    bet.get("market"),
+                    bet.get("outcome"),
+                )
 
                 async def _watch_for_better() -> None:
                     nonlocal _dethrone_reason, _auto_skip_reason, _dethrone_reinsert
@@ -979,7 +1090,9 @@ class ProviderRunner:
                             continue
                         # Dethrone fires — push active bet back at its live edge
                         # and exit the wait so the runner pops the new top.
-                        bet["edge_pct"] = compare_edge if compare_edge is not None else _intent_edge
+                        bet["edge_pct"] = (
+                            compare_edge if compare_edge is not None else _intent_edge
+                        )
                         self._push_bet(bet)
                         # Atomically refresh the frontend's livePrices for this
                         # bet so the list shows the stamped live edge from the
@@ -1027,7 +1140,9 @@ class ProviderRunner:
                     poll_interval_s=1.0,
                 )
                 self._slip_stream.start()
-                _dethrone_task = asyncio.create_task(_watch_for_better(), name=f"dethrone_{pid}")
+                _dethrone_task = asyncio.create_task(
+                    _watch_for_better(), name=f"dethrone_{pid}"
+                )
 
                 # Polymarket-specific watcher: SlipOddsStream's read_slip_odds is
                 # not implemented for polymarket (no betslip-widget scraper like
@@ -1060,7 +1175,11 @@ class ProviderRunner:
                     bet_ns = _bet_ns(bet)
                     fair = bet.get("fair_odds")
                     strat = getattr(workflow, "strategy", None)
-                    restore = getattr(strat, "restore_amount_if_cleared", None) if strat else None
+                    restore = (
+                        getattr(strat, "restore_amount_if_cleared", None)
+                        if strat
+                        else None
+                    )
                     try:
                         await asyncio.sleep(0.5)
                     except asyncio.CancelledError:
@@ -1096,10 +1215,15 @@ class ProviderRunner:
                             try:
                                 await restore(page, stake)
                             except Exception:
-                                logger.debug(f"[Runner:{pid}] amount-keeper raised", exc_info=True)
+                                logger.debug(
+                                    f"[Runner:{pid}] amount-keeper raised",
+                                    exc_info=True,
+                                )
 
                 if pid == "polymarket":
-                    _poly_watch_task = asyncio.create_task(_watch_polymarket(), name=f"poly_watch_{pid}")
+                    _poly_watch_task = asyncio.create_task(
+                        _watch_polymarket(), name=f"poly_watch_{pid}"
+                    )
 
                 try:
                     # READY-state timeout: cycle to next bet if user hasn't
@@ -1121,7 +1245,9 @@ class ProviderRunner:
                         fut.cancel()
                     if not done and _wait_timeout:
                         # Timeout fired — auto-skip on stale READY.
-                        _auto_skip_reason = f"READY-timeout ({READY_TIMEOUT_S:.0f}s without user click)"
+                        _auto_skip_reason = (
+                            f"READY-timeout ({READY_TIMEOUT_S:.0f}s without user click)"
+                        )
                         self._skip_event.set()
                 finally:
                     if _poly_watch_task and not _poly_watch_task.done():
@@ -1144,7 +1270,10 @@ class ProviderRunner:
 
                 # If auto-skip fired during streaming, broadcast bet_skipped here
                 # (the wait above completed because _skip_event was set)
-                if _auto_skip_reason is not None and not self._bet_intercepted_event.is_set():
+                if (
+                    _auto_skip_reason is not None
+                    and not self._bet_intercepted_event.is_set()
+                ):
                     if _dethrone_reinsert:
                         # bet_reinserted was already broadcast inside _watch_for_better.
                         # Don't double-broadcast as a skip and don't bump stats["skipped"]
@@ -1171,14 +1300,20 @@ class ProviderRunner:
                 if self._bet_intercepted_event.is_set():
                     self.state = STATE_PLACING
                     try:
-                        await self._handle_placement(bet, pid, workflow, page, prep_result, stake)
+                        await self._handle_placement(
+                            bet, pid, workflow, page, prep_result, stake
+                        )
                     except Exception:
                         logger.exception(f"[Runner:{pid}] Recording failed")
-                        self._broadcaster.publish("bet_error", {"bet": bet, "reason": "record_exception"})
+                        self._broadcaster.publish(
+                            "bet_error", {"bet": bet, "reason": "record_exception"}
+                        )
                         self.stats["skipped"] += 1
                         # Recording exception is transient — don't lock out.
                 elif self._skip_event.is_set() and _auto_skip_reason is None:
-                    self._broadcaster.publish("bet_skipped", {"bet": bet, "reason": "user_skip"})
+                    self._broadcaster.publish(
+                        "bet_skipped", {"bet": bet, "reason": "user_skip"}
+                    )
                     self.stats["skipped"] += 1
                     # User skip — explicit "I don't want this now" — keep the
                     # short cooldown (60s, see play_loop._recently_skipped_ttl_s)
@@ -1202,7 +1337,9 @@ class ProviderRunner:
     # Placement handling — extracted from PlayLoop._run() inner block
     # ------------------------------------------------------------------
 
-    async def _handle_placement(self, bet: dict, pid: str, workflow, page, prep_result, stake: float) -> None:
+    async def _handle_placement(
+        self, bet: dict, pid: str, workflow, page, prep_result, stake: float
+    ) -> None:
         provider_bet_id = None
         actual_odds = prep_result.actual_odds
         actual_stake = prep_result.actual_stake
@@ -1227,16 +1364,24 @@ class ProviderRunner:
                     actual_odds = details["actual_odds"]
             if actual_stake == requested_stake and self._intercepted_request_body:
                 if hasattr(workflow, "parse_placement_request_stake"):
-                    req_stake = workflow.parse_placement_request_stake(self._intercepted_request_body)
+                    req_stake = workflow.parse_placement_request_stake(
+                        self._intercepted_request_body
+                    )
                     if req_stake:
                         actual_stake = req_stake
 
-            if actual_stake and requested_stake and actual_stake < requested_stake * 0.9:
+            if (
+                actual_stake
+                and requested_stake
+                and actual_stake < requested_stake * 0.9
+            ):
                 # Save cap for this provider so future bets respect it
                 prev_cap = self._stake_caps.get(pid)
                 if prev_cap is None or actual_stake < prev_cap:
                     self._stake_caps[pid] = actual_stake
-                    logger.info(f"[Runner:{pid}] Stake cap learned: {actual_stake} (was requesting {requested_stake})")
+                    logger.info(
+                        f"[Runner:{pid}] Stake cap learned: {actual_stake} (was requesting {requested_stake})"
+                    )
                 self._broadcaster.publish(
                     "stake_limited",
                     {
@@ -1250,7 +1395,9 @@ class ProviderRunner:
 
         # Autonomous placement (Pinnacle)
         _balance_synced = False
-        if not self._intercepted_body and getattr(workflow, "autonomous_placement", False):
+        if not self._intercepted_body and getattr(
+            workflow, "autonomous_placement", False
+        ):
             bet_ns = _bet_ns(bet)
             api_result = await workflow.place_bet(page, bet_ns, stake)
             if api_result.status == "placed":
@@ -1263,11 +1410,15 @@ class ProviderRunner:
                 except Exception:
                     pass
             elif api_result.status == "skipped":
-                self._broadcaster.publish("bet_skipped", {"bet": bet, "reason": api_result.reason})
+                self._broadcaster.publish(
+                    "bet_skipped", {"bet": bet, "reason": api_result.reason}
+                )
                 self.stats["skipped"] += 1
                 return
             else:
-                self._broadcaster.publish("bet_failed", {"bet": bet, "reason": api_result.reason})
+                self._broadcaster.publish(
+                    "bet_failed", {"bet": bet, "reason": api_result.reason}
+                )
                 self.stats["skipped"] += 1
                 return
         else:
@@ -1336,7 +1487,11 @@ class ProviderRunner:
                         bal = await workflow.sync_balance(page)
                     except Exception:
                         bal = None
-                    return True, bal if (bal is not None and bal >= 0) else None, "workflow"
+                    return (
+                        True,
+                        bal if (bal is not None and bal >= 0) else None,
+                        "workflow",
+                    )
             except Exception:
                 pass
             return False, None, None
@@ -1389,7 +1544,9 @@ class ProviderRunner:
                 # First positive — record and re-check after the gap.
                 last_positive_source = source
                 last_positive_balance = bal
-                logger.debug(f"[Runner:{pid}] Login signal positive via {source}; awaiting second confirmation")
+                logger.debug(
+                    f"[Runner:{pid}] Login signal positive via {source}; awaiting second confirmation"
+                )
                 await asyncio.sleep(_LOGIN_CONFIRM_GAP_S)
                 elapsed += _LOGIN_CONFIRM_GAP_S
                 continue
@@ -1397,11 +1554,17 @@ class ProviderRunner:
             # No positive this tick — reset confirmation state.
             last_positive_source = None
             last_positive_balance = None
-            await asyncio.sleep(_LOGIN_FAST_POLL_S if elapsed < 30 else LOGIN_POLL_INTERVAL)
+            await asyncio.sleep(
+                _LOGIN_FAST_POLL_S if elapsed < 30 else LOGIN_POLL_INTERVAL
+            )
             elapsed += _LOGIN_FAST_POLL_S if elapsed < 30 else LOGIN_POLL_INTERVAL
             self._broadcaster.publish(
                 "login_waiting",
-                {"provider_id": pid, "elapsed": round(elapsed), "timeout": LOGIN_TIMEOUT},
+                {
+                    "provider_id": pid,
+                    "elapsed": round(elapsed),
+                    "timeout": LOGIN_TIMEOUT,
+                },
             )
         return False
 
@@ -1585,7 +1748,12 @@ class ProviderRunner:
                 )
                 self._broadcaster.publish(
                     "settling_done",
-                    {"provider_id": provider_id, "pending_count": 0, "settled_count": 0, "skipped_fast_path": True},
+                    {
+                        "provider_id": provider_id,
+                        "pending_count": 0,
+                        "settled_count": 0,
+                        "skipped_fast_path": True,
+                    },
                 )
                 return
 
@@ -1599,23 +1767,35 @@ class ProviderRunner:
                 # passive PendingLoop scrapes on its 60s tick once the user
                 # lands there. So if they're not on /portfolio, settle is a
                 # no-op this cycle and they pick up next time.
-                if "/portfolio" not in (page.url or "") or "tab=history" in (page.url or ""):
-                    logger.info(f"[Runner:{provider_id}] tab not on /portfolio — skipping settle (manual nav required)")
+                if "/portfolio" not in (page.url or "") or "tab=history" in (
+                    page.url or ""
+                ):
+                    logger.info(
+                        f"[Runner:{provider_id}] tab not on /portfolio — skipping settle (manual nav required)"
+                    )
 
                 # Scrape positions BEFORE redeeming (status visible: WON/LOST)
                 positions = await strat.scrape_portfolio(page, intel)
-                logger.info(f"[Runner:{provider_id}] Scraped {len(positions)} positions")
+                logger.info(
+                    f"[Runner:{provider_id}] Scraped {len(positions)} positions"
+                )
 
                 # Match scraped positions against pending bets to build settlements
                 settlements = []
                 if pending_bets and positions:
-                    settlements = self._match_polymarket_settlements(pending_bets, positions)
-                    logger.info(f"[Runner:{provider_id}] Matched {len(settlements)} settlements")
+                    settlements = self._match_polymarket_settlements(
+                        pending_bets, positions
+                    )
+                    logger.info(
+                        f"[Runner:{provider_id}] Matched {len(settlements)} settlements"
+                    )
 
                 # Click Claim banner if present
                 claim_result = await strat.claim_banner(page, intel)
                 if claim_result.get("claimed"):
-                    logger.info(f"[Runner:{provider_id}] Claimed: {claim_result.get('amount')}")
+                    logger.info(
+                        f"[Runner:{provider_id}] Claimed: {claim_result.get('amount')}"
+                    )
                     await asyncio.sleep(2)
 
                 # Click Redeem buttons for finished positions
@@ -1625,7 +1805,9 @@ class ProviderRunner:
                 # Record settlements to DB via API proxy
                 if settlements:
                     await self._record_settlements(provider_id, settlements)
-                    logger.info(f"[Runner:{provider_id}] Recorded {len(settlements)} settlements to DB")
+                    logger.info(
+                        f"[Runner:{provider_id}] Recorded {len(settlements)} settlements to DB"
+                    )
                     self._broadcaster.publish(
                         "settlements_confirmed",
                         {"provider_id": provider_id, "settlements": settlements},
@@ -1636,7 +1818,9 @@ class ProviderRunner:
                 # ghost. Scrape history → fuzzy-match → reconcile → settle. Without
                 # this, old already-resolved bets accumulate as ghost-pending forever.
                 settled_ids = {s.get("bet_id") for s in settlements if s.get("bet_id")}
-                unmatched = [b for b in pending_bets if b.get("bet_id") not in settled_ids]
+                unmatched = [
+                    b for b in pending_bets if b.get("bet_id") not in settled_ids
+                ]
                 if unmatched and getattr(strat, "sync_history", None):
                     try:
                         raw_history = await workflow.sync_history(page)
@@ -1671,14 +1855,18 @@ class ProviderRunner:
                                 f"[Runner:{provider_id}] history-fallback reconciled {n}/{len(unmatched)} unmatched bets"
                             )
                     except Exception:
-                        logger.exception(f"[Runner:{provider_id}] history-fallback reconcile failed")
+                        logger.exception(
+                            f"[Runner:{provider_id}] history-fallback reconcile failed"
+                        )
 
                 # Sync balance after claim/redeem
                 try:
                     balance = await workflow.sync_balance(page)
                     if balance >= 0:
                         await self._post_balance(provider_id, balance)
-                        logger.info(f"[Runner:{provider_id}] Balance synced: ${balance:.2f}")
+                        logger.info(
+                            f"[Runner:{provider_id}] Balance synced: ${balance:.2f}"
+                        )
                 except Exception:
                     pass
 
@@ -1701,10 +1889,17 @@ class ProviderRunner:
         # lands later. Mirrors the Polymarket fast-path above and the same
         # short-circuit in ArbRunner._detect_pending.
         if not pending_bets:
-            logger.info(f"[Runner:{provider_id}] No DB pending bets — skipping startup settlement")
+            logger.info(
+                f"[Runner:{provider_id}] No DB pending bets — skipping startup settlement"
+            )
             self._broadcaster.publish(
                 "settling_done",
-                {"provider_id": provider_id, "pending_count": 0, "settled_count": 0, "skipped_no_pending": True},
+                {
+                    "provider_id": provider_id,
+                    "pending_count": 0,
+                    "settled_count": 0,
+                    "skipped_no_pending": True,
+                },
             )
             return
 
@@ -1756,17 +1951,25 @@ class ProviderRunner:
         if n:
             logger.info(f"[Runner:{provider_id}] reconciled {n} bets")
         else:
-            logger.info(f"[Runner:{provider_id}] {len(pending_bets)} DB pending — all still open")
+            logger.info(
+                f"[Runner:{provider_id}] {len(pending_bets)} DB pending — all still open"
+            )
 
         await self._record_unknown_open_bets(provider_id, history, pending_bets)
 
         self._broadcaster.publish(
             "settling_done",
-            {"provider_id": provider_id, "pending_count": len(pending_bets), "settled_count": n or 0},
+            {
+                "provider_id": provider_id,
+                "pending_count": len(pending_bets),
+                "settled_count": n or 0,
+            },
         )
 
     @staticmethod
-    def _match_polymarket_settlements(pending_bets: list[dict], positions: list[dict]) -> list[dict]:
+    def _match_polymarket_settlements(
+        pending_bets: list[dict], positions: list[dict]
+    ) -> list[dict]:
         """Match scraped portfolio positions against pending bets by fuzzy name.
 
         Returns list of {bet_id, result} dicts for _record_settlements.
@@ -1835,7 +2038,9 @@ class ProviderRunner:
         if pending is None:
             # DB state unknown — skip rather than emit false "unrecognized bet"
             # alerts for bets that are actually already tracked.
-            logger.warning(f"[Runner:{provider_id}] _reconcile_open_bets skipped — pending fetch failed")
+            logger.warning(
+                f"[Runner:{provider_id}] _reconcile_open_bets skipped — pending fetch failed"
+            )
             return 0
         cluster = _PROVIDER_TO_CLUSTER.get(provider_id)
         if cluster:
@@ -1895,7 +2100,12 @@ class ProviderRunner:
         # Build set of known (odds, stake) pairs from DB pending (including cluster siblings)
         known_keys: set[tuple[float, float]] = set()
         for b in db_pending:
-            known_keys.add((round(float(b.get("odds", 0) or 0), 2), round(float(b.get("stake", 0) or 0), 1)))
+            known_keys.add(
+                (
+                    round(float(b.get("odds", 0) or 0), 2),
+                    round(float(b.get("stake", 0) or 0), 1),
+                )
+            )
 
         cluster = _PROVIDER_TO_CLUSTER.get(provider_id)
         if cluster:
@@ -1910,14 +2120,20 @@ class ProviderRunner:
                         return
                     for b in sib_pending:
                         known_keys.add(
-                            (round(float(b.get("odds", 0) or 0), 2), round(float(b.get("stake", 0) or 0), 1))
+                            (
+                                round(float(b.get("odds", 0) or 0), 2),
+                                round(float(b.get("stake", 0) or 0), 1),
+                            )
                         )
 
         recorded = 0
         for entry in history:
             if entry.get("status") != "pending":
                 continue
-            key = (round(float(entry.get("odds", 0) or 0), 2), round(float(entry.get("stake", 0) or 0), 1))
+            key = (
+                round(float(entry.get("odds", 0) or 0), 2),
+                round(float(entry.get("stake", 0) or 0), 1),
+            )
             if key in known_keys:
                 known_keys.discard(key)
                 continue
@@ -1928,7 +2144,9 @@ class ProviderRunner:
             # that bypasses the edge gate — user already accepted the price).
             # Pre-fix, every reactive recovery landed bet_type=NULL and dropped
             # out of stats / arb-correlation views.
-            inferred_bet_type = "arb_counter" if provider_id in ("polymarket", "kalshi") else "mirror"
+            inferred_bet_type = (
+                "arb_counter" if provider_id in ("polymarket", "kalshi") else "mirror"
+            )
             payload = {
                 "event_id": "",
                 "provider_id": provider_id,
@@ -1988,7 +2206,9 @@ class ProviderRunner:
         from local.http_client import tunnel_client as _tc
 
         try:
-            resp = await _tc().post("/api/opportunities/play/batch", json={}, timeout=30.0)
+            resp = await _tc().post(
+                "/api/opportunities/play/batch", json={}, timeout=30.0
+            )
             resp.raise_for_status()
             data = resp.json()
             placed = data.get("placed_today", {})
@@ -1996,16 +2216,22 @@ class ProviderRunner:
         except Exception:
             logger.warning(f"[Runner:{provider_id}] failed to fetch placed_today")
 
-    async def _record_settlements(self, provider_id: str, settlements: list[dict]) -> None:
+    async def _record_settlements(
+        self, provider_id: str, settlements: list[dict]
+    ) -> None:
         from local.http_client import tunnel_client as _tc
 
         batch = [
-            {"bet_id": s["bet_id"], "result": s["result"]} for s in settlements if s.get("bet_id") and s.get("result")
+            {"bet_id": s["bet_id"], "result": s["result"]}
+            for s in settlements
+            if s.get("bet_id") and s.get("result")
         ]
         if not batch:
             return
         try:
-            resp = await _tc().post("/api/opportunities/play/settle-batch", json=batch, timeout=30.0)
+            resp = await _tc().post(
+                "/api/opportunities/play/settle-batch", json=batch, timeout=30.0
+            )
             resp.raise_for_status()
         except Exception:
             logger.exception(f"[Runner:{provider_id}] Failed to record settlements")
@@ -2014,7 +2240,11 @@ class ProviderRunner:
         from local.http_client import tunnel_client as _tc
 
         try:
-            resp = await _tc().post(f"/api/bankroll/set/{provider_id}", json={"balance": balance}, timeout=15.0)
+            resp = await _tc().post(
+                f"/api/bankroll/set/{provider_id}",
+                json={"balance": balance},
+                timeout=15.0,
+            )
             resp.raise_for_status()
         except Exception:
             pass
@@ -2022,7 +2252,9 @@ class ProviderRunner:
     async def _record_bet(self, bet: dict[str, Any], result) -> None:
         from local.http_client import tunnel_client as _tc
 
-        provider_bet_id = result.bet_id if isinstance(result.bet_id, str) and result.bet_id else None
+        provider_bet_id = (
+            result.bet_id if isinstance(result.bet_id, str) and result.bet_id else None
+        )
         # Capture analytics-critical fields from the queued bet so post-settlement
         # CLV / edge / kelly drift can be computed against the placement-time fair odds.
         # Without these, settled bets carry actual_odds + result only — no way to
@@ -2054,10 +2286,16 @@ class ProviderRunner:
                 resp = await client.post("/api/bets", json=payload, timeout=10.0)
                 resp.raise_for_status()
                 data = resp.json()
-                logger.info(f"[Runner:{self.provider_id}] Recorded bet {data.get('bet_id', '?')}")
+                logger.info(
+                    f"[Runner:{self.provider_id}] Recorded bet {data.get('bet_id', '?')}"
+                )
                 return
             except Exception:
-                logger.exception(f"[Runner:{self.provider_id}] Failed to record bet (attempt {attempt + 1}/3)")
+                logger.exception(
+                    f"[Runner:{self.provider_id}] Failed to record bet (attempt {attempt + 1}/3)"
+                )
                 if attempt < 2:
                     await asyncio.sleep(2**attempt)
-        logger.error(f"[Runner:{self.provider_id}] Bet lost after 3 attempts: {payload}")
+        logger.error(
+            f"[Runner:{self.provider_id}] Bet lost after 3 attempts: {payload}"
+        )

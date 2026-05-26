@@ -55,7 +55,7 @@ export default function App() {
     <ErrorBoundary>
       <div className="flex flex-col h-screen bg-zinc-950">
         <div className="flex items-center gap-1 px-3 py-1 border-b border-zinc-800 bg-zinc-900">
-          <span className="text-sm font-bold text-orange-500 mr-4">Arnold</span>
+          <span className="text-sm font-bold text-orange-500 mr-4">Betty</span>
           {TABS.map(tab => (
             <button
               key={tab.name}

@@ -24,9 +24,9 @@ build-backend = "setuptools.build_meta"
 
 
 [project]
-name = "arnold"
+name = "betty"
 version = "0.1.0"
-description = "Arnold - Betting analytics platform comparing odds across 40+ sportsbooks"
+description = "Betty - Betting analytics platform comparing odds across 40+ sportsbooks"
 requires-python = ">=3.12"
 
 dependencies = [
@@ -42,7 +42,7 @@ dependencies = [
     "requests>=2.31.0",
 
     # httpx: modern HTTP client with both sync and async APIs.
-    # Used by the local arnold client's /api reverse-proxy through
+    # Used by the local betty client's /api reverse-proxy through
     # the SSH tunnel to the server.
     "httpx>=0.27.0",
 
@@ -91,7 +91,7 @@ dependencies = [
     "rapidfuzz>=3.6.0",
 
     # ── CLI ───────────────────────────────────────────────────
-    # typer: builds the `arnold` command-line interface declaratively
+    # typer: builds the `betty` command-line interface declaratively
     # from type-annotated Python functions. Powers `python -m src.cli
     # extract <provider>` and the other ops commands.
     "typer>=0.9.0",
@@ -184,9 +184,9 @@ poly = [
 
 
 [project.scripts]
-# Exposes `arnold` as a shell command after `pip install -e .`,
+# Exposes `betty` as a shell command after `pip install -e .`,
 # wired to the Typer app in backend/src/cli.py.
-arnold = "src.cli:app"
+betty = "src.cli:app"
 
 
 # ── Build config ──────────────────────────────────────────────

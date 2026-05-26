@@ -1,5 +1,5 @@
 """
-Centralized path resolution for Arnold.
+Centralized path resolution for Betty.
 
 Uses environment variables with defaults:
   ARNOLD_DATA_DIR  → /app/data   (Docker) or backend/data (dev)

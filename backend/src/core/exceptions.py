@@ -1,5 +1,5 @@
 """
-Arnold Exception Hierarchy
+Betty Exception Hierarchy
 
 Structured exceptions for distinguishing retryable vs fatal errors.
 """

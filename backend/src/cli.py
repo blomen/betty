@@ -1,5 +1,5 @@
 """
-Arnold Interactive Terminal Application
+Betty Interactive Terminal Application
 
 A Rich + Typer based terminal UI for betting analytics.
 """
@@ -19,14 +19,14 @@ from .factory import ExtractorFactory
 from .pipeline import ExtractionPipeline
 
 console = Console(force_terminal=True)
-app = typer.Typer(help="Arnold - Betting Analytics Platform")
+app = typer.Typer(help="Betty - Betting Analytics Platform")
 
 
 def show_banner():
     """Display the app banner."""
     banner = """
     ╔═══════════════════════════════════════════════════════════╗
-    ║                    Arnold                              ║
+    ║                    Betty                               ║
     ║           Betting Analytics Platform                      ║
     ╚═══════════════════════════════════════════════════════════╝
     """

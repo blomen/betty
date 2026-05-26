@@ -1,5 +1,5 @@
 """
-Arnold — Single Bet Cap Comparison Simulation
+Betty — Single Bet Cap Comparison Simulation
 =============================================================
 Compare 1%, 2%, 3% single bet caps across bankroll levels.
 
@@ -14,48 +14,46 @@ Key metrics:
 Run: python scripts/cap_comparison_sim.py
 """
 
+import io
 import random
 import sys
-import io
-import math
 from dataclasses import dataclass, field
-from typing import List, Tuple
 
-if hasattr(sys.stdout, 'buffer'):
+if hasattr(sys.stdout, "buffer"):
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 # ── Edge distributions (from live opportunity data) ──
 SOFT_VALUE_EDGE_DIST = [
-    (2.0,  4.0,  0.35, 3.50),
-    (4.0,  6.0,  0.25, 4.10),
-    (6.0, 10.0,  0.20, 5.50),
+    (2.0, 4.0, 0.35, 3.50),
+    (4.0, 6.0, 0.25, 4.10),
+    (6.0, 10.0, 0.20, 5.50),
     (10.0, 20.0, 0.15, 8.10),
     (20.0, 35.0, 0.05, 11.40),
 ]
 POLYMARKET_EDGE_DIST = [
-    (3.0,  5.0,  0.40, 2.80),
-    (5.0,  8.0,  0.30, 3.40),
-    (8.0, 15.0,  0.20, 4.50),
+    (3.0, 5.0, 0.40, 2.80),
+    (5.0, 8.0, 0.30, 3.40),
+    (8.0, 15.0, 0.20, 4.50),
     (15.0, 30.0, 0.10, 6.00),
 ]
 PINNACLE_REVERSE_EDGE_DIST = [
-    (3.0,  5.0,  0.35, 4.50),
-    (5.0,  8.0,  0.30, 6.00),
-    (8.0, 12.0,  0.25, 8.50),
+    (3.0, 5.0, 0.35, 4.50),
+    (5.0, 8.0, 0.30, 6.00),
+    (8.0, 12.0, 0.25, 8.50),
     (12.0, 20.0, 0.10, 11.00),
 ]
 SPECIALS_EDGE_DIST = [
-    (4.0,  8.0,  0.40, 3.00),
-    (8.0, 15.0,  0.35, 4.00),
+    (4.0, 8.0, 0.40, 3.00),
+    (8.0, 15.0, 0.35, 4.00),
     (15.0, 30.0, 0.20, 5.50),
     (30.0, 50.0, 0.05, 8.00),
 ]
 
 STREAM_WEIGHTS = [
-    ("soft_value",       0.913, SOFT_VALUE_EDGE_DIST),
-    ("polymarket",       0.071, POLYMARKET_EDGE_DIST),
+    ("soft_value", 0.913, SOFT_VALUE_EDGE_DIST),
+    ("polymarket", 0.071, POLYMARKET_EDGE_DIST),
     ("pinnacle_reverse", 0.014, PINNACLE_REVERSE_EDGE_DIST),
-    ("specials",         0.002, SPECIALS_EDGE_DIST),
+    ("specials", 0.002, SPECIALS_EDGE_DIST),
 ]
 
 # Kelly parameters
@@ -158,7 +156,7 @@ class SimResult:
     ruin: bool = False
     cap_hits: int = 0  # How many times cap overrode Kelly
     provider_drains: int = 0  # How many times a 1k provider would bust
-    weekly_bankrolls: List[float] = field(default_factory=list)
+    weekly_bankrolls: list[float] = field(default_factory=list)
 
 
 def simulate(
@@ -194,11 +192,17 @@ def simulate(
             if bankroll < ABSOLUTE_MIN_STAKE:
                 weekly.extend([bankroll] * (weeks - w))
                 return SimResult(
-                    final_bankroll=bankroll, profit=profit,
-                    bets_played=bets_played, bets_skipped=bets_skipped,
-                    total_staked=total_staked, peak=peak, trough=trough,
-                    max_drawdown_pct=max_dd_pct, ruin=True,
-                    cap_hits=cap_hits, provider_drains=prov_drains,
+                    final_bankroll=bankroll,
+                    profit=profit,
+                    bets_played=bets_played,
+                    bets_skipped=bets_skipped,
+                    total_staked=total_staked,
+                    peak=peak,
+                    trough=trough,
+                    max_drawdown_pct=max_dd_pct,
+                    ruin=True,
+                    cap_hits=cap_hits,
+                    provider_drains=prov_drains,
                     weekly_bankrolls=weekly,
                 )
 
@@ -258,11 +262,17 @@ def simulate(
         weekly.append(bankroll)
 
     return SimResult(
-        final_bankroll=bankroll, profit=profit,
-        bets_played=bets_played, bets_skipped=bets_skipped,
-        total_staked=total_staked, peak=peak, trough=trough,
-        max_drawdown_pct=max_dd_pct, ruin=False,
-        cap_hits=cap_hits, provider_drains=prov_drains,
+        final_bankroll=bankroll,
+        profit=profit,
+        bets_played=bets_played,
+        bets_skipped=bets_skipped,
+        total_staked=total_staked,
+        peak=peak,
+        trough=trough,
+        max_drawdown_pct=max_dd_pct,
+        ruin=False,
+        cap_hits=cap_hits,
+        provider_drains=prov_drains,
         weekly_bankrolls=weekly,
     )
 
@@ -287,12 +297,12 @@ def run_comparison():
         print(f"  STARTING BANKROLL: {bankroll:,} kr")
         print(f"  {'=' * 96}")
 
-        print(f"\n  {'Cap':>5s}  {'Med Final':>10s}  {'Med Profit':>11s}  {'Growth':>8s}  "
-              f"{'P5':>9s}  {'P25':>9s}  {'P75':>9s}  {'P95':>9s}  "
-              f"{'Ruin%':>6s}")
-        print(f"  {'-'*5}  {'-'*10}  {'-'*11}  {'-'*8}  "
-              f"{'-'*9}  {'-'*9}  {'-'*9}  {'-'*9}  "
-              f"{'-'*6}")
+        print(
+            f"\n  {'Cap':>5s}  {'Med Final':>10s}  {'Med Profit':>11s}  {'Growth':>8s}  "
+            f"{'P5':>9s}  {'P25':>9s}  {'P75':>9s}  {'P95':>9s}  "
+            f"{'Ruin%':>6s}"
+        )
+        print(f"  {'-' * 5}  {'-' * 10}  {'-' * 11}  {'-' * 8}  {'-' * 9}  {'-' * 9}  {'-' * 9}  {'-' * 9}  {'-' * 6}")
 
         for cap in caps:
             random.seed(42)  # Same seed for fair comparison
@@ -304,20 +314,21 @@ def run_comparison():
             med_final = pct(finals, 50)
             growth = (med_final / bankroll - 1) * 100
 
-            print(f"  {cap*100:>4.0f}%  {med_final:>10,.0f}  {pct(profits,50):>+10,.0f}  {growth:>+7.0f}%  "
-                  f"{pct(finals,5):>9,.0f}  {pct(finals,25):>9,.0f}  "
-                  f"{pct(finals,75):>9,.0f}  {pct(finals,95):>9,.0f}  "
-                  f"{ruin_rate:>5.1f}%")
+            print(
+                f"  {cap * 100:>4.0f}%  {med_final:>10,.0f}  {pct(profits, 50):>+10,.0f}  {growth:>+7.0f}%  "
+                f"{pct(finals, 5):>9,.0f}  {pct(finals, 25):>9,.0f}  "
+                f"{pct(finals, 75):>9,.0f}  {pct(finals, 95):>9,.0f}  "
+                f"{ruin_rate:>5.1f}%"
+            )
 
         # Detailed breakdown
-        print(f"\n  {'Cap':>5s}  {'Max DD%':>8s}  {'Med DD%':>8s}  "
-              f"{'Cap Hits':>10s}  {'Cap Hit%':>9s}  "
-              f"{'Played':>8s}  {'Skipped':>8s}  {'Play%':>7s}  "
-              f"{'Prov Drains':>12s}")
-        print(f"  {'-'*5}  {'-'*8}  {'-'*8}  "
-              f"{'-'*10}  {'-'*9}  "
-              f"{'-'*8}  {'-'*8}  {'-'*7}  "
-              f"{'-'*12}")
+        print(
+            f"\n  {'Cap':>5s}  {'Max DD%':>8s}  {'Med DD%':>8s}  "
+            f"{'Cap Hits':>10s}  {'Cap Hit%':>9s}  "
+            f"{'Played':>8s}  {'Skipped':>8s}  {'Play%':>7s}  "
+            f"{'Prov Drains':>12s}"
+        )
+        print(f"  {'-' * 5}  {'-' * 8}  {'-' * 8}  {'-' * 10}  {'-' * 9}  {'-' * 8}  {'-' * 8}  {'-' * 7}  {'-' * 12}")
 
         for cap in caps:
             random.seed(42)
@@ -335,10 +346,12 @@ def run_comparison():
             med_cap_hits = pct(cap_hits_list, 50)
             cap_hit_pct = med_cap_hits / max(1, med_played) * 100
 
-            print(f"  {cap*100:>4.0f}%  {pct(max_dds,95):>7.1f}%  {pct(max_dds,50):>7.1f}%  "
-                  f"{med_cap_hits:>10,.0f}  {cap_hit_pct:>8.1f}%  "
-                  f"{med_played:>8,.0f}  {med_skipped:>8,.0f}  {play_pct:>6.1f}%  "
-                  f"{pct(drains,50):>12,.0f}")
+            print(
+                f"  {cap * 100:>4.0f}%  {pct(max_dds, 95):>7.1f}%  {pct(max_dds, 50):>7.1f}%  "
+                f"{med_cap_hits:>10,.0f}  {cap_hit_pct:>8.1f}%  "
+                f"{med_played:>8,.0f}  {med_skipped:>8,.0f}  {play_pct:>6.1f}%  "
+                f"{pct(drains, 50):>12,.0f}"
+            )
 
 
 def run_polymarket_focus():
@@ -355,10 +368,11 @@ def run_polymarket_focus():
     # Assume 1 USD ≈ 10 kr for simplicity
     poly_deposit_usd = 100
 
-    print(f"\n  {'Total BR':>10s}  {'Cap':>5s}  {'Med bets':>10s}  {'Med $ left':>11s}  "
-          f"{'Drain%':>7s}  {'Avg stake $':>12s}  {'Med profit $':>13s}")
-    print(f"  {'-'*10}  {'-'*5}  {'-'*10}  {'-'*11}  "
-          f"{'-'*7}  {'-'*12}  {'-'*13}")
+    print(
+        f"\n  {'Total BR':>10s}  {'Cap':>5s}  {'Med bets':>10s}  {'Med $ left':>11s}  "
+        f"{'Drain%':>7s}  {'Avg stake $':>12s}  {'Med profit $':>13s}"
+    )
+    print(f"  {'-' * 10}  {'-' * 5}  {'-' * 10}  {'-' * 11}  {'-' * 7}  {'-' * 12}  {'-' * 13}")
 
     for total_br in total_bankrolls:
         for cap in caps:
@@ -408,11 +422,13 @@ def run_polymarket_focus():
             drain_pct = sum(1 for b in bets_before_drain if b < 20) / n_sims * 100
             avg_stake = poly_deposit_usd / max(1, pct(bets_before_drain, 50)) if pct(bets_before_drain, 50) > 0 else 0
 
-            print(f"  {total_br:>9,}  {cap*100:>4.0f}%  {pct(bets_before_drain,50):>10,.0f}  "
-                  f"${pct(balances_after_20,50):>9.1f}  "
-                  f"{drain_pct:>6.1f}%  "
-                  f"${poly_deposit_usd / max(1, pct(bets_before_drain, 50)):>10.1f}  "
-                  f"${pct(profits,50):>11.1f}")
+            print(
+                f"  {total_br:>9,}  {cap * 100:>4.0f}%  {pct(bets_before_drain, 50):>10,.0f}  "
+                f"${pct(balances_after_20, 50):>9.1f}  "
+                f"{drain_pct:>6.1f}%  "
+                f"${poly_deposit_usd / max(1, pct(bets_before_drain, 50)):>10.1f}  "
+                f"${pct(profits, 50):>11.1f}"
+            )
 
 
 def run_stake_distribution():
@@ -453,17 +469,21 @@ def run_stake_distribution():
         n = len(stakes)
         cap_pct_val = cap_count / max(1, n) * 100
 
-        print(f"\n  Cap: {cap*100:.0f}% ({bankroll * cap:.0f} kr max)  |  {n:,} playable of {n_samples:,}  |  {cap_pct_val:.0f}% hit cap")
-        print(f"    P5={stakes[n//20]:.0f}  P25={stakes[n//4]:.0f}  Median={stakes[n//2]:.0f}  "
-              f"P75={stakes[3*n//4]:.0f}  P95={stakes[19*n//20]:.0f}  Max={stakes[-1]:.0f}")
+        print(
+            f"\n  Cap: {cap * 100:.0f}% ({bankroll * cap:.0f} kr max)  |  {n:,} playable of {n_samples:,}  |  {cap_pct_val:.0f}% hit cap"
+        )
+        print(
+            f"    P5={stakes[n // 20]:.0f}  P25={stakes[n // 4]:.0f}  Median={stakes[n // 2]:.0f}  "
+            f"P75={stakes[3 * n // 4]:.0f}  P95={stakes[19 * n // 20]:.0f}  Max={stakes[-1]:.0f}"
+        )
 
         # Histogram buckets
         buckets = [(0, 25), (25, 50), (50, 75), (75, 100), (100, 150), (150, 200), (200, 250), (250, 500)]
-        print(f"    Distribution:")
+        print("    Distribution:")
         for lo, hi in buckets:
             count = sum(1 for s in stakes if lo <= s < hi)
             bar = "#" * (count * 40 // n)
-            print(f"      {lo:>4}-{hi:<4} kr: {count:>5,} ({count/n*100:>5.1f}%) {bar}")
+            print(f"      {lo:>4}-{hi:<4} kr: {count:>5,} ({count / n * 100:>5.1f}%) {bar}")
 
 
 def run_worst_case_streaks():
@@ -478,15 +498,15 @@ def run_worst_case_streaks():
 
     # Typical bet profiles
     profiles = [
-        ("Low edge / low odds",   3.0, 2.50),
-        ("Med edge / med odds",   8.0, 4.00),
+        ("Low edge / low odds", 3.0, 2.50),
+        ("Med edge / med odds", 8.0, 4.00),
         ("High edge / high odds", 20.0, 8.00),
     ]
 
     for name, edge_pct, odds in profiles:
         print(f"\n  {name} (edge={edge_pct:.0f}%, odds={odds:.1f})")
         print(f"  {'Cap':>5s}  {'After 5L':>10s}  {'After 10L':>10s}  {'5L DD%':>8s}  {'10L DD%':>8s}  {'Stake':>8s}")
-        print(f"  {'-'*5}  {'-'*10}  {'-'*10}  {'-'*8}  {'-'*8}  {'-'*8}")
+        print(f"  {'-' * 5}  {'-' * 10}  {'-' * 10}  {'-' * 8}  {'-' * 8}  {'-' * 8}")
 
         for cap in caps:
             br = float(bankroll_start)
@@ -509,7 +529,9 @@ def run_worst_case_streaks():
             dd5 = (bankroll_start - br5) / bankroll_start * 100
             dd10 = (bankroll_start - br) / bankroll_start * 100
 
-            print(f"  {cap*100:>4.0f}%  {br5:>10,.0f}  {br:>10,.0f}  {dd5:>7.1f}%  {dd10:>7.1f}%  {stakes_used[0]:>7.0f}")
+            print(
+                f"  {cap * 100:>4.0f}%  {br5:>10,.0f}  {br:>10,.0f}  {dd5:>7.1f}%  {dd10:>7.1f}%  {stakes_used[0]:>7.0f}"
+            )
 
 
 def main():

@@ -26,7 +26,9 @@ class Strategy:
 
     check_login: Callable | None = None
     sync_balance: Callable | None = None
-    fetch_balance: Callable | None = None  # async (page, intel) -> float | None — passive ready-state refresh
+    fetch_balance: Callable | None = (
+        None  # async (page, intel) -> float | None — passive ready-state refresh
+    )
     sync_history: Callable | None = None
     navigate_to_event: Callable | None = None
     prep_betslip: Callable | None = None
@@ -34,9 +36,13 @@ class Strategy:
     check_live_price: Callable | None = None
     # Optional settlement extensions (Polymarket uses these for claim + redeem on-chain).
     # Provider runner delegates to the strategy when all three are present.
-    scrape_portfolio: Callable | None = None  # (page, intel) -> list[dict] open positions
+    scrape_portfolio: Callable | None = (
+        None  # (page, intel) -> list[dict] open positions
+    )
     claim_banner: Callable | None = None  # (page, intel) -> {claimed, amount}
-    redeem_all: Callable | None = None  # (page, intel) -> {redeemed, skipped_open, errors, total}
+    redeem_all: Callable | None = (
+        None  # (page, intel) -> {redeemed, skipped_open, errors, total}
+    )
     # Optional account-level methods referenced by GenericWorkflow.scan / .settle_all.
     # Without these fields the dataclass would AttributeError on access.
     scan: Callable | None = None  # (page, intel) -> dict read-only account preview
@@ -57,8 +63,8 @@ def load_strategy(provider_id: str) -> Strategy | None:
     """Import strategies/{provider_id}.py if it exists, return .strategy attr.
 
     Tries both `local.mirror.workflows.strategies.<id>` (repo-root sys.path,
-    e.g. pytest) and `mirror.workflows.strategies.<id>` (arnold.bat launcher
-    that puts `arnold/` on sys.path directly).
+    e.g. pytest) and `mirror.workflows.strategies.<id>` (betty.bat launcher
+    that puts `local/` on sys.path directly).
     """
     for module_path in (
         f"local.mirror.workflows.strategies.{provider_id}",

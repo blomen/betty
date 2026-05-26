@@ -1,6 +1,6 @@
-# Arnold
+# Betty
 
-Betting analytics and trading platform.
+Betting analytics platform.
 
 ## What it does
 
