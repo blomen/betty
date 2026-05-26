@@ -4,7 +4,7 @@
 # Background: server-deploy.sh holds an exclusive flock on .deploy.lock for the
 # duration of its work, so two concurrent invocations of THAT script serialise.
 # But raw `docker compose build`, `docker compose down`, `docker buildx`, and
-# `docker rmi arnold-backend` (and `docker system prune`) bypass the lock
+# `docker rmi betty-backend` (and `docker system prune`) bypass the lock
 # entirely. When multiple agents collaborate on this server, an agent that only
 # checks the flock will get a false-clear-to-go while another agent is mid
 # teardown / rebuild.
@@ -28,8 +28,8 @@
 
 set -u
 
-ARNOLD_DIR="${ARNOLD_DIR:-/opt/arnold}"
-LOCK_FILE="${ARNOLD_DIR}/.deploy.lock"
+BETTY_DIR="${BETTY_DIR:-/opt/betty}"
+LOCK_FILE="${BETTY_DIR}/.deploy.lock"
 JSON=0
 [ "${1:-}" = "--json" ] && JSON=1
 
@@ -51,12 +51,12 @@ _lock_held() {
 
 # Returns image creation timestamp + ID, or empty.
 _image_state() {
-    docker images arnold-backend --format '{{.CreatedAt}} {{.ID}}' 2>/dev/null | head -1
+    docker images betty-backend --format '{{.CreatedAt}} {{.ID}}' 2>/dev/null | head -1
 }
 
 # Returns container Status string, or empty.
 _container_state() {
-    docker inspect arnold-backend-1 --format '{{.State.Status}} ExitCode={{.State.ExitCode}}' 2>/dev/null || true
+    docker inspect betty-backend-1 --format '{{.State.Status}} ExitCode={{.State.ExitCode}}' 2>/dev/null || true
 }
 
 # JSON-escape a string (basic, sufficient for our values)

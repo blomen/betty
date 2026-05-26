@@ -7,9 +7,8 @@ chromium-1200 bundle was observed to crash on launch with this profile
 1217 from patchright's bundle handles the same profile fine, so we default
 there for stability.
 
-Set env `BETTY_USE_VANILLA_PLAYWRIGHT=1` (or legacy `ARNOLD_USE_VANILLA_PLAYWRIGHT=1`)
-to force vanilla (useful for testing whether the chromium-1200 issue has been
-resolved).
+Set env `BETTY_USE_VANILLA_PLAYWRIGHT=1` to force vanilla (useful for testing
+whether the chromium-1200 issue has been resolved).
 """
 
 import asyncio
@@ -20,10 +19,7 @@ from collections.abc import Callable
 from pathlib import Path  # noqa: F401
 from typing import Any
 
-if (
-    os.getenv("BETTY_USE_VANILLA_PLAYWRIGHT") == "1"
-    or os.getenv("ARNOLD_USE_VANILLA_PLAYWRIGHT") == "1"
-):
+if os.getenv("BETTY_USE_VANILLA_PLAYWRIGHT") == "1":
     from playwright.async_api import (
         Browser,
         BrowserContext,

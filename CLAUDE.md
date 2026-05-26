@@ -80,25 +80,25 @@ backend/src/
 - **IP**: `148.251.40.251`
 - **SSH**: `ssh root@148.251.40.251`
 - **App URL**: `https://148.251.40.251` (behind nginx basic auth, self-signed cert)
-- **Repo on server**: `/opt/arnold` (main branch)
+- **Repo on server**: `/opt/betty` (main branch)
 
 ### Docker Containers
 3 containers via `docker-compose.yml`:
-- `arnold-backend-1` — FastAPI + uvicorn + Playwright (internal only, no public port)
-- `arnold-postgres-1` — PostgreSQL 16 (internal only, no public port)
-- `arnold-nginx-1` — Nginx reverse proxy (ports 80/443, HTTPS + basic auth)
+- `betty-backend-1` — FastAPI + uvicorn + Playwright (internal only, no public port)
+- `betty-postgres-1` — PostgreSQL 16 (internal only, no public port)
+- `betty-nginx-1` — Nginx reverse proxy (ports 80/443, HTTPS + basic auth)
 
 ### Security
 - **Nginx basic auth** protects all routes (credentials in `backend/nginx/.htpasswd` on server, gitignored)
 - **No public ports** for backend (8000) or postgres (5432) — only reachable via Docker internal network
-- **Non-root container** — backend runs as `arnold` user (uid 1000), not root
+- **Non-root container** — backend runs as `betty` user (uid 1000), not root
 - **HTTPS enforced** with TLS 1.2/1.3, HSTS, rate limiting (30 req/s per IP)
 - **Security headers**: CSP, X-Frame-Options DENY, Referrer-Policy, Permissions-Policy, `server_tokens off`
 - **CORS lockdown** — origins from `CORS_ORIGINS` env var, explicit methods/headers only
 - `/health/*` endpoints exempt from auth (nginx `location /health` block with `auth_basic off`)
 
 ### Database
-- **Main DB**: `postgresql://arnold:${DB_PASSWORD}@postgres:5432/arnold` (events, odds, bets, profiles, opportunities)
+- **Main DB**: `postgresql://betty:${DB_PASSWORD}@postgres:5432/betty` (events, odds, bets, profiles, opportunities)
 
 ### Environment
 - `.env.docker` — API keys, DB config, and `CORS_ORIGINS` (loaded via `env_file` in docker-compose)
@@ -112,22 +112,22 @@ backend/src/
 
 ```bash
 # After pushing to main (full rebuild — needed for ANY code/Dockerfile change):
-ssh root@148.251.40.251 "bash /opt/arnold/backend/scripts/server-deploy.sh rebuild backend"
+ssh root@148.251.40.251 "bash /opt/betty/backend/scripts/server-deploy.sh rebuild backend"
 
 # For config/env-only changes (restart is NOT enough for code changes — code is baked into Docker image):
-ssh root@148.251.40.251 "bash /opt/arnold/backend/scripts/server-deploy.sh restart backend"
+ssh root@148.251.40.251 "bash /opt/betty/backend/scripts/server-deploy.sh restart backend"
 
 # Check logs (no lock needed):
-ssh root@148.251.40.251 "bash /opt/arnold/backend/scripts/server-deploy.sh logs backend 30"
+ssh root@148.251.40.251 "bash /opt/betty/backend/scripts/server-deploy.sh logs backend 30"
 
 # Check deploy status + containers + disk:
-ssh root@148.251.40.251 "bash /opt/arnold/backend/scripts/server-deploy.sh status"
+ssh root@148.251.40.251 "bash /opt/betty/backend/scripts/server-deploy.sh status"
 
 # Clean up old Docker images and build cache:
-ssh root@148.251.40.251 "bash /opt/arnold/backend/scripts/server-deploy.sh cleanup"
+ssh root@148.251.40.251 "bash /opt/betty/backend/scripts/server-deploy.sh cleanup"
 
 # Check extraction:
-ssh root@148.251.40.251 "cd /opt/arnold/backend && docker compose exec -T backend cat /app/logs/extraction.log | tail -30"
+ssh root@148.251.40.251 "cd /opt/betty/backend && docker compose exec -T backend cat /app/logs/extraction.log | tail -30"
 ```
 
 ### Docker Build (Multi-Stage)
@@ -148,10 +148,10 @@ The `backend/Dockerfile` uses a 2-stage build for fast rebuilds:
 
 Multiple Claude Code agents may work on this repo concurrently. **Follow these rules to avoid conflicts:**
 
-1. **Always check server status before deploying**: Run `server-deploy.sh status` first. Note: status only shows "active deploy" if `STATUS_FILE` is present — it does NOT detect a wedged-but-still-running script. To see whether the lockfile is actually held, also run `ssh root@148.251.40.251 "pgrep -fa 'server-deploy.sh' && lsof /opt/arnold/.deploy.lock 2>/dev/null"`. A `pgrep` hit means the slot is still in use.
+1. **Always check server status before deploying**: Run `server-deploy.sh status` first. Note: status only shows "active deploy" if `STATUS_FILE` is present — it does NOT detect a wedged-but-still-running script. To see whether the lockfile is actually held, also run `ssh root@148.251.40.251 "pgrep -fa 'server-deploy.sh' && lsof /opt/betty/.deploy.lock 2>/dev/null"`. A `pgrep` hit means the slot is still in use.
 2. **Never run raw `docker compose up/restart/build`** — always use `backend/scripts/server-deploy.sh` which acquires an exclusive `flock`. A PreToolUse hook blocks raw docker compose commands.
 3. **Read-only operations are safe concurrently**: logs, status, DB queries, extraction logs.
-4. **Destructive operations are serialized by the lock**: rebuild, restart. **`git pull` outside the script is NOT lock-protected** — never run `cd /opt/arnold && git pull` manually. Use `bash server-deploy.sh pull` if you need to advance the server's working tree without rebuilding. Manual `git pull` followed by a cached rebuild creates source-vs-image drift: HEAD advances but the docker `COPY backend/` layer stays cached, so the new code is on disk but not in the running container.
+4. **Destructive operations are serialized by the lock**: rebuild, restart. **`git pull` outside the script is NOT lock-protected** — never run `cd /opt/betty && git pull` manually. Use `bash server-deploy.sh pull` if you need to advance the server's working tree without rebuilding. Manual `git pull` followed by a cached rebuild creates source-vs-image drift: HEAD advances but the docker `COPY backend/` layer stays cached, so the new code is on disk but not in the running container.
 5. **If the lock is held**, wait and retry — don't bypass it.
 6. **Coordinate git pushes**: Before pushing + deploying, run `git fetch && git log HEAD..origin/main --oneline` to see what other agents pushed since you forked, and `git log origin/main..HEAD --oneline` to confirm your push is a clean fast-forward. If origin is ahead, rebase or merge before pushing — don't force-push.
 7. **Use `/deploy` skill** for guided deployment with health verification.
@@ -160,9 +160,9 @@ Multiple Claude Code agents may work on this repo concurrently. **Follow these r
 10. **Health verification**: Deploy script waits up to 2 min for `/health` to respond after rebuild. If it fails, deploy exits non-zero — investigate before retrying.
 11. **Container watchdog**: Cron checks every 5 min and auto-restarts if backend is down.
 12. **Verify the running container actually has your code**: docker build cache + cached `COPY backend/ backend/` layers can ship an image whose source predates the latest `git pull`. After every rebuild, confirm:
-    - `ssh root@148.251.40.251 "cd /opt/arnold && git rev-parse HEAD"` — server's git HEAD (git repo at /opt/arnold)
+    - `ssh root@148.251.40.251 "cd /opt/betty && git rev-parse HEAD"` — server's git HEAD (git repo at /opt/betty)
     - `ssh root@148.251.40.251 "curl -sf http://localhost:8000/health"` — note the `boot_id` (changes on every container restart)
-    - `ssh root@148.251.40.251 "cd /opt/arnold/backend && docker compose ps backend --format json | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get(\"CreatedAt\"))'"` — container creation time should be after your deploy completed (docker-compose.yml lives at /opt/arnold/backend)
+    - `ssh root@148.251.40.251 "cd /opt/betty/backend && docker compose ps backend --format json | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get(\"CreatedAt\"))'"` — container creation time should be after your deploy completed (docker-compose.yml lives at /opt/betty/backend)
     - If git HEAD is ahead of what your deploy pulled (e.g. another agent pushed mid-deploy), the running container is stale — re-deploy with `--no-cache` or wait for the next pull cycle.
 13. **Backend deploys vs frontend/local-client changes**: a commit touching ONLY `local/`, `frontend/`, `docs/`, or `CLAUDE.md` is **local-client / docs only** and ships via `betty.bat` (Vite + local FastAPI) — do NOT trigger a backend rebuild for these. Quick check: `git diff --name-only origin/main...HEAD | grep -vE '^(local|frontend|docs)/|^CLAUDE\.md$|^\.gitignore$|^\.dockerignore$' | head -1` — if empty, no backend deploy needed. Note: ANY change under `backend/` triggers a backend rebuild — after PR A2b this includes `backend/Dockerfile`, `backend/docker-compose*.yml`, `backend/pyproject.toml`, plus `backend/src/`, `backend/scripts/`, `backend/docker/`, `backend/nginx/`.
 14. **Background-deploy etiquette**: when running deploys via `Bash run_in_background=true` and SSH, the remote bash survives if you cancel the local task — always `pgrep -fa 'server-deploy.sh'` on the server BEFORE assuming the slot is free.
@@ -314,7 +314,7 @@ betty.bat                 # Windows launcher at repo root — invokes local/laun
 ### Commands
 ```bash
 # Production (on server via SSH):
-ssh root@148.251.40.251 "cd /opt/arnold && curl -X POST 'http://localhost:8000/api/extraction/run?providers=pinnacle'"
+ssh root@148.251.40.251 "cd /opt/betty && curl -X POST 'http://localhost:8000/api/extraction/run?providers=pinnacle'"
 
 # Local dev (only if needed — production runs on server):
 cd backend && python run_dev.py   # Starts uvicorn on localhost:8000

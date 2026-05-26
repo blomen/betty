@@ -1,3 +1,5 @@
+name: betty
+
 services:
   backend:
     build:
@@ -7,15 +9,15 @@ services:
       - "8000:8000"
     volumes:
       - .:/app/backend
-      - arnold_data:/app/data
-      - arnold_logs:/app/logs
+      - betty_data:/app/data
+      - betty_logs:/app/logs
     env_file:
       - ../.env.docker
     environment:
-      - ARNOLD_DATA_DIR=/app/data
-      - ARNOLD_LOGS_DIR=/app/logs
+      - BETTY_DATA_DIR=/app/data
+      - BETTY_LOGS_DIR=/app/logs
     command: ["python", "-m", "uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--loop", "uvloop"]
 
 volumes:
-  arnold_data:
-  arnold_logs:
+  betty_data:
+  betty_logs:

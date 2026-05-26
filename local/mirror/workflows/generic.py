@@ -23,9 +23,8 @@ def _default_intel_dir() -> Path:
 
         d = (
             Path(
-                os.environ.get("BETTY_DATA_DIR")
-                or os.environ.get(
-                    "ARNOLD_DATA_DIR",
+                os.environ.get(
+                    "BETTY_DATA_DIR",
                     str(Path(__file__).parent.parent.parent.parent / "data"),
                 )
             )

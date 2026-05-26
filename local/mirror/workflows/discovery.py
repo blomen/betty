@@ -61,9 +61,8 @@ def analyze_recordings(
 
             recordings_dir = (
                 Path(
-                    os.environ.get("BETTY_DATA_DIR")
-                    or os.environ.get(
-                        "ARNOLD_DATA_DIR",
+                    os.environ.get(
+                        "BETTY_DATA_DIR",
                         str(Path(__file__).parent.parent.parent.parent / "data"),
                     )
                 )

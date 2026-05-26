@@ -19,10 +19,8 @@ import requests
 
 DEFAULT_WALLET = "0x71fca29E6B31a93d262D2972C9b361Af371D426d"
 POLY_FEE_RATE = 0.02
-DEFAULT_API = os.environ.get("BETTY_API_BASE") or os.environ.get("ARNOLD_API_BASE", "https://148.251.40.251")
-API_KEY = os.environ.get("BETTY_API_KEY") or os.environ.get(
-    "ARNOLD_API_KEY", "aqxorczyd8rLzomW94nBjHWaa6tUh6NZ8aMktDbKMgI"
-)
+DEFAULT_API = os.environ.get("BETTY_API_BASE", "https://148.251.40.251")
+API_KEY = os.environ.get("BETTY_API_KEY", "aqxorczyd8rLzomW94nBjHWaa6tUh6NZ8aMktDbKMgI")
 
 
 def fee_adjusted_odds(price: float) -> float:

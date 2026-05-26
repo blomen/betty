@@ -31,7 +31,6 @@ _AUTH_VALUE = "arnoldsports"
 
 TUNNEL_URL = (
     os.environ.get("BETTY_TUNNEL_URL")
-    or os.environ.get("ARNOLD_TUNNEL_URL")
     or os.environ.get("ARNOLDSPORTS_TUNNEL_URL")
     or "http://localhost:18000"
 )
@@ -45,9 +44,7 @@ def tunnel_client() -> httpx.AsyncClient:
     """Singleton client for the SSH-tunneled production API."""
     global _tunnel
     if _tunnel is None or _tunnel.is_closed:
-        api_key = os.environ.get("BETTY_API_KEY") or os.environ.get(
-            "ARNOLD_API_KEY", ""
-        )
+        api_key = os.environ.get("BETTY_API_KEY", "")
         headers: dict[str, str] = {_AUTH_HEADER: _AUTH_VALUE}
         if api_key:
             headers["X-API-Key"] = api_key

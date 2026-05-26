@@ -2,15 +2,15 @@
 # Container liveness watchdog — runs via cron every 5 minutes.
 # Checks if backend container is running and healthy, restarts if not.
 #
-# Install: echo "*/5 * * * * root bash /opt/arnold/backend/scripts/container-watchdog.sh >> /var/log/arnold-watchdog.log 2>&1" > /etc/cron.d/arnold-watchdog
+# Install: echo "*/5 * * * * root bash /opt/betty/backend/scripts/container-watchdog.sh >> /var/log/betty-watchdog.log 2>&1" > /etc/cron.d/betty-watchdog
 #
 # This catches the case where a deploy fails or the container crashes
 # and nobody notices for hours (13h gap on 2026-04-10).
 
-DEPLOY_DIR="/opt/arnold"
-COMPOSE_DIR="/opt/arnold/backend"  # docker-compose.yml lives here after PR A2b
-COMPOSE_ENV_FLAG="--env-file ../.env"  # .env stays at /opt/arnold/.env
-LOCK_FILE="/opt/arnold/.deploy.lock"
+DEPLOY_DIR="/opt/betty"
+COMPOSE_DIR="/opt/betty/backend"  # docker-compose.yml lives here after PR A2b
+COMPOSE_ENV_FLAG="--env-file ../.env"  # .env stays at /opt/betty/.env
+LOCK_FILE="/opt/betty/.deploy.lock"
 LOG_PREFIX="[$(date -u '+%Y-%m-%d %H:%M UTC')]"
 
 cd "$COMPOSE_DIR" || exit 1
@@ -44,7 +44,7 @@ if [ "$backend_status" = "running" ]; then
         # Reset the consecutive-unhealthy counter on every healthy reading
         # so a previous transient unhealthy spike doesn't accumulate
         # toward the restart threshold.
-        rm -f /var/lib/arnold-watchdog/unhealthy_count 2>/dev/null
+        rm -f /var/lib/betty-watchdog/unhealthy_count 2>/dev/null
         exit 0  # Healthy, nothing to do
     fi
 
@@ -86,7 +86,7 @@ for line in sys.stdin:
     # the broker was either restarting or freshly halted on orphan_position.
     # Three consecutive unhealthy readings = 15 minutes of true unhealth;
     # transient spikes resolve on their own well within that window.
-    STATE_DIR="/var/lib/arnold-watchdog"
+    STATE_DIR="/var/lib/betty-watchdog"
     STATE_FILE="$STATE_DIR/unhealthy_count"
     UNHEALTHY_THRESHOLD=3
     mkdir -p "$STATE_DIR" 2>/dev/null

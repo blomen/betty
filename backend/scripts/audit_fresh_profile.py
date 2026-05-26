@@ -265,8 +265,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--api-key",
-        default=os.environ.get("BETTY_API_KEY") or os.environ.get("ARNOLD_API_KEY"),
-        help="X-API-Key header value (env: BETTY_API_KEY, falling back to ARNOLD_API_KEY). Required when hitting the backend directly without going through betty.bat's tunnel.",
+        default=os.environ.get("BETTY_API_KEY"),
+        help="X-API-Key header value (env: BETTY_API_KEY). Required when hitting the backend directly without going through betty.bat's tunnel.",
     )
     args = parser.parse_args()
 

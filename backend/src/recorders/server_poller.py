@@ -127,10 +127,10 @@ async def run_position_recorder() -> None:
         logger.info("[server_poller] disabled via POSITION_RECORDER_DISABLED — not starting")
         return
 
-    api_key = (os.environ.get("BETTY_API_KEY") or os.environ.get("ARNOLD_API_KEY", "")).strip()
+    api_key = os.environ.get("BETTY_API_KEY", "").strip()
     if not api_key:
         logger.warning(
-            "[server_poller] BETTY_API_KEY / ARNOLD_API_KEY not set — internal /api calls will be "
+            "[server_poller] BETTY_API_KEY not set — internal /api calls will be "
             "rejected; recorder will no-op until it is configured"
         )
     headers = {"X-API-Key": api_key} if api_key else {}

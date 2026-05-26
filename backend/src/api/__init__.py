@@ -191,7 +191,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_warmup_opportunities, daemon=True, name="startup-warmup").start()
 
     # Mirror-only mode: skip scheduler
-    _mirror_only = bool(os.environ.get("BETTY_MIRROR_ONLY") or os.environ.get("ARNOLD_MIRROR_ONLY"))
+    _mirror_only = bool(os.environ.get("BETTY_MIRROR_ONLY"))
     if _mirror_only:
         logger.info("[Startup] Mirror-only mode — skipping scheduler")
 
@@ -232,7 +232,7 @@ async def lifespan(app: FastAPI):
         _background_tasks.add(_position_recorder_task)
         _position_recorder_task.add_done_callback(_background_tasks.discard)
     else:
-        logger.info("[Startup] Scheduler disabled (ARNOLD_NO_SCHEDULER set)")
+        logger.info("[Startup] Scheduler disabled (BETTY_MIRROR_ONLY set)")
 
     # Phase 4 (2026-05-08): mirror health smoke-test loop. Runs every
     # MIRROR_SMOKE_INTERVAL_S (default 24h), HTTP-probes each provider's
@@ -283,7 +283,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 # App-level API key auth — defense-in-depth behind nginx basic auth
-_api_key = os.environ.get("BETTY_API_KEY") or os.environ.get("ARNOLD_API_KEY")
+_api_key = os.environ.get("BETTY_API_KEY")
 _auth_exempt = {"/health", "/health/live", "/health/ready", "/health/extraction"}
 
 

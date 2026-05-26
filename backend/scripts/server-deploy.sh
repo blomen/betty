@@ -1,6 +1,6 @@
 #!/bin/bash
 # Server-side deploy script with flock to prevent concurrent deploys
-# Usage: ssh root@148.251.40.251 "bash /opt/arnold/backend/scripts/server-deploy.sh <action> [args]"
+# Usage: ssh root@148.251.40.251 "bash /opt/betty/backend/scripts/server-deploy.sh <action> [args]"
 #
 # Actions:
 #   pull              - git pull only
@@ -12,15 +12,15 @@
 
 set -euo pipefail
 
-LOCK_FILE="/opt/arnold/.deploy.lock"
-STATUS_FILE="/opt/arnold/.deploy-status"
-DEPLOY_DIR="/opt/arnold"
-COMPOSE_DIR="/opt/arnold/backend"  # docker-compose.yml lives here after PR A2b
-# .env (DB_PASSWORD, ARNOLD_API_KEY) stays at repo root so it isn't shipped
+LOCK_FILE="/opt/betty/.deploy.lock"
+STATUS_FILE="/opt/betty/.deploy-status"
+DEPLOY_DIR="/opt/betty"
+COMPOSE_DIR="/opt/betty/backend"  # docker-compose.yml lives here after PR A2b
+# .env (DB_PASSWORD, BETTY_API_KEY) stays at repo root so it isn't shipped
 # inside backend/ trees by accident. Compose needs it explicitly because its
 # default lookup is the project directory (= directory of the compose file).
 COMPOSE_ENV_FLAG="--env-file ../.env"
-DEPLOY_COOLDOWN_FILE="/opt/arnold/.last-deploy"
+DEPLOY_COOLDOWN_FILE="/opt/betty/.last-deploy"
 DEPLOY_COOLDOWN_SECONDS=300  # 5 min minimum between rebuilds
 
 action="${1:-status}"
@@ -61,7 +61,7 @@ exec 200>"$LOCK_FILE"
 if ! flock -n 200; then
     echo "ERROR: Another deploy is in progress:"
     cat "$STATUS_FILE" 2>/dev/null || echo "(unknown)"
-    echo "Try again later or run: ssh root@148.251.40.251 'bash /opt/arnold/backend/scripts/server-deploy.sh status'"
+    echo "Try again later or run: ssh root@148.251.40.251 'bash /opt/betty/backend/scripts/server-deploy.sh status'"
     exit 1
 fi
 
@@ -181,7 +181,7 @@ case "$action" in
         # -a removes ALL unused images, not just dangling. Running containers
         # keep their images (Docker won't drop a referenced image), so this is
         # safe — it only frees layers from previous builds. Without -a we
-        # accumulated 94GB of orphaned arnold-backend layers in 24h.
+        # accumulated 94GB of orphaned betty-backend layers in 24h.
         docker image prune -af
         # Build cache from the current rebuild can be kept, but old caches
         # snowball fast (62GB observed in 24h). Drop everything; the next
