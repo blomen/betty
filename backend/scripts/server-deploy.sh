@@ -16,6 +16,10 @@ LOCK_FILE="/opt/arnold/.deploy.lock"
 STATUS_FILE="/opt/arnold/.deploy-status"
 DEPLOY_DIR="/opt/arnold"
 COMPOSE_DIR="/opt/arnold/backend"  # docker-compose.yml lives here after PR A2b
+# .env (DB_PASSWORD, ARNOLD_API_KEY) stays at repo root so it isn't shipped
+# inside backend/ trees by accident. Compose needs it explicitly because its
+# default lookup is the project directory (= directory of the compose file).
+COMPOSE_ENV_FLAG="--env-file ../.env"
 DEPLOY_COOLDOWN_FILE="/opt/arnold/.last-deploy"
 DEPLOY_COOLDOWN_SECONDS=300  # 5 min minimum between rebuilds
 
@@ -40,14 +44,14 @@ case "$action" in
         fi
         echo ""
         echo "=== Containers ==="
-        cd "$COMPOSE_DIR" && docker compose ps
+        cd "$COMPOSE_DIR" && docker compose $COMPOSE_ENV_FLAG ps
         echo ""
         echo "=== Disk ==="
         docker system df
         exit 0
         ;;
     logs)
-        cd "$COMPOSE_DIR" && docker compose logs "$service" --tail "$lines"
+        cd "$COMPOSE_DIR" && docker compose $COMPOSE_ENV_FLAG logs "$service" --tail "$lines"
         exit 0
         ;;
 esac
@@ -96,7 +100,7 @@ wait_for_health() {
     if [ "$svc" != "backend" ]; then
         echo ">>> Skipping /health probe for $svc (no HTTP /health endpoint)"
         local state
-        state=$(docker compose ps "$svc" --format json 2>/dev/null | python3 -c "
+        state=$(docker compose $COMPOSE_ENV_FLAG ps "$svc" --format json 2>/dev/null | python3 -c "
 import sys, json
 for line in sys.stdin:
     d = json.loads(line)
@@ -108,7 +112,7 @@ for line in sys.stdin:
             return 0
         fi
         echo "ERROR: $svc is not running (state: $state)"
-        docker compose logs "$svc" --tail 20
+        docker compose $COMPOSE_ENV_FLAG logs "$svc" --tail 20
         return 1
     fi
 
@@ -117,7 +121,7 @@ for line in sys.stdin:
     while [ "$elapsed" -lt "$max_wait" ]; do
         # Check Docker health status
         local health
-        health=$(docker compose ps "$svc" --format json 2>/dev/null | python3 -c "
+        health=$(docker compose $COMPOSE_ENV_FLAG ps "$svc" --format json 2>/dev/null | python3 -c "
 import sys, json
 for line in sys.stdin:
     d = json.loads(line)
@@ -131,7 +135,7 @@ for line in sys.stdin:
         fi
 
         # Also try curl directly as fallback
-        if docker compose exec -T "$svc" curl -sf http://localhost:8000/health >/dev/null 2>&1; then
+        if docker compose $COMPOSE_ENV_FLAG exec -T "$svc" curl -sf http://localhost:8000/health >/dev/null 2>&1; then
             echo ">>> $svc responding to /health (${elapsed}s)"
             return 0
         fi
@@ -143,7 +147,7 @@ for line in sys.stdin:
 
     echo "ERROR: $svc failed health check after ${max_wait}s!"
     echo ">>> Recent logs:"
-    docker compose logs "$svc" --tail 20
+    docker compose $COMPOSE_ENV_FLAG logs "$svc" --tail 20
     return 1
 }
 
@@ -171,8 +175,8 @@ case "$action" in
         cd "$DEPLOY_DIR" && git pull
         cd "$COMPOSE_DIR"
         # Build image first (doesn't affect running container)
-        docker compose build "$service"
-        docker compose up -d "$service"
+        docker compose $COMPOSE_ENV_FLAG build "$service"
+        docker compose $COMPOSE_ENV_FLAG up -d "$service"
         echo ">>> Pruning unused images and build cache..."
         # -a removes ALL unused images, not just dangling. Running containers
         # keep their images (Docker won't drop a referenced image), so this is
@@ -188,20 +192,20 @@ case "$action" in
             echo "DEPLOY FAILED: $service is unhealthy after rebuild"
             exit 1
         fi
-        docker compose ps "$service"
+        docker compose $COMPOSE_ENV_FLAG ps "$service"
         ;;
     restart)
         check_cooldown
         echo ">>> git pull + restart $service"
         cd "$DEPLOY_DIR" && git pull
         cd "$COMPOSE_DIR"
-        docker compose restart "$service"
+        docker compose $COMPOSE_ENV_FLAG restart "$service"
         record_deploy_time
         if ! wait_for_health "$service"; then
             echo "DEPLOY FAILED: $service is unhealthy after restart"
             exit 1
         fi
-        docker compose ps "$service"
+        docker compose $COMPOSE_ENV_FLAG ps "$service"
         ;;
     cleanup)
         echo ">>> Docker cleanup"

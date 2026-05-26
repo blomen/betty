@@ -9,6 +9,7 @@
 
 DEPLOY_DIR="/opt/arnold"
 COMPOSE_DIR="/opt/arnold/backend"  # docker-compose.yml lives here after PR A2b
+COMPOSE_ENV_FLAG="--env-file ../.env"  # .env stays at /opt/arnold/.env
 LOCK_FILE="/opt/arnold/.deploy.lock"
 LOG_PREFIX="[$(date -u '+%Y-%m-%d %H:%M UTC')]"
 
@@ -23,7 +24,7 @@ fi
 exec 200>&-
 
 # Check if backend container exists and is running
-backend_status=$(docker compose ps backend --format json 2>/dev/null | python3 -c "
+backend_status=$(docker compose $COMPOSE_ENV_FLAG ps backend --format json 2>/dev/null | python3 -c "
 import sys, json
 for line in sys.stdin:
     d = json.loads(line)
@@ -39,7 +40,7 @@ if [ "$backend_status" = "running" ]; then
     # often enough to trigger this watchdog into restart-looping the
     # container during RTH. /health/live is the smallest possible probe
     # — if it times out, the loop is genuinely starved.
-    if docker compose exec -T backend curl -sf -m 30 http://localhost:8000/health/live >/dev/null 2>&1; then
+    if docker compose $COMPOSE_ENV_FLAG exec -T backend curl -sf -m 30 http://localhost:8000/health/live >/dev/null 2>&1; then
         # Reset the consecutive-unhealthy counter on every healthy reading
         # so a previous transient unhealthy spike doesn't accumulate
         # toward the restart threshold.
@@ -48,7 +49,7 @@ if [ "$backend_status" = "running" ]; then
     fi
 
     # Running but not responding to health — check Docker health status
-    health=$(docker compose ps backend --format json 2>/dev/null | python3 -c "
+    health=$(docker compose $COMPOSE_ENV_FLAG ps backend --format json 2>/dev/null | python3 -c "
 import sys, json
 for line in sys.stdin:
     d = json.loads(line)
@@ -98,12 +99,12 @@ for line in sys.stdin:
         exit 0
     fi
     echo "$LOG_PREFIX WARNING: Backend unhealthy (health: $health) for $current consecutive readings — restarting"
-    docker compose restart backend
+    docker compose $COMPOSE_ENV_FLAG restart backend
     rm -f "$STATE_FILE"
     echo "$LOG_PREFIX Backend restarted"
 else
     echo "$LOG_PREFIX CRITICAL: Backend container not running (state: $backend_status)"
     echo "$LOG_PREFIX Starting backend..."
-    docker compose up -d backend
+    docker compose $COMPOSE_ENV_FLAG up -d backend
     echo "$LOG_PREFIX Backend started"
 fi
