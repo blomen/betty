@@ -171,38 +171,47 @@ class OpportunityAnalyzer:
 
         upserted_opps: list = []  # all opportunity objects returned from upserts
 
-        for event in events:
-            # Group odds by market -> outcome -> providers (delegates to scanner)
-            odds_grouped = self.scanner.group_odds(event)
+        from ..constants import scannable_scopes_for
 
+        for event in events:
             # Tennis (set-based sports): Pinnacle spread = set handicap,
             # soft providers spread = game handicap → phantom edges. Skip.
             skip_spreads = event.sport in SET_SPREAD_SPORTS
 
-            for market, odds_by_outcome in odds_grouped.items():
-                if skip_spreads and market.startswith("spread"):
-                    continue
+            # Scan each in-scope period independently. For most sports this
+            # iterates once over {"ft"} — bit-for-bit identical to the prior
+            # single-scope behaviour. Baseball iterates {"ft", "f5"} so MLB F5
+            # markets produce their own opportunity rows alongside the full
+            # game ones.
+            for scope in scannable_scopes_for(event.sport):
+                odds_grouped = self.scanner.group_odds(event, scope=scope)
 
-                # Detect value via scanner, then persist best per outcome
-                value_count = self._detect_value(event.id, market, odds_by_outcome, odds_grouped, sport=event.sport)
-                results["value"]["found"] += value_count["found"]
-                results["value"]["new"] += value_count["new"]
-                results["value"]["fanned"] += value_count.get("fanned", 0)
-                upserted_opps.extend(value_count.get("opps", []))
+                for market, odds_by_outcome in odds_grouped.items():
+                    if skip_spreads and market.startswith("spread"):
+                        continue
 
-                # Detect arb/reverse (cross-book opportunities)
-                arb_count = self._detect_arb(event, market, odds_by_outcome, odds_grouped)
-                results["arb"]["found"] += arb_count["arb_found"]
-                results["arb"]["new"] += arb_count["arb_new"]
-                results["reverse"]["found"] += arb_count["reverse_found"]
-                results["reverse"]["new"] += arb_count["reverse_new"]
-                upserted_opps.extend(arb_count.get("opps", []))
+                    # Detect value via scanner, then persist best per outcome
+                    value_count = self._detect_value(
+                        event.id, market, odds_by_outcome, odds_grouped, sport=event.sport, scope=scope
+                    )
+                    results["value"]["found"] += value_count["found"]
+                    results["value"]["new"] += value_count["new"]
+                    results["value"]["fanned"] += value_count.get("fanned", 0)
+                    upserted_opps.extend(value_count.get("opps", []))
 
-                # Detect reverse value (Pinnacle vs soft consensus)
-                rv_count = self._detect_reverse_value(event.id, market, odds_by_outcome, odds_grouped)
-                results["reverse_value"]["found"] += rv_count["found"]
-                results["reverse_value"]["new"] += rv_count["new"]
-                upserted_opps.extend(rv_count.get("opps", []))
+                    # Detect arb/reverse (cross-book opportunities)
+                    arb_count = self._detect_arb(event, market, odds_by_outcome, odds_grouped, scope=scope)
+                    results["arb"]["found"] += arb_count["arb_found"]
+                    results["arb"]["new"] += arb_count["arb_new"]
+                    results["reverse"]["found"] += arb_count["reverse_found"]
+                    results["reverse"]["new"] += arb_count["reverse_new"]
+                    upserted_opps.extend(arb_count.get("opps", []))
+
+                    # Detect reverse value (Pinnacle vs soft consensus)
+                    rv_count = self._detect_reverse_value(event.id, market, odds_by_outcome, odds_grouped, scope=scope)
+                    results["reverse_value"]["found"] += rv_count["found"]
+                    results["reverse_value"]["new"] += rv_count["new"]
+                    upserted_opps.extend(rv_count.get("opps", []))
 
         # Commit with deadlock retry — concurrent pipelines can deadlock on
         # opportunity rows when two analyzers update overlapping event sets.
@@ -324,6 +333,7 @@ class OpportunityAnalyzer:
         odds_by_outcome: dict[str, list[dict]],
         all_markets: dict[str, dict[str, list[dict]]] = None,
         sport: str | None = None,
+        scope: str = "ft",
     ) -> dict:
         """
         Detect value betting opportunities for a market.
@@ -382,15 +392,17 @@ class OpportunityAnalyzer:
             from ..analysis.steam_detector import lookup_signal_for_outcome
 
             key_info = annotate_key_number(sport=sport, market=clean_market, point=point_value)
-            from ..constants import canonical_scope_for
 
+            # Use the scope this value bet was detected at — steam signals are
+            # scope-tagged in storage so an F5 value bet must look up F5 steam
+            # signals, not ft ones.
             steam_sig = lookup_signal_for_outcome(
                 self.session,
                 event_id=event_id,
                 market=clean_market,
                 outcome=outcome,
                 point=point_value,
-                scope=canonical_scope_for(sport),
+                scope=scope,
             )
             lean_obj = compute_consensus_lean(
                 odds_snapshot=vb.odds_snapshot,
@@ -427,6 +439,7 @@ class OpportunityAnalyzer:
                     outcomes_json=outcomes_json,
                     point=point_value,
                     annotations=annotations,
+                    scope=scope,
                 )
                 result["opps"].append(opp)
                 if is_new:
@@ -440,6 +453,7 @@ class OpportunityAnalyzer:
         market: str,
         odds_by_outcome: dict[str, list[dict]],
         all_markets: dict[str, dict[str, list[dict]]] = None,
+        scope: str = "ft",
     ) -> dict:
         """
         Detect reverse value opportunities: Pinnacle raw odds vs soft consensus.
@@ -497,6 +511,7 @@ class OpportunityAnalyzer:
                 edge_pct=vb.edge_pct,
                 outcomes_json=outcomes_json,
                 point=point_value,
+                scope=scope,
             )
             result["opps"].append(opp)
             if is_new:
@@ -510,6 +525,7 @@ class OpportunityAnalyzer:
         market: str,
         odds_by_outcome: dict[str, list[dict]],
         all_markets: dict[str, dict[str, list[dict]]] = None,
+        scope: str = "ft",
     ) -> dict:
         """
         Detect arb opportunities for a market.
@@ -579,6 +595,7 @@ class OpportunityAnalyzer:
             point=point_value,
             arb_profit_pct=opp.arb_profit_pct,
             arb_legs=opp.arb_legs,
+            scope=scope,
         )
         result["opps"].append(arb_opp)
         if is_new:

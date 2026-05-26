@@ -1,9 +1,11 @@
-# @AnonSportsConsulting — Distilled Insights & Arnold Improvement Map
+# @AnonSportsConsulting — Distilled Insights & Betty Improvement Map
 
 Source: 18 videos on [https://www.youtube.com/@AnonSportsConsulting](https://www.youtube.com/@AnonSportsConsulting)
 Raw transcripts: [anon-sports-consulting-raw.md](anon-sports-consulting-raw.md)
 
-> **Caveat first.** A large fraction of every video is sales pitch ("DM me 'lock'", "join my VIP", "I went 89-29 last year"). His public‑bet‑percentage and reverse‑line‑movement framing is solid retail content — none of it is alpha that an extraction platform like Arnold doesn't already capture mechanically. The value of mining this channel is **vocabulary, framing, and a checklist of edges retail‑sharp bettors actually use**, which we can map to features we already have (mostly) or are missing.
+> **Caveat first.** A large fraction of every video is sales pitch ("DM me 'lock'", "join my VIP", "I went 89-29 last year"). His public‑bet‑percentage and reverse‑line‑movement framing is solid retail content — none of it is alpha that an extraction platform like Betty doesn't already capture mechanically. The value of mining this channel is **vocabulary, framing, and a checklist of edges retail‑sharp bettors actually use**, which we can map to features we already have (mostly) or are missing.
+
+> **Implementation status (audited 2026-05-26):** This doc was written before most of the proposals below were implemented. Of the 9 proposals in Part 2 below, 5 are fully shipped, 3 are partial/in-progress, 1 is still genuinely missing. See [profitable-strategies-survey.md](profitable-strategies-survey.md) Part 5 for the current map. Sections E and F (sport-specific edges, habits) are *informational vocabulary* — Betty consumes Pinnacle's pricing model rather than re-deriving sport-specific edges, so the bookmaker effectively does the modelling for us.
 
 ---
 
@@ -84,104 +86,73 @@ Raw transcripts: [anon-sports-consulting-raw.md](anon-sports-consulting-raw.md)
 
 ---
 
-## Part 2 — Mapping to Arnold (what we already do, what we're missing)
+## Part 2 — Mapping to Betty (what we already do, what we're missing)
 
 ### Already strong (no change needed)
 
-| Anon concept | Arnold's implementation |
+| Anon concept | Betty's implementation |
 |---|---|
 | Value betting | Core of the system — `scanner.scan_value()` vs devigged Pinnacle |
-| Devig fair odds | `analysis/value.py` — multiplicative devig from Pinnacle |
+| Devig fair odds | `analysis/value.py` + `analysis/devig.py` — multiplicative devig from Pinnacle |
 | Line shopping across many books | 40+ providers extracted, scanner finds best price per outcome |
 | Flat units / no emotion | Automated Kelly-tiered sizing via `bankroll/`; humans don't choose stake |
-| Track every bet | `bets` table, Stats tab |
-| Multi-currency book reality | `money.convert` / `to_sek` (per CLAUDE.md) |
+| Track every bet | `bets` table, Stats tab, postmortem analysis on every settlement |
+| Multi-currency book reality | Inline conversion helpers in `services/bankroll/repositories` (see CLAUDE.md currencies section) |
 | Public-bias inefficiency | Implicit — soft books shading toward Cowboys/Lakers IS the edge we harvest |
-| Pinnacle as sharp baseline | Whole pipeline. Pinnacle is the only sharp source by design |
+| Pinnacle as sharp baseline | Whole pipeline. Pinnacle is the only sharp source by design (`SHARP_PROVIDERS`) |
 
 ### Gaps where Anon's framing points at real, implementable improvements
 
-Ordered by ROI for Arnold specifically:
+Originally ordered by ROI; each item now annotated with current implementation status (audited 2026-05-26).
 
-#### 1. **Closing Line Value (CLV) tracking — highest ROI gap**
+#### 1. **Closing Line Value (CLV) tracking — highest ROI gap**  ✅ SHIPPED
 
-He cites CLV as *the* long-term EV indicator. Arnold doesn't compute it.
+He cites CLV as *the* long-term EV indicator.
 
-**Proposal:**
-- At extraction time T_kickoff − 60s (and one final pull at T_kickoff − 5s), snapshot the closing price for every event we have a bet on, for both the provider we bet at AND Pinnacle.
-- New columns on `bets`: `closing_provider_odds`, `closing_pinnacle_odds`, `closing_fair_odds`, `clv_pct = (placed_odds / closing_fair_odds - 1) * 100`.
-- Aggregate CLV by sport / provider / market / edge-bucket in Stats tab. Negative CLV on a sub-bucket = leak.
+**Original proposal:** snapshot Pinnacle closing odds for every bet, expose `clv_pct` on `bets`, aggregate by bucket.
 
-This is the single biggest analytical upgrade. We already have all the raw data; we just don't snapshot at close.
+**As shipped:** `bets.closing_odds` + `bets.clv_pct` (Pinnacle cross-market) + `bets.provider_closing_odds` + `bets.provider_clv_pct` (Polymarket same-market). `BetService.snapshot_closing_odds()` runs every analyzer pass ([pipeline/analyzer.py:109](../../backend/src/pipeline/analyzer.py#L109)) before odds-cleanup deletes stale rows; benchmark logic uses consensus-soft for Pinnacle bets, Pinnacle for soft bets, and same-market Polymarket for poly bets. `clv_confirmed` flag set when snapshot occurred within 12h of placement. Surfaced in Stats, postmortem, ML edge_quality feature.
 
-#### 2. **Steam-move detector**
+#### 2. **Steam-move detector**  ✅ SHIPPED
 
-When 3+ providers move >1 tick on the same outcome inside a short window, that's a syndicate-style signal. Arnold extracts from 40+ books — we're uniquely positioned to detect this *before* the slow books finish adjusting.
+**As shipped:** [analysis/steam_detector.py](../../backend/src/analysis/steam_detector.py), gated by `STEAM_DETECTOR_ENABLED`. Tracks `(event_id, market, outcome, point, scope)` cross-provider velocity from `odds_movements`. Surfaces a `steam_sig` joined into value-bet output in [scanner.py:288](../../backend/src/analysis/scanner.py#L288).
 
-**Proposal:**
-- New analyzer that watches `odds` table for `(event_id, market, outcome)` cross-provider velocity.
-- Threshold: ≥3 books move in same direction within 5 minutes by ≥1.5% in implied probability.
-- Emit a `steam_move` signal that:
-  - Suppresses placement on the *trailing* side (we'd be catching the move late).
-  - Boosts confidence on the *leading* side at any soft book that hasn't moved yet — that lag is pure value.
+#### 3. **Bet-bucket P/L slicing in Stats tab**  ✅ SHIPPED (gated off)
 
-#### 3. **Bet-bucket P/L slicing in Stats tab**
+**As shipped:** [bankroll/bucket_confidence.py](../../backend/src/bankroll/bucket_confidence.py) computes per-(sport, market) mean-CLV on a 90-day window and maps to a Kelly multiplier (1.0 above +0.5% mean CLV, 0.75 down to −0.5%, 0.5 down to −2%, 0.0 below). Gated by `BUCKET_CONFIDENCE_ENABLED` (default off) — inspection-ready before flipping on. **Currently dark** because the largest bucket (esports moneyline) has n=84, below the n=100 floor. Lowering the threshold would activate it on football 1x2, basketball moneyline, tennis moneyline, esports moneyline.
 
-His example: he tracked NFL totals +15u, NFL spreads +1.7u, parlays -2.3u → cut parlays, ROI exploded. We currently track totals at the bet level but probably not slice by `(sport, market, edge_bucket, provider)`. Adding this lets us answer "which segments of our pipeline actually print money."
+#### 4. **Market-lag exploit: F5 / first-half / period markets**  🟡 IN PROGRESS
 
-**Proposal:**
-- Stats tab gains a "Bucket Analysis" view: pivot by sport × market × provider × edge_bucket → ROI, hit-rate, units, CLV, count.
-- Sort by negative ROI to find leaks. Sort by negative CLV to find systematic mispricing of our model (vs. simply bad variance).
+**Status:** PR 1 shipped 2026-05-26 — `f5`/`f3` added to `VALID_SCOPES`, Pinnacle MLB period 1 → `scope="f5"`, period 3 → `scope="f3"`. PR 2 (scanner per-scope support — `SPORT_CANONICAL_SCOPE` becomes a set per sport, scanner iterates) pending. PR 3 (wire Kambi MLB F5 so scanner has a soft-book comparison surface) pending. See [pinnacle-period-codes.md](pinnacle-period-codes.md) for the detailed sequencing.
 
-#### 4. **Market-lag exploit: F5 / first-half / period markets**
+#### 5. **Key-number awareness for NFL spreads / totals**  🟡 PARTIAL
 
-He specifically calls out F5 (first-5-innings) bets as lower-variance because they cut bullpen volatility. Pinnacle ships F5 lines. We currently only extract full-game 1x2/spread/total. F5 / 1H / period markets are a parallel product line where the same edge logic applies with lower variance.
+**As shipped:** [analysis/key_numbers.py](../../backend/src/analysis/key_numbers.py) — `NFL_SPREAD_KEY_NUMBERS = (3, 7, 6, 10, 14)` plus total clusters. **Annotation only, not used as stake math** (the module's own docstring: "We don't apply these to the edge math automatically — that risks double-counting whatever Pinnacle already prices in"). The conservative choice — but it means a soft-vs-Pinnacle spread that straddles a key number gets the same Kelly stake as one that doesn't.
 
-**Proposal:**
-- Add F5 (MLB), 1H (NFL/NBA), first-period (NHL) to `ALLOWED_MARKETS` for sharp sources only.
-- Run scanner against soft books that also ship these markets.
-- Treat them as their own edge bucket (different variance profile → different Kelly multiplier).
+#### 6. **Opening-line freshness signal**  ❌ NOT SHIPPED
 
-#### 5. **Key-number awareness for NFL spreads / totals**
+**Status:** No `first_seen_at` column on `odds` rows. The freshness concept is unimplemented. Lowest-priority of the 9 because Betty's value scanner inherently catches "soft hasn't caught up to Pinnacle yet" — it's the gap, not the staleness of the Pinnacle row, that matters.
 
-If a soft book has -3 and Pinnacle has -3 with same juice, our scanner sees no edge. But if soft has -2.5 and Pinnacle has -3, we have an edge much bigger than the price-implied edge because **3 is a key number** — getting `-2.5` is buying a half-point through the highest-frequency margin in the NFL.
+#### 7. **Specialization auto-detection (sport-level Kelly weighting)**  ✅ SHIPPED
 
-**Proposal:**
-- Add `key_number_bonus` to NFL spread scanner: when `(soft_spread, pinnacle_spread)` straddles a key number (3, 7, 6, 10 for spreads; 37/41/44/47 for totals), boost the edge score (or apply a probability bump — every half-point through key numbers shifts cover rate by ~1.5–3% depending on the number).
-- Implement as a lookup table from historical NFL margin distributions (publicly known data).
+**As shipped:** This is what `bankroll/bucket_confidence.py` (item #3) is. Same module, two effects: it's both the diagnostic and the auto-throttle. The Kelly multiplier in `get_multiplier(mean_clv_pct, n)` IS the data-driven specialization Anon described.
 
-#### 6. **Opening-line freshness signal**
+#### 8. **Tilt guardrails for the unlimited-cluster providers**  ✅ SHIPPED
 
-His framing: "sharp money hits weak openers at low limits." Arnold has extraction tiers but no concept of "this provider just opened this market in the last N minutes." We could prioritize newly-published markets at sharp books — those are most likely to be off.
+**As shipped:** [bankroll/drawdown_guard.py](../../backend/src/bankroll/drawdown_guard.py). `UNLIMITED_PROVIDERS = {pinnacle, cloudbet, kalshi, polymarket}` is the Kelly stake basis; soft balances are holding pens that get arbed out and don't count toward the bankroll.
 
-**Proposal:**
-- Add `first_seen_at` to `odds` rows.
-- When `first_seen_at` is within N minutes (start with 30) AND the soft has not yet posted that market, flag the Pinnacle line as "fresh-sharp" — useful when we eventually post-bet against soft books that lag.
+#### 9. **Per-bet rationale snapshot**  🟡 PARTIAL
 
-#### 7. **Specialization auto-detection (sport-level Kelly weighting)**
+**As shipped:** `bets.fair_odds_at_placement` and `bets.edge_at_placement` capture the two most critical numbers at placement. The full JSONB snapshot Anon proposed (devig_method, total_books_seen, line_velocity_5min, recent_clv_for_this_bucket) is not implemented. The postmortem analysis ([analysis/postmortem.py](../../backend/src/analysis/postmortem.py)) does compute `expected_win_pct`, `kelly_fraction`, and classification (`expected_loss` / `false_edge` / etc.) from the available fields, so most of the forensic question is already answerable.
 
-He says: "Specialize in one sport." We bet 40+ providers × many sports indiscriminately. Some of those sport/provider combinations almost certainly print money; others might be flat or negative. Currently we weight Kelly only by edge%, not by historical realized ROI per `(sport, market)` bucket.
+---
 
-**Proposal:**
-- Quarterly recompute realized ROI per `(sport, market)` over last 90 days.
-- Apply a "confidence multiplier" to Kelly stake: bet full Kelly on buckets with >+3% ROI over ≥200 bets; half-Kelly on neutral; zero on negative until 200-bet rolling window goes positive again.
-- This is sport-specialization without the human bias of picking one — driven by data.
+### Net remaining work from this doc
 
-#### 8. **Tilt guardrails for the unlimited-cluster providers (Pinnacle / Cloudbet / Kalshi / Polymarket)**
-
-Soft books cap us automatically (10/day per CLAUDE.md). Unlimited providers don't. Anon's loss-limit / 24h-break advice applies more to humans than to Arnold, but the system equivalent is **circuit-breaker on drawdown.**
-
-**Proposal:**
-- Per-provider rolling P/L circuit: if 7-day P/L breaches `-N × bankroll_pct`, pause new placements on that provider for 24h.
-- Sanity check: this is *not* tilt — it's a guard against a systematic model drift on a specific book (a provider changed its pricing model overnight and we're flat-out wrong about its lines).
-
-#### 9. **Per-bet rationale snapshot**
-
-He keeps a betting journal with the *why*. We log the bet but probably don't capture the full state-at-placement (Pinnacle implied prob, soft implied prob, devigged fair prob, sharp_book_count, recent price velocity). With that snapshot, the retrospective question "why did this bet lose — bad edge, variance, line moved against us, or model bug?" becomes answerable.
-
-**Proposal:**
-- `bets.placement_snapshot` JSONB: fair_odds, raw_pinnacle_odds, devig_method, total_books_seen, line_velocity_5min, edge_pct, recent_clv_for_this_bucket.
-- Stats tab uses this for the bucket analysis in #3.
+1. **Period market scanning** — PR 2 + PR 3 of the F5 sequence (in progress).
+2. **Key-number → stake math** — Either A: trust Pinnacle's pricing and leave key_numbers.py as annotation only (current stance), or B: add a calibrated multiplier on top of Pinnacle's price for spreads straddling 3/7. The conservative argument (don't double-count) is sound — the user would need to *measure* whether Pinnacle actually misprices key-number transitions before flipping this on.
+3. **Full placement snapshot JSONB** — Useful but lower priority since `fair_odds_at_placement` + `edge_at_placement` already let postmortem answer most "why did this lose" questions.
+4. **Opening-line freshness** — Lowest priority; the gap between books is what we exploit, not the age of either row.
 
 ---
 
@@ -212,3 +183,42 @@ Recommended sequence:
 8. **Drawdown circuit-breaker** — safety, not edge
 
 Each of 1–4 is independently a 1–3 day implementation if scoped tightly. 5–8 are bigger.
+
+---
+
+## Part 4 — Addenda from full raw-transcript dissection (2026-05-26)
+
+A focused re-read of [anon-sports-consulting-raw.md](anon-sports-consulting-raw.md) surfaced items the first distillation missed. Listing them by section they belong in:
+
+### Addendum to A (Market structure)
+
+- **Late line moves near kickoff are *usually public steam*, not sharp.** Inverts the naive read of any large pre-game move. Verbatim: *"flashy line moves right before game time... that isn't sharp action most of the time."* Implication for [steam_detector.py](../../backend/src/analysis/steam_detector.py): a steam signal in the final ~30 minutes before start is more likely to reflect public hammering than syndicate action, and should be classified separately (or suppressed). Currently the detector doesn't time-segment its signals.
+- **Books profile individual bettors and weight respected accounts' action.** A "sharp signal" from the market isn't anonymous — books track win records per account and weight known winners' bets heavily. Verbatim: *"books keep data launch on every single player. How much do they win?"* Implication: this is *why* Betty's account-longevity discipline (round stakes, mug bets, sub-CLV restraint) matters; the book's profiling is the mechanism.
+- **Sharp openers are hit when book limits are deliberately low.** Refines the opening-line concept — early sharp action gets accepted at small limits so the book learns from it cheaply. Verbatim: *"when the limits are low, they hit weak openers."* Implication for any future "opening-line freshness" implementation (#6 above): low-limit-at-open is the signal, not just early-in-time.
+
+### Addendum to B (Edge signals)
+
+- **Public-direction timing tactic for totals.** Bet overs *early* before public inflates the line, bet unders *late* after public has pushed it up. Verbatim: *"if you're betting an under, sometimes it's better to wait until the public pushes the number even higher."* Marginal relevance — Betty doesn't model the public independently and instead just acts on the gap to Pinnacle whenever it appears.
+
+### Addendum to E (Sport-specific edges)
+
+#### MLB
+- **Key total numbers: 7, 8, 9.** Equivalent to NFL's 37/41/44/47. Verbatim: *"In the MLB, numbers like seven, eight, and nine matter a lot."* Implication: if `key_numbers.py` ever extends beyond NFL, these are the MLB totals to annotate.
+- **Series-progression learning effect (refined).** The existing entry notes "3rd-game-with-tired-bullpen → over" — the underlying mechanism is *batter familiarity*, not just bullpen fatigue: repeated exposures teach hitters the bullpen's arsenal. Verbatim: *"now they know the type of pitches, the pitch arsenal and the tendencies."*
+
+#### New: Esports / peer-pool staking
+- **1v1Me-style peer staking** is a parallel product class — bettors stake against other bettors on individual player vs. player gaming matches, with the platform taking a fee rather than acting as counterparty. Verbatim: *"staking is not the same thing as a sports book... your money goes into a price pool."* Out of Betty's current scope (no bookmaker line to arbitrage) but worth flagging if peer-exchange markets ever become part of the strategy survey.
+
+### Addendum to F (Workflow / habits)
+
+- **Deposit limits as a bookmaker-side guardrail.** Books offer self-imposed deposit caps as a separate tool from internal loss limits. Verbatim: *"set deposit limits on your sports books as guardrails."* Not applicable to Betty's automated flow (no human deposit decisions in the loop) but flagged for completeness.
+- **Baseball Reference and similar stat sources** named explicitly: baseball-reference.com, mlb.com, Covers, OddShark, Picket, Betlapse. Betty doesn't need these (Pinnacle prices the model for us) — the distilled doc's "do NOT need" table covers this, but the explicit source list is preserved here for anyone wanting to spot-check Pinnacle vs. public statistical models.
+
+### Items deliberately skipped from the dissection
+
+These appear in the raw but add nothing actionable:
+- Implied-probability cheat sheet by American odds (already implicit in Betty's pipeline)
+- Concrete breakeven math at −110 / −105 (already in [profitable-strategies-survey.md](profitable-strategies-survey.md) hold table)
+- Anecdotal specialization stat ("49% → 67% in one season") — marketing-flavored, no methodology
+- Accountability-partner habit — doesn't translate to an automated platform
+- MLB batter-stat list (OBP/SLG/etc.) — Betty consumes Pinnacle's model, doesn't re-derive

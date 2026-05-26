@@ -1165,7 +1165,11 @@ class OpportunityScanner:
                     del soft_map[loser_outcome]
 
     def group_odds(
-        self, event: Event, exclude_providers: set[str] = None, check_staleness: bool = True
+        self,
+        event: Event,
+        exclude_providers: set[str] = None,
+        check_staleness: bool = True,
+        scope: str | None = None,
     ) -> dict[str, dict[str, list[dict]]]:
         """
         Group event odds by market -> outcome -> provider list.
@@ -1179,6 +1183,10 @@ class OpportunityScanner:
             event: The event to group odds for
             exclude_providers: Set of provider IDs to exclude (default: empty set)
             check_staleness: Skip odds older than MAX_ODDS_AGE_HOURS (default: True)
+            scope: Which scope to filter odds to. When None (default), uses
+                canonical_scope_for(event.sport) — preserves prior behaviour.
+                Callers that want to scan period markets (e.g. baseball F5)
+                iterate scannable_scopes_for(sport) and pass each value here.
 
         Returns:
             {
@@ -1210,21 +1218,21 @@ class OpportunityScanner:
         now = datetime.now(UTC)
         staleness_cutoff = now - timedelta(hours=MAX_ODDS_AGE_HOURS)
 
-        canonical = canonical_scope_for(getattr(event, "sport", None))
+        target_scope = scope if scope is not None else canonical_scope_for(getattr(event, "sport", None))
 
         for odds in event.odds:
-            # Scope filter: only canonical-scope rows for this sport participate
-            # in opportunity scanning. Cross-scope comparisons (e.g. regulation
-            # vs OT-inclusive hockey totals) are structurally invalid — refusing
-            # to group them prevents false arbs like the 2026-05-25 IIHF bug.
+            # Scope filter: only rows at the target scope participate. Cross-scope
+            # comparisons (e.g. regulation vs OT-inclusive hockey totals, or full
+            # game vs F5 baseball) are structurally invalid — refusing to group
+            # them prevents false arbs like the 2026-05-25 IIHF bug.
             row_scope = getattr(odds, "scope", None) or "ft"
-            if row_scope != canonical:
+            if row_scope != target_scope:
                 logger.debug(
-                    "scope_filter: drop %s/%s scope=%s (canonical=%s for sport=%s)",
+                    "scope_filter: drop %s/%s scope=%s (target=%s for sport=%s)",
                     event.id,
                     odds.provider_id,
                     row_scope,
-                    canonical,
+                    target_scope,
                     getattr(event, "sport", None),
                 )
                 continue

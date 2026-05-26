@@ -396,6 +396,11 @@ class PinnacleRetriever(Retriever):
     # Esports map periods: period 1 = map 1, period 2 = map 2, etc.
     _ESPORTS_MAP_PERIODS = {1, 2, 3, 4, 5}
 
+    # Baseball innings-bucket periods: period 1 = first 5 innings (F5),
+    # period 3 = first 3 innings (F3). Sharp reference for soft books that
+    # offer the same buckets (Kambi/Altenar baseball, Cloudbet F5 totals).
+    _BASEBALL_PERIOD_SCOPE = {1: "f5", 3: "f3"}
+
     def _parse_markets(self, raw_markets: list[dict], sport: str = "") -> list[dict]:
         """
         Parse markets from Pinnacle API response.
@@ -405,6 +410,8 @@ class PinnacleRetriever(Retriever):
         points (kalshi, cloudbet, polymarket) have a sharp comparison baseline.
         Period 6 (regulation time): ice hockey 1x2, plus spread/total when
         period 0 doesn't have them (minor leagues).
+        Baseball periods 1/3 (F5/F3): innings-bucket sharp reference, scope
+        tagged so the scanner can compare against same-scope soft markets only.
         Esports map markets (period 1-5): moneyline/total per map (mainline only).
         """
         parsed = []
@@ -499,6 +506,24 @@ class PinnacleRetriever(Retriever):
                     parsed.extend(self._parse_total(prices, market_meta, market_type_override=f"total_m{period}"))
                 for m in parsed[before:]:
                     m["scope"] = f"map_{period}"
+
+            # ── Baseball innings buckets (F5 = period 1, F3 = period 3) ──
+            # Mainline + alternates kept (same rationale as period 0): soft
+            # books that ladder F5 totals (Cloudbet, Kalshi) need the alternate
+            # ladder for comparison. The scanner's scope filter will refuse
+            # to mix these with full-game odds.
+            elif sport == "baseball" and period in self._BASEBALL_PERIOD_SCOPE:
+                scope = self._BASEBALL_PERIOD_SCOPE[period]
+                if market_type in self._CORE_TYPES:
+                    before = len(parsed)
+                    if market_type == "moneyline":
+                        parsed.extend(self._parse_moneyline(prices, market_meta))
+                    elif market_type == "spread":
+                        parsed.extend(self._parse_spread(prices, market_meta))
+                    elif market_type == "total":
+                        parsed.extend(self._parse_total(prices, market_meta))
+                    for m in parsed[before:]:
+                        m["scope"] = scope
 
         return parsed
 

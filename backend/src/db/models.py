@@ -792,7 +792,18 @@ class Opportunity(Base):
 
     __tablename__ = "opportunities"
     __table_args__ = (
-        Index("ix_opp_upsert_unique", "event_id", "market", "outcome1", "provider1_id", "type", unique=True),
+        # Unique upsert index now includes scope so F5/Q1/1H opportunities on the
+        # same event/market/provider can coexist with the full-game ft row.
+        Index(
+            "ix_opp_upsert_unique",
+            "event_id",
+            "market",
+            "outcome1",
+            "provider1_id",
+            "type",
+            "scope",
+            unique=True,
+        ),
         Index("ix_opp_active_edge", "is_active", "edge_pct"),
         Index("ix_opp_type_active", "type", "is_active"),
         Index("ix_opp_provider1_type", "provider1_id", "type"),
@@ -807,6 +818,10 @@ class Opportunity(Base):
     # Event reference
     event_id = Column(String, ForeignKey("events.id"))
     market = Column(String)
+    # Period scope (ft / f5 / 1h / q1 / etc). Mirrors odds.scope. Default 'ft' so
+    # all existing opportunity rows continue to represent full-game markets. The
+    # analyzer tags non-ft rows when scanning period-scoped odds.
+    scope = Column(String(16), nullable=False, server_default="ft", default="ft")
 
     # Legacy provider details (kept for backwards compat)
     provider1_id = Column(String, ForeignKey("providers.id"))
@@ -1442,6 +1457,22 @@ def _run_migrations(engine):
         except sqlite3.OperationalError:
             pass
 
+        # 2026-05-26 — opportunities.scope column + rebuild upsert index to
+        # include scope. Idempotent: skip if column already exists.
+        try:
+            cursor.execute("SELECT scope FROM opportunities LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE opportunities ADD COLUMN scope TEXT NOT NULL DEFAULT 'ft'")
+                cursor.execute("DROP INDEX IF EXISTS ix_opp_upsert_unique")
+                cursor.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_opp_upsert_unique "
+                    "ON opportunities (event_id, market, outcome1, provider1_id, type, scope)"
+                )
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
+
         # Add bonus_type to profile_provider_bonuses if missing
         try:
             cursor.execute("SELECT bonus_type FROM profile_provider_bonuses LIMIT 1")
@@ -1791,6 +1822,10 @@ def _run_pg_migrations(engine) -> None:
         # steam_signal, consensus_lean) populated by analyzer at upsert time.
         # Read by the frontend to render per-opportunity indicator badges.
         ("opportunities", "annotations", "JSON"),
+        # 2026-05-26 — period scope on opportunities. Mirrors odds.scope so
+        # F5/1H/Q1 opportunities can coexist with the full-game ft row on the
+        # same event/market/provider. Unique-upsert index rebuilt below.
+        ("opportunities", "scope", "VARCHAR(16) NOT NULL DEFAULT 'ft'"),
     ]
 
     # Tables dropped during the 2026-05-25 strip-trading work. Idempotent —
@@ -1921,6 +1956,30 @@ def _run_pg_migrations(engine) -> None:
         except Exception:
             sp.rollback()
             logger.warning("pg migration: bets.provider_bet_id index failed", exc_info=True)
+
+        # 2026-05-26 — opportunities upsert index rebuilt to include scope so
+        # F5/1H/Q1 opportunities can coexist with the ft row on the same
+        # event/market/provider. Drop old, then add new under SAVEPOINTs.
+        sp = conn.begin_nested()
+        try:
+            conn.execute(text("DROP INDEX IF EXISTS ix_opp_upsert_unique"))
+            sp.commit()
+        except Exception:
+            sp.rollback()
+            logger.warning("pg migration: drop old ix_opp_upsert_unique failed", exc_info=True)
+
+        sp = conn.begin_nested()
+        try:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_opp_upsert_unique "
+                    "ON opportunities (event_id, market, outcome1, provider1_id, type, scope)"
+                )
+            )
+            sp.commit()
+        except Exception:
+            sp.rollback()
+            logger.warning("pg migration: create ix_opp_upsert_unique (with scope) failed", exc_info=True)
 
         # 2026-04-25 — slip_odds_ticks for slip-streaming observability
         conn.execute(

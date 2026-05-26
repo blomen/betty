@@ -78,8 +78,13 @@ class OpportunityRepo:
         outcomes_json: list[dict],
         point: float | None = None,
         annotations: dict | None = None,
+        scope: str = "ft",
     ) -> tuple[bool, "Opportunity"]:
-        """Upsert a value opportunity. Returns (is_new, opportunity)."""
+        """Upsert a value opportunity. Returns (is_new, opportunity).
+
+        `scope` keys the row alongside (event, market, outcome, provider) so
+        F5/1H/Q1 rows can coexist with the full-game ft row.
+        """
         existing = (
             self.db.query(Opportunity)
             .filter(
@@ -88,6 +93,7 @@ class OpportunityRepo:
                 Opportunity.type == "value",
                 Opportunity.outcome1 == outcome,
                 Opportunity.provider1_id == provider_id,
+                Opportunity.scope == scope,
             )
             .first()
         )
@@ -125,6 +131,7 @@ class OpportunityRepo:
                 is_active=True,
                 detected_at=now,
                 annotations=annotations,
+                scope=scope,
             )
             self.db.add(opp)
             return True, opp
@@ -139,6 +146,7 @@ class OpportunityRepo:
         point: float | None = None,
         arb_profit_pct: float | None = None,
         arb_legs: list[dict] | None = None,
+        scope: str = "ft",
     ) -> tuple[bool, "Opportunity"]:
         """Upsert an arb opportunity. Returns (is_new, opportunity)."""
         # Primary leg = highest edge, secondary = second highest
@@ -152,6 +160,7 @@ class OpportunityRepo:
                 Opportunity.event_id == event_id,
                 Opportunity.market == market,
                 Opportunity.type == "arb",
+                Opportunity.scope == scope,
             )
             .first()
         )
@@ -208,6 +217,7 @@ class OpportunityRepo:
                 point=point,
                 is_active=True,
                 detected_at=now,
+                scope=scope,
             )
             self.db.add(opp)
             return True, opp
@@ -220,6 +230,7 @@ class OpportunityRepo:
         combined_edge_pct: float,
         guaranteed_profit_pct: float,
         point: float | None = None,
+        scope: str = "ft",
     ) -> tuple[bool, "Opportunity"]:
         """Upsert a reverse arb opportunity. Returns (is_new, opportunity)."""
         sorted_legs = sorted(legs, key=lambda x: x["edge_pct"], reverse=True)
@@ -232,6 +243,7 @@ class OpportunityRepo:
                 Opportunity.event_id == event_id,
                 Opportunity.market == market,
                 Opportunity.type == "reverse",
+                Opportunity.scope == scope,
             )
             .first()
         )
@@ -283,6 +295,7 @@ class OpportunityRepo:
                 point=point,
                 is_active=True,
                 detected_at=now,
+                scope=scope,
             )
             self.db.add(opp)
             return True, opp
@@ -297,6 +310,7 @@ class OpportunityRepo:
         edge_pct: float,
         outcomes_json: list[dict],
         point: float | None = None,
+        scope: str = "ft",
     ) -> tuple[bool, "Opportunity"]:
         """Upsert a reverse value opportunity (Pinnacle vs consensus). Returns (is_new, opportunity)."""
         existing = (
@@ -306,6 +320,7 @@ class OpportunityRepo:
                 Opportunity.market == market,
                 Opportunity.type == "reverse_value",
                 Opportunity.outcome1 == outcome,
+                Opportunity.scope == scope,
             )
             .first()
         )
@@ -339,6 +354,7 @@ class OpportunityRepo:
                 point=point,
                 is_active=True,
                 detected_at=now,
+                scope=scope,
             )
             self.db.add(opp)
             return True, opp

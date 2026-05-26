@@ -40,6 +40,7 @@ SHARP_PROVIDERS = frozenset({"pinnacle"})
 #   1h, 2h     — halves (football, basketball, AF)
 #   q1..q4     — quarters (basketball, AF)
 #   p1..p3     — periods (hockey)
+#   f3, f5     — first 3 / first 5 innings (baseball)
 #   set_1..5   — sets (tennis, volleyball)
 #   map_1..5   — maps (esports)
 #
@@ -65,6 +66,8 @@ VALID_SCOPES = frozenset(
         "p1",
         "p2",
         "p3",
+        "f3",
+        "f5",
         "set_1",
         "set_2",
         "set_3",
@@ -104,6 +107,30 @@ def canonical_scope_for(sport: str | None) -> str:
     if sport is None:
         return DEFAULT_SCOPE
     return SPORT_CANONICAL_SCOPE.get(sport, DEFAULT_SCOPE)
+
+
+# Scopes the scanner should iterate per sport. Defaults to the canonical
+# scope only — sports with explicit period coverage opt in here. Used by
+# `scannable_scopes_for(sport)` below; the scanner iterates this set per
+# event and emits one set of opportunities per scope.
+#
+# MLB F5 entry is intentionally additive: ft remains the primary scope.
+# F3 stays out until F5 has proven the path end-to-end (extraction + scan
+# + at least one soft-book F5 surface).
+SPORT_SCANNABLE_SCOPES: dict[str, frozenset[str]] = {
+    "baseball": frozenset({"ft", "f5"}),
+}
+
+
+def scannable_scopes_for(sport: str | None) -> frozenset[str]:
+    """Return the set of scopes the scanner should iterate for a sport.
+
+    Sports without an explicit entry fall back to `{canonical_scope_for(sport)}`,
+    preserving single-scope behaviour for every sport but baseball.
+    """
+    if sport is not None and sport in SPORT_SCANNABLE_SCOPES:
+        return SPORT_SCANNABLE_SCOPES[sport]
+    return frozenset({canonical_scope_for(sport)})
 
 
 # Signal-only providers — odds used for consensus/fair-odds but NOT for opportunity
@@ -313,6 +340,7 @@ PINNACLE_SPORTS = frozenset(
 #   1h, 2h     — halves (football, basketball, AF)
 #   q1..q4     — quarters (basketball, AF)
 #   p1..p3     — periods (hockey)
+#   f3, f5     — first 3 / first 5 innings (baseball)
 #   set_1..5   — sets (tennis, volleyball)
 #   map_1..5   — maps (esports)
 #
@@ -338,6 +366,8 @@ VALID_SCOPES = frozenset(
         "p1",
         "p2",
         "p3",
+        "f3",
+        "f5",
         "set_1",
         "set_2",
         "set_3",
