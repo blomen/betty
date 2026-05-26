@@ -89,7 +89,7 @@ backend/src/
 - `arnold-nginx-1` — Nginx reverse proxy (ports 80/443, HTTPS + basic auth)
 
 ### Security
-- **Nginx basic auth** protects all routes (credentials in `nginx/.htpasswd` on server, gitignored)
+- **Nginx basic auth** protects all routes (credentials in `backend/nginx/.htpasswd` on server, gitignored)
 - **No public ports** for backend (8000) or postgres (5432) — only reachable via Docker internal network
 - **Non-root container** — backend runs as `arnold` user (uid 1000), not root
 - **HTTPS enforced** with TLS 1.2/1.3, HSTS, rate limiting (30 req/s per IP)
@@ -112,19 +112,19 @@ backend/src/
 
 ```bash
 # After pushing to main (full rebuild — needed for ANY code/Dockerfile change):
-ssh root@148.251.40.251 "bash /opt/arnold/scripts/server-deploy.sh rebuild backend"
+ssh root@148.251.40.251 "bash /opt/arnold/backend/scripts/server-deploy.sh rebuild backend"
 
 # For config/env-only changes (restart is NOT enough for code changes — code is baked into Docker image):
-ssh root@148.251.40.251 "bash /opt/arnold/scripts/server-deploy.sh restart backend"
+ssh root@148.251.40.251 "bash /opt/arnold/backend/scripts/server-deploy.sh restart backend"
 
 # Check logs (no lock needed):
-ssh root@148.251.40.251 "bash /opt/arnold/scripts/server-deploy.sh logs backend 30"
+ssh root@148.251.40.251 "bash /opt/arnold/backend/scripts/server-deploy.sh logs backend 30"
 
 # Check deploy status + containers + disk:
-ssh root@148.251.40.251 "bash /opt/arnold/scripts/server-deploy.sh status"
+ssh root@148.251.40.251 "bash /opt/arnold/backend/scripts/server-deploy.sh status"
 
 # Clean up old Docker images and build cache:
-ssh root@148.251.40.251 "bash /opt/arnold/scripts/server-deploy.sh cleanup"
+ssh root@148.251.40.251 "bash /opt/arnold/backend/scripts/server-deploy.sh cleanup"
 
 # Check extraction:
 ssh root@148.251.40.251 "cd /opt/arnold && docker compose exec -T backend cat /app/logs/extraction.log | tail -30"
@@ -148,7 +148,7 @@ The `Dockerfile` uses a 2-stage build for fast rebuilds:
 Multiple Claude Code agents may work on this repo concurrently. **Follow these rules to avoid conflicts:**
 
 1. **Always check server status before deploying**: Run `server-deploy.sh status` first. Note: status only shows "active deploy" if `STATUS_FILE` is present — it does NOT detect a wedged-but-still-running script. To see whether the lockfile is actually held, also run `ssh root@148.251.40.251 "pgrep -fa 'server-deploy.sh' && lsof /opt/arnold/.deploy.lock 2>/dev/null"`. A `pgrep` hit means the slot is still in use.
-2. **Never run raw `docker compose up/restart/build`** — always use `scripts/server-deploy.sh` which acquires an exclusive `flock`. A PreToolUse hook blocks raw docker compose commands.
+2. **Never run raw `docker compose up/restart/build`** — always use `backend/scripts/server-deploy.sh` which acquires an exclusive `flock`. A PreToolUse hook blocks raw docker compose commands.
 3. **Read-only operations are safe concurrently**: logs, status, DB queries, extraction logs.
 4. **Destructive operations are serialized by the lock**: rebuild, restart. **`git pull` outside the script is NOT lock-protected** — never run `cd /opt/arnold && git pull` manually. Use `bash server-deploy.sh pull` if you need to advance the server's working tree without rebuilding. Manual `git pull` followed by a cached rebuild creates source-vs-image drift: HEAD advances but the docker `COPY backend/` layer stays cached, so the new code is on disk but not in the running container.
 5. **If the lock is held**, wait and retry — don't bypass it.
@@ -163,7 +163,7 @@ Multiple Claude Code agents may work on this repo concurrently. **Follow these r
     - `ssh root@148.251.40.251 "curl -sf http://localhost:8000/health"` — note the `boot_id` (changes on every container restart)
     - `ssh root@148.251.40.251 "cd /opt/arnold && docker compose ps backend --format json | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get(\"CreatedAt\"))'"` — container creation time should be after your deploy completed
     - If git HEAD is ahead of what your deploy pulled (e.g. another agent pushed mid-deploy), the running container is stale — re-deploy with `--no-cache` or wait for the next pull cycle.
-13. **Backend deploys vs frontend/local-client changes**: a commit touching ONLY `frontend/`, `local/mirror/`, `local/server.py`, `local/launch.py`, or `local/proxy.py` is **local-client only** and ships via `arnold.bat` (Vite + local FastAPI) — do NOT trigger a backend rebuild for these. Quick check: `git diff --name-only origin/main...HEAD | grep -vE '^(local|frontend)/' | head -1` — if empty, no backend deploy needed.
+13. **Backend deploys vs frontend/local-client changes**: a commit touching ONLY `local/`, `frontend/`, `docs/`, or `CLAUDE.md` is **local-client / docs only** and ships via `arnold.bat` (Vite + local FastAPI) — do NOT trigger a backend rebuild for these. Quick check: `git diff --name-only origin/main...HEAD | grep -vE '^(local|frontend|docs)/|^CLAUDE\.md$|^\.gitignore$|^\.dockerignore$' | head -1` — if empty, no backend deploy needed. Note: `backend/` (which now includes `backend/scripts/`, `backend/docker/`, `backend/nginx/`) and the root-level `Dockerfile`, `docker-compose*.yml`, `pyproject.toml` all trigger a backend rebuild.
 14. **Background-deploy etiquette**: when running deploys via `Bash run_in_background=true` and SSH, the remote bash survives if you cancel the local task — always `pgrep -fa 'server-deploy.sh'` on the server BEFORE assuming the slot is free.
 
 ### Currencies (READ BEFORE ANY CROSS-PROVIDER MATH)
@@ -198,7 +198,7 @@ The server runs 24/7 without intervention:
 - Extraction scheduler (see Extraction Tiers below for actual intervals per provider)
 - Opportunity scanner (after each extraction)
 - Container watchdog cron (every 5 min, auto-restarts if backend is down)
-- Daily PostgreSQL backup at 3 AM UTC (`docker/pg-backup.sh`)
+- Daily PostgreSQL backup at 3 AM UTC (`backend/docker/pg-backup.sh`)
 
 ### Memory Budget (IMPORTANT — OOM killed the server on 2026-04-12)
 64 GB total, partitioned via Docker `mem_limit` to prevent kernel OOM:

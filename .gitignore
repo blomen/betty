@@ -62,13 +62,6 @@ node_modules/
 # Root workspace files (monorepo config)
 /package.json
 /package-lock.json
-/scripts/*
-# Deploy / multi-agent coordination scripts are tracked exceptions:
-!/scripts/server-deploy.sh
-!/scripts/container-watchdog.sh
-!/scripts/audit_fresh_profile.py
-!/scripts/deploy-busy.sh
-!/scripts/discover_rainbet.py
 
 # info docs
 /_ALL_RAW.md

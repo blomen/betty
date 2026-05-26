@@ -1,6 +1,6 @@
 #!/bin/bash
 # Server-side deploy script with flock to prevent concurrent deploys
-# Usage: ssh root@148.251.40.251 "bash /opt/arnold/scripts/server-deploy.sh <action> [args]"
+# Usage: ssh root@148.251.40.251 "bash /opt/arnold/backend/scripts/server-deploy.sh <action> [args]"
 #
 # Actions:
 #   pull              - git pull only
@@ -56,7 +56,7 @@ exec 200>"$LOCK_FILE"
 if ! flock -n 200; then
     echo "ERROR: Another deploy is in progress:"
     cat "$STATUS_FILE" 2>/dev/null || echo "(unknown)"
-    echo "Try again later or run: ssh root@148.251.40.251 'bash /opt/arnold/scripts/server-deploy.sh status'"
+    echo "Try again later or run: ssh root@148.251.40.251 'bash /opt/arnold/backend/scripts/server-deploy.sh status'"
     exit 1
 fi
 

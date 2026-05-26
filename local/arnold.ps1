@@ -6,15 +6,16 @@
 # console. PowerShell has no equivalent prompt.
 #
 # Steps:
-#   1. Acquire single-instance lock on local/data/.launch.lock
+#   1. Acquire single-instance lock on data/.launch.lock
 #   2. Run kill.ps1 to clear any zombie launcher / tunnel / browser
 #   3. Launch python launch.py from the project venv (or system python)
 #   4. Release lock on exit (always — try/finally)
 
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = $PSScriptRoot
-$dataDir = Join-Path $repoRoot 'local\data'
+$localDir = $PSScriptRoot
+$repoRoot = Split-Path -Parent $localDir
+$dataDir = Join-Path $localDir 'data'
 $lockFile = Join-Path $dataDir '.launch.lock'
 
 if (-not (Test-Path $dataDir)) {
@@ -34,14 +35,14 @@ try {
 }
 
 try {
-    & (Join-Path $repoRoot 'kill.ps1')
+    & (Join-Path $localDir 'kill.ps1')
     if ($LASTEXITCODE -ne 0) {
         Write-Host '[arnold] kill.ps1 reported leftover state — aborting launch'
         Read-Host 'Press Enter to exit'
         exit 1
     }
 
-    Set-Location (Join-Path $repoRoot 'local')
+    Set-Location $localDir
 
     $venvPython = Join-Path $repoRoot '.venv\Scripts\python.exe'
     if (Test-Path $venvPython) {

@@ -2,7 +2,7 @@
 # Container liveness watchdog — runs via cron every 5 minutes.
 # Checks if backend container is running and healthy, restarts if not.
 #
-# Install: echo "*/5 * * * * root bash /opt/arnold/scripts/container-watchdog.sh >> /var/log/arnold-watchdog.log 2>&1" > /etc/cron.d/arnold-watchdog
+# Install: echo "*/5 * * * * root bash /opt/arnold/backend/scripts/container-watchdog.sh >> /var/log/arnold-watchdog.log 2>&1" > /etc/cron.d/arnold-watchdog
 #
 # This catches the case where a deploy fails or the container crashes
 # and nobody notices for hours (13h gap on 2026-04-10).
