@@ -273,6 +273,73 @@ CANONICAL_MEMBERS: dict[str, list[str]] = {
     _group["canonical"]: _group["members"] for _group in PLATFORM_GROUPS.values()
 }
 
+# Per-provider extraction interval (minutes) — pulled from providers.yaml
+# extraction_scheduling. Used by staleness_minutes_for() to derive a freshness
+# cutoff that matches each provider's actual update cadence. Non-canonical
+# cluster members (lodur, expekt, …) fan-out from their canonical's extraction
+# run; resolve via PROVIDER_CANONICAL before lookup.
+PROVIDER_EXTRACTION_INTERVAL_MINUTES: dict[str, int] = {
+    # sharp
+    "pinnacle": 1,
+    # event matching only (not sharp); larger interval
+    "polymarket": 10,
+    # prediction-market exchange
+    "kalshi": 5,
+    # api_soft tier (3 min)
+    "unibet": 3,
+    "betinia": 3,
+    "spelklubben": 3,
+    "vbet": 3,
+    # browser_soft tier (45 min)
+    "888sport": 45,
+    "tipwin": 45,
+    # browser_slow tier (60 min) — demoted providers
+    "10bet": 60,
+    "coolbet": 60,
+    # browser_antibot tier (25 min)
+    "comeon": 25,
+    "rainbet": 25,
+    # cloudbet — own tier (5 min)
+    "cloudbet": 5,
+    # signal_international tier (5 min)
+    "marathon": 5,
+    "smarkets": 5,
+    "stake": 5,
+}
+
+# Staleness floor: prevents single-cycle hiccups (proxy timeout, run overlap)
+# from dropping rows that are still effectively fresh. 15 min absorbs ~3
+# missed cycles for a 5-min provider without making the gate so tight that
+# legitimate gaps cause flapping.
+_STALENESS_FLOOR_MINUTES = 15
+
+# Cycle multiplier: a row is dropped after this many missed extraction cycles.
+# 6 absorbs transient extractor errors but catches truly-dropped events
+# (bookmaker pulled the listing) before they pair against fresh Pinnacle as
+# ghost arbs.
+_STALENESS_CYCLE_MULTIPLIER = 6
+
+
+def staleness_minutes_for(provider_id: str) -> int:
+    """Return how old an odds row may be before the scanner ignores it.
+
+    Each provider extracts at its own cadence (providers.yaml). A 30-min-old
+    betinia row means betinia has missed ~10 extraction runs for that event
+    — almost certainly the bookmaker pulled the listing. A 30-min-old comeon
+    row is normal (25-min cadence). Per-provider thresholds catch ghost arbs
+    without unfairly killing slow browser providers between cycles.
+
+    Falls back to 120 min (legacy global gate) for providers not listed in
+    PROVIDER_EXTRACTION_INTERVAL_MINUTES — a safe default that preserves the
+    old behaviour for any forgotten or future provider.
+    """
+    canonical = PROVIDER_CANONICAL.get(provider_id, provider_id)
+    interval = PROVIDER_EXTRACTION_INTERVAL_MINUTES.get(canonical)
+    if interval is None:
+        return 120
+    return max(_STALENESS_FLOOR_MINUTES, _STALENESS_CYCLE_MULTIPLIER * interval)
+
+
 # Sports to extract - these have pinnacle_id in sports.yaml
 # Only extract sports where Pinnacle provides sharp lines AND soft providers
 # have head-to-head match coverage for value comparison.
