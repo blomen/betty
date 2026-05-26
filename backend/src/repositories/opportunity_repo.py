@@ -77,6 +77,7 @@ class OpportunityRepo:
         edge_pct: float,
         outcomes_json: list[dict],
         point: float | None = None,
+        annotations: dict | None = None,
     ) -> tuple[bool, "Opportunity"]:
         """Upsert a value opportunity. Returns (is_new, opportunity)."""
         existing = (
@@ -103,7 +104,10 @@ class OpportunityRepo:
             existing.outcomes = outcomes_json
             existing.point = point
             existing.detected_at = now
+            existing.annotations = annotations
             flag_modified(existing, "outcomes")
+            if annotations is not None:
+                flag_modified(existing, "annotations")
             return False, existing
         else:
             opp = Opportunity(
@@ -120,6 +124,7 @@ class OpportunityRepo:
                 point=point,
                 is_active=True,
                 detected_at=now,
+                annotations=annotations,
             )
             self.db.add(opp)
             return True, opp

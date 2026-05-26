@@ -851,6 +851,14 @@ class Opportunity(Base):
     pinnacle_overround = Column(Float, nullable=True)
     closing_line_value = Column(Float, nullable=True)
 
+    # Diagnostic annotations populated by the analyzer at upsert time.
+    # Shape: {"key_number": {...} | None,
+    #         "steam_signal": {...} | None,
+    #         "consensus_lean": {...} | None}
+    # Frontend reads this to render per-opportunity indicator badges.
+    # See backend/src/analysis/{key_numbers,steam_detector,consensus_lean}.py
+    annotations = Column(JSON, nullable=True)
+
     # Relationships
     event = relationship("Event")
     provider1 = relationship("Provider", foreign_keys=[provider1_id])
@@ -1779,6 +1787,10 @@ def _run_pg_migrations(engine) -> None:
         # so historical events without verification stay visible until the next
         # extraction cycle revalidates them.
         ("events", "home_away_validated", "BOOLEAN NOT NULL DEFAULT TRUE"),
+        # 2026-05-26 — opportunity-level diagnostic annotations (key_number,
+        # steam_signal, consensus_lean) populated by analyzer at upsert time.
+        # Read by the frontend to render per-opportunity indicator badges.
+        ("opportunities", "annotations", "JSON"),
     ]
 
     # Tables dropped during the 2026-05-25 strip-trading work. Idempotent —

@@ -78,6 +78,10 @@ export const bankrollApi = {
     return fetchJson<BankrollExposure>('/bankroll/exposure');
   },
 
+  async getDrawdownStatus(): Promise<DrawdownStatus> {
+    return fetchJson<DrawdownStatus>('/bankroll/drawdown');
+  },
+
   async getBankrollFull(): Promise<{
     info: BankrollInfo;
     exposure: BankrollExposure;
@@ -124,4 +128,19 @@ export const bankrollApi = {
   async claimBonus(providerId: string): Promise<{ success: boolean; provider_id: string; status: string }> {
     return fetchJson(`/bankroll/claim-bonus/${providerId}`, { method: 'POST' });
   },
+};
+
+export type DrawdownProviderRow = {
+  provider_id: string;
+  pnl_sek_7d: number;
+  n_bets: number;
+  breached: boolean;
+};
+
+export type DrawdownStatus = {
+  enabled: boolean;
+  threshold_pct: number;
+  min_bets_for_breach: number;
+  stake_bankroll_sek: number;
+  providers: DrawdownProviderRow[];
 };

@@ -96,6 +96,8 @@ export const betsApi = {
     by_sport: Record<string, AnalyticsBucket>;
     by_edge_bucket: Record<string, AnalyticsBucket>;
     by_sport_and_bucket: Record<string, AnalyticsBucket>;
+    by_sport_and_market: Record<string, AnalyticsBucketWithMultiplier>;
+    bucket_confidence_enabled: boolean;
   }> {
     const params = new URLSearchParams();
     if (providerId) params.set('provider_id', providerId);
@@ -116,4 +118,8 @@ export type AnalyticsBucket = {
   profit: number;
   roi_pct: number | null;
   avg_clv_pct: number | null;
+};
+
+export type AnalyticsBucketWithMultiplier = AnalyticsBucket & {
+  confidence_multiplier: number;
 };

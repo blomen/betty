@@ -287,6 +287,17 @@ class OpportunityScanner:
             canonical_scope = canonical_scope_for(event.sport if event else None)
             steam_sig = steam_by_key.get((vb.event_id, vb.market, vb.outcome, vb.point, canonical_scope))
 
+            # Soft-consensus lean — Arnold's substitute for paid public-vs-
+            # sharp bet-% feeds. Reads the cross-book implied-probability
+            # spread to flag whether the public has loaded this side.
+            from .consensus_lean import compute_consensus_lean
+
+            lean_obj = compute_consensus_lean(
+                odds_snapshot=vb.odds_snapshot,
+                sharp_fair_probability=vb.fair_probability,
+                bet_provider=vb.provider,
+            )
+
             # Create enriched ValueBet
             enriched = ValueBet(
                 event_id=vb.event_id,
@@ -311,6 +322,7 @@ class OpportunityScanner:
                 point=vb.point,
                 key_number=key_info.to_dict() if key_info else None,
                 steam_signal=steam_sig,
+                consensus_lean=lean_obj.to_dict() if lean_obj else None,
             )
             # Log ML features (best-effort, never blocks scanning)
             try:

@@ -283,6 +283,11 @@ class OpportunityService:
                 "display_home": event.display_home if event else None,
                 "display_away": event.display_away if event else None,
                 "starts_at": (event.start_time.isoformat() + "Z") if event and event.start_time else None,
+                # Diagnostic indicator annotations populated by analyzer:
+                # consensus_lean (public-vs-sharp), steam_signal (cross-book
+                # syndicate flow), key_number (NFL spread/total). Frontend
+                # reads `annotations` to render per-row badges.
+                "annotations": opp.annotations if isinstance(opp.annotations, dict) else None,
             }
 
             # Attach provider_meta from pre-fetched cache

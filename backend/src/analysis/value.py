@@ -75,6 +75,14 @@ class ValueBet:
     #         "providers": [...], "total_delta_pp": float, ...}
     steam_signal: dict | None = None
 
+    # Soft-consensus lean — public-vs-sharp signal derived from the
+    # cross-book implied-probability divergence. Diagnostic-only.
+    # Lean values: "sharp_value" (best), "market_lag" (standard +EV),
+    # "stale_outlier" (caution — public on this side, line may move).
+    # Shape: {"soft_consensus_pp": float, "sharp_pp": float,
+    #         "divergence_pp": float, "lean": str, "n_soft_books": int}
+    consensus_lean: dict | None = None
+
     @property
     def expected_value(self) -> float:
         """Expected value per $1 bet."""

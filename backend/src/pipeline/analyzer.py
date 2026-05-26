@@ -125,6 +125,21 @@ class OpportunityAnalyzer:
         except Exception as e:
             logger.warning(f"[opp_cleanup] failed: {e}")
 
+        # Purge old odds_movements rows so the table doesn't grow unbounded
+        # once STEAM_DETECTOR_ENABLED is on. Steam detection only uses the
+        # last 5 min — anything past 24h is dead weight. No-op when the
+        # feature is off (table stays empty).
+        try:
+            from ..analysis.steam_detector import is_enabled as steam_enabled
+            from ..analysis.steam_detector import purge_old_movements
+
+            if steam_enabled():
+                purged = purge_old_movements(self.session, retention_hours=24)
+                if purged > 0:
+                    logger.info("[steam_cleanup] purged %d old odds_movement rows", purged)
+        except Exception as e:
+            logger.warning(f"[steam_cleanup] failed: {e}")
+
         # Pre-load events once — shared across all scan types (value, arb, reverse)
         events = self.scanner.get_multi_provider_events(min_providers=2)
 
@@ -169,7 +184,7 @@ class OpportunityAnalyzer:
                     continue
 
                 # Detect value via scanner, then persist best per outcome
-                value_count = self._detect_value(event.id, market, odds_by_outcome, odds_grouped)
+                value_count = self._detect_value(event.id, market, odds_by_outcome, odds_grouped, sport=event.sport)
                 results["value"]["found"] += value_count["found"]
                 results["value"]["new"] += value_count["new"]
                 results["value"]["fanned"] += value_count.get("fanned", 0)
@@ -308,6 +323,7 @@ class OpportunityAnalyzer:
         market: str,
         odds_by_outcome: dict[str, list[dict]],
         all_markets: dict[str, dict[str, list[dict]]] = None,
+        sport: str | None = None,
     ) -> dict:
         """
         Detect value betting opportunities for a market.
@@ -357,6 +373,38 @@ class OpportunityAnalyzer:
             # Extract point value from market key if present
             clean_market, point_value = _parse_market_point(market)
 
+            # Diagnostic annotations populated once per value bet — read by
+            # the frontend for indicator badges. All three return None when
+            # the relevant feature flag is off or the data isn't applicable,
+            # so this block is fail-safe.
+            from ..analysis.consensus_lean import compute_consensus_lean
+            from ..analysis.key_numbers import annotate as annotate_key_number
+            from ..analysis.steam_detector import lookup_signal_for_outcome
+
+            key_info = annotate_key_number(sport=sport, market=clean_market, point=point_value)
+            from ..constants import canonical_scope_for
+
+            steam_sig = lookup_signal_for_outcome(
+                self.session,
+                event_id=event_id,
+                market=clean_market,
+                outcome=outcome,
+                point=point_value,
+                scope=canonical_scope_for(sport),
+            )
+            lean_obj = compute_consensus_lean(
+                odds_snapshot=vb.odds_snapshot,
+                sharp_fair_probability=vb.fair_probability,
+                bet_provider=vb.provider,
+            )
+            annotations: dict | None = None
+            if key_info or steam_sig or lean_obj:
+                annotations = {
+                    "key_number": key_info.to_dict() if key_info else None,
+                    "steam_signal": steam_sig,
+                    "consensus_lean": lean_obj.to_dict() if lean_obj else None,
+                }
+
             # Fan out to all platform members (e.g., unibet → all 8 Kambi brands)
             fan_providers = CANONICAL_MEMBERS.get(vb.provider, [vb.provider])
             result["fanned"] += len(fan_providers) - 1  # track fan-out inflation
@@ -378,6 +426,7 @@ class OpportunityAnalyzer:
                     edge_pct=vb.edge_pct,
                     outcomes_json=outcomes_json,
                     point=point_value,
+                    annotations=annotations,
                 )
                 result["opps"].append(opp)
                 if is_new:

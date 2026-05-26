@@ -2161,6 +2161,57 @@ export default function PlayPage() {
     provider_id === 'polymarket' || provider_id === 'kalshi'
   const fmtStake = (b: BatchBet) => isCentsMarket(b.provider_id) ? `$${b.stake.toFixed(2)}` : `${Math.round(b.stake)} kr`
   const fmtEv = (b: BatchBet) => isCentsMarket(b.provider_id) ? `+$${b.expected_profit.toFixed(2)}` : `+${b.expected_profit.toFixed(0)} kr`
+
+  // Compact diagnostic badges for a value-bet row. Reads `annotations`
+  // populated by the backend analyzer; renders nothing when null/empty.
+  // SHARP/LAG/STALE comes from consensus_lean, STEAM from cross-book
+  // movement, KEY from NFL spread/total key-number proximity.
+  const renderAnnotationBadges = (b: any) => {
+    const ann = b?.annotations
+    if (!ann || typeof ann !== 'object') return null
+    const lean = ann.consensus_lean?.lean as ('sharp_value' | 'market_lag' | 'stale_outlier' | undefined)
+    const steam = ann.steam_signal as { direction?: 'up' | 'down'; provider_count?: number } | null | undefined
+    const kn = ann.key_number as { on_key?: boolean; straddles_key?: boolean; nearest_key?: number } | null | undefined
+    const cl = ann.consensus_lean as { divergence_pp?: number; n_soft_books?: number } | null | undefined
+    return (
+      <span className="inline-flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wider">
+        {lean === 'sharp_value' && (
+          <span
+            className="px-1 py-0.5 rounded border bg-green-900/30 border-green-600/40 text-green-300"
+            title={`Soft consensus says outcome is LESS likely than fair (divergence ${cl?.divergence_pp?.toFixed(1)}pp across ${cl?.n_soft_books} books) — we're with the sharps, against the public.`}
+          >sharp</span>
+        )}
+        {lean === 'stale_outlier' && (
+          <span
+            className="px-1 py-0.5 rounded border bg-red-900/30 border-red-600/40 text-red-300"
+            title={`Soft consensus says outcome is MORE likely than fair (divergence +${cl?.divergence_pp?.toFixed(1)}pp across ${cl?.n_soft_books} books) — public has loaded this side; our book is a stale outlier likely to move against us.`}
+          >stale</span>
+        )}
+        {lean === 'market_lag' && (
+          <span
+            className="px-1 py-0.5 rounded border bg-zinc-800/60 border-zinc-600/40 text-zinc-400"
+            title={`Soft consensus matches sharp; this is just a single-book lag.`}
+          >lag</span>
+        )}
+        {steam?.direction && (
+          <span
+            className={`px-1 py-0.5 rounded border ${
+              steam.direction === 'up'
+                ? 'bg-cyan-900/30 border-cyan-600/40 text-cyan-300'
+                : 'bg-orange-900/30 border-orange-600/40 text-orange-300'
+            }`}
+            title={`Steam: ${steam.provider_count} books moved ${steam.direction === 'up' ? 'TOWARD' : 'AWAY FROM'} this outcome in the last few minutes.`}
+          >steam {steam.direction === 'up' ? '▲' : '▼'} {steam.provider_count}</span>
+        )}
+        {(kn?.on_key || kn?.straddles_key) && (
+          <span
+            className="px-1 py-0.5 rounded border bg-amber-900/30 border-amber-600/40 text-amber-300"
+            title={`NFL key number ${kn.nearest_key} — ${kn.on_key ? 'point sits exactly on a key' : 'half-point straddle of a key (high-leverage)'}.`}
+          >key {kn.nearest_key}</span>
+        )}
+      </span>
+    )
+  }
   // Compact market label so the user can tell at a glance whether the bet is
   // on the moneyline / total / spread / 1x2. Includes the line value for
   // total/spread (e.g. "O/U 215.5"). Falls back to the raw market string for
@@ -4134,6 +4185,9 @@ export default function PlayPage() {
                         <td className="px-2 py-1 text-right font-mono text-zinc-500">{fmtOddsWithCents(b.fair_odds, isCentsMarket(b.provider_id))}</td>
                         <td className={`px-2 py-1 text-right font-mono ${displayEdge >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                           {displayEdge >= 0 ? '+' : ''}{displayEdge.toFixed(1)}%
+                        </td>
+                        <td className="px-1 py-1 text-center whitespace-nowrap">
+                          {renderAnnotationBadges(b)}
                         </td>
                         <td className="px-2 py-1 text-right font-mono text-zinc-300">{fmtStake(b)}</td>
                         <td className="px-2 py-1 text-right font-mono text-green-400">{fmtEv(b)}</td>

@@ -62,6 +62,37 @@ export interface Opportunity {
   allocation_score?: number | null;
   allocation_reason?: string | null;
   edge_routing?: 'high_edge_unlimited' | 'grind_ok' | null;
+  // Diagnostic indicator annotations populated by analyzer (backend
+  // src/analysis/{key_numbers,steam_detector,consensus_lean}.py).
+  // Frontend renders per-row badges from this shape.
+  annotations?: OpportunityAnnotations | null;
+}
+
+export type ConsensusLean = 'sharp_value' | 'market_lag' | 'stale_outlier';
+
+export interface OpportunityAnnotations {
+  key_number?: {
+    on_key: boolean;
+    straddles_key: boolean;
+    nearest_key: number;
+    distance: number;
+    half_point_value_pp: number | null;
+  } | null;
+  steam_signal?: {
+    direction: 'up' | 'down';
+    provider_count: number;
+    providers: string[];
+    total_delta_pp: number;
+    first_seen?: string | null;
+    last_seen?: string | null;
+  } | null;
+  consensus_lean?: {
+    soft_consensus_pp: number;
+    sharp_pp: number;
+    divergence_pp: number;
+    lean: ConsensusLean;
+    n_soft_books: number;
+  } | null;
 }
 
 // Events

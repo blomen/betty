@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Card } from '@/components/Card';
 import { SortableHeader } from '@/components/SortableHeader';
 import { formatProviderName } from '@/utils/formatters';
@@ -7,12 +8,19 @@ import { useTableSort } from '@/hooks/useTableSort';
 import type { ProviderExposure } from '@/types';
 import { useBankrollQuery } from '@/hooks/useBankrollQuery';
 import { useToast, ToastContainer } from '@/components/Toast';
+import { api } from '@/services/api';
 
 type BankrollSortCol = 'provider' | 'balance';
 
 export function BankrollPage() {
   const { exposure, setBalance, isLoading } = useBankrollQuery();
   const { toasts, addToast, dismissToast } = useToast();
+  const { data: drawdown } = useQuery({
+    queryKey: ['bankroll', 'drawdown'],
+    queryFn: () => api.getDrawdownStatus().catch(() => null),
+    refetchInterval: 60000,
+    staleTime: 30000,
+  });
 
   // Set balance inline state
   const [settingProvider, setSettingProvider] = useState<string | null>(null);
@@ -157,6 +165,52 @@ export function BankrollPage() {
           )}
         </Card>
       </div>
+
+      {drawdown && drawdown.providers.length > 0 && (
+        <div className="border-l-2 border-tabBankroll">
+          <Card title={`Drawdown Breaker (rolling 7d, ${(drawdown.threshold_pct * 100).toFixed(0)}% threshold)`}>
+            <div className="text-[10px] text-muted mb-2">
+              {drawdown.enabled
+                ? <span className="text-success">LIVE — providers showing red are paused for new value bets.</span>
+                : <span className="text-muted2">Preview — set DRAWDOWN_BREAKER_ENABLED=1 to enforce. Diagnostic only.</span>}
+              {' '}Min {drawdown.min_bets_for_breach} settled bets in window required to trip.
+            </div>
+            <table className="sq">
+              <thead>
+                <tr>
+                  <th className="text-left">Provider</th>
+                  <th className="text-right">7d P&amp;L (SEK)</th>
+                  <th className="text-right">Bets</th>
+                  <th className="text-right">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {drawdown.providers
+                  .slice()
+                  .sort((a, b) => a.pnl_sek_7d - b.pnl_sek_7d)
+                  .map(row => (
+                    <tr key={row.provider_id}>
+                      <td className="text-text">
+                        <ProviderName name={row.provider_id} />
+                      </td>
+                      <td className={`text-right ${row.pnl_sek_7d >= 0 ? 'text-success' : 'text-error'}`}>
+                        {row.pnl_sek_7d.toFixed(0)}
+                      </td>
+                      <td className="text-right text-muted">{row.n_bets}</td>
+                      <td className="text-right">
+                        {row.breached ? (
+                          <span className="text-error font-semibold">PAUSED</span>
+                        ) : (
+                          <span className="text-muted2">ok</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }
