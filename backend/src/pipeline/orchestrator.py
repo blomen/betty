@@ -8,7 +8,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func
 
@@ -93,7 +93,7 @@ class ExtractionPipeline:
         """
         import time as _time
 
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(UTC).replace(tzinfo=None)
         sharp_sports = set(self.event_cache.keys())
 
         if not sharp_sports:
@@ -238,7 +238,7 @@ class ExtractionPipeline:
         from ..db.models import Event
         from .storage import _update_event_cache
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=self._CACHE_MAX_AGE_DAYS)
+        cutoff = datetime.now(UTC) - timedelta(days=self._CACHE_MAX_AGE_DAYS)
         events = (
             self.session.query(Event.id, Event.sport, Event.home_team, Event.away_team, Event.start_time, Event.league)
             .filter(Event.start_time >= cutoff)
@@ -291,11 +291,11 @@ class ExtractionPipeline:
 
         Returns number of events marked as finished.
         """
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
         from sqlalchemy import or_, update
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         count = 0
 
         # Strategy 1 + 2: bulk UPDATE — no need to load ORM objects
@@ -339,7 +339,7 @@ class ExtractionPipeline:
         finish_ids = []
         for eid, sport, start_time, home, away in never_live_candidates:
             hours = self.SPORT_DURATION_HOURS.get(sport, self.DEFAULT_DURATION_HOURS)
-            st = start_time if start_time.tzinfo else start_time.replace(tzinfo=timezone.utc)
+            st = start_time if start_time.tzinfo else start_time.replace(tzinfo=UTC)
             if st < now - timedelta(hours=hours):
                 finish_ids.append(eid)
                 logger.info(f"[FT] {home} vs {away} -> finished (never-live, past {hours}h)")
@@ -552,7 +552,7 @@ class ExtractionPipeline:
 
                 return result
 
-            except asyncio.TimeoutError as e:
+            except TimeoutError as e:
                 last_error = e
                 if not retry_config.retry_on_timeout:
                     raise
@@ -720,7 +720,7 @@ class ExtractionPipeline:
                     log_progress(
                         f"Pinnacle done: {pinnacle_result.get('events_processed', 0)} events in {pinnacle_elapsed:.1f}s"
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     error_msg = f"Timed out after {self.orchestrator_config.provider_timeout}s"
                     logger.error(f"[pinnacle] {error_msg}")
                     results["providers"]["pinnacle"] = {"error": error_msg}
@@ -773,7 +773,7 @@ class ExtractionPipeline:
 
                     poly_elapsed = time.time() - poly_start
                     log_progress(f"Polymarket done: {poly_results['events_processed']} events in {poly_elapsed:.1f}s")
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     error_msg = f"Timed out after {self.orchestrator_config.provider_timeout}s"
                     logger.error(f"[polymarket] {error_msg}")
                     results["polymarket"] = {"events_processed": 0, "odds_processed": 0, "error": error_msg}
@@ -1019,7 +1019,7 @@ class ExtractionPipeline:
 
                         return provider_id, provider_results
 
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         error_msg = f"Timed out after {provider_timeout}s"
 
                         # Recover partial results from metrics (data already stored in DB)
@@ -1927,7 +1927,7 @@ class ExtractionPipeline:
                         "error": None,
                     }
 
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     error_msg = f"Timed out after {sport_timeout}s"
                     logger.warning(f"[{provider_id}] {sport} {error_msg}")
                     if self.metrics:
@@ -2028,7 +2028,7 @@ class ExtractionPipeline:
                         await asyncio.wait_for(extractor.close(), timeout=10)
                     else:
                         extractor.close()
-                except (asyncio.TimeoutError, Exception) as e:
+                except (TimeoutError, Exception) as e:
                     logger.warning(f"[{provider_id}] Extractor cleanup failed: {e}")
 
     def _count_matched_events(self) -> int:

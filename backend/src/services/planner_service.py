@@ -8,7 +8,7 @@ cache recommendations, and provide the latest plan to the API/scanner.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -54,7 +54,7 @@ class BankrollPlannerService:
     def get_latest_recommendation(self, profile_id: int) -> PlannerRecommendation | None:
         """Return cached recommendation if fresh (< TTL), else None."""
         cached = self._cache.get(profile_id)
-        if cached and datetime.now(timezone.utc) - cached.generated_at < self.CACHE_TTL:
+        if cached and datetime.now(UTC) - cached.generated_at < self.CACHE_TTL:
             return cached
         return None
 

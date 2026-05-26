@@ -14,7 +14,7 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from ..base import HistoryEntry, PlacementResult
@@ -64,7 +64,7 @@ def _market_key_map(intel: dict | None) -> dict:
 
 
 def _date_range(days: int = 30) -> tuple[str, str]:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     start = (now - timedelta(days=days)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     end = now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
     return start, end

@@ -6,7 +6,7 @@ Provides API for the settle step:
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from ..db.models import Bet, get_session
 
@@ -27,7 +27,7 @@ async def scan_settlements() -> list[dict]:
         # UTC `now` so the filter works identically on SQLite and Postgres
         # without relying on driver-level tz coercion. Pending the schema-wide
         # migration to timezone-aware columns.
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(UTC).replace(tzinfo=None)
         pending = (
             db.query(Bet)
             .filter(

@@ -2,7 +2,7 @@ import contextlib
 import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..core import Retriever, StandardEvent
@@ -346,7 +346,7 @@ class PolymarketRetriever(Retriever):
                                 f"(batch={len(batch)}, attempt={attempt + 1})"
                             )
                             return 0
-                    except (TimeoutError, asyncio.TimeoutError, aiohttp.ClientError) as e:
+                    except (TimeoutError, aiohttp.ClientError) as e:
                         if attempt < MAX_RETRIES:
                             await asyncio.sleep(1.5 * (attempt + 1))
                             continue
@@ -446,7 +446,7 @@ class PolymarketRetriever(Retriever):
         # Polymarket events close immediately on game resolution, so any extraction
         # gap means permanently missed events unless we catch up here.
         seen_ids = {item.get("id") for item in all_raw}
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cutoff = (datetime.now(UTC) - timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
         closed_offset = 0
         closed_count = 0
         # Same MAX_PAGES cap as Phase 1 — closed-event response sizes are similar.
@@ -578,11 +578,11 @@ class PolymarketRetriever(Retriever):
         # Normalize startTime: Gamma API may return epoch timestamp (int/float)
         # instead of ISO string. Convert to ISO so canonical ID date matching works.
         if isinstance(start_time, (int, float)):
-            from datetime import datetime, timezone
+            from datetime import datetime
 
             # Handle millisecond vs second timestamps
             ts = start_time / 1000 if start_time > 1e10 else start_time
-            start_time = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+            start_time = datetime.fromtimestamp(ts, tz=UTC).isoformat()
 
         # Skip "More Markets" events - they only have spreads/totals/props, no 1x2
         if " - More Markets" in title:

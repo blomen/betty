@@ -12,7 +12,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from threading import Lock
 
 import yaml
@@ -122,7 +122,7 @@ class HealthChecker:
 
             logger.info(f"[HealthCheck] {provider_id}: HEALTHY ({response_time_ms:.0f}ms, {len(events)} events)")
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             response_time_ms = (time.time() - start_time) * 1000
             status = HealthStatus(
                 healthy=False, response_time_ms=response_time_ms, error=f"Timeout after {self.timeout_seconds}s"
@@ -266,7 +266,7 @@ def assess_extraction_health(db, intervals: dict[str, int]) -> tuple[str, list[s
     response body), and providers is the structured per-provider list the UI
     consumes for the banner.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     issues: list[str] = []
     providers: list[dict] = []
 
@@ -289,7 +289,7 @@ def assess_extraction_health(db, intervals: dict[str, int]) -> tuple[str, list[s
             age_min = None
         else:
             # odds.updated_at is timestamp-without-tz from PG; treat as UTC.
-            age_min = (now - last_update.replace(tzinfo=timezone.utc)).total_seconds() / 60
+            age_min = (now - last_update.replace(tzinfo=UTC)).total_seconds() / 60
 
         if is_sharp:
             warn_min, crit_min = SHARP_WARN_MINUTES, SHARP_CRIT_MINUTES

@@ -17,7 +17,7 @@ Six endpoints:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -26,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from ...db.models import MirrorEventLog, MirrorProviderState, MirrorRunnerState
+from ...db.models import MirrorEventLog, MirrorProviderHealth, MirrorProviderState, MirrorRunnerState
 from ..deps import get_db
 
 router = APIRouter(prefix="/api/mirror", tags=["mirror-state"])
@@ -63,7 +63,7 @@ class EventAppend(BaseModel):
 
 
 def _utcnow():
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _is_postgres(db: Session) -> bool:

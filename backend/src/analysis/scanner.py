@@ -12,7 +12,7 @@ Storage/persistence is handled by the caller (analyzer.py).
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -239,6 +239,18 @@ class OpportunityScanner:
         event_ids = list({vb.event_id for vb in raw_bets})
         events_by_id = self.event_repo.get_by_ids(event_ids)
 
+        # Pre-fetch steam-move signals once (single query) and key them on
+        # (event_id, market, outcome, point, scope) so the per-bet lookup
+        # below is O(1). Empty dict when STEAM_DETECTOR_ENABLED is off.
+        from .steam_detector import detect_steam_moves
+
+        steam_by_key: dict[tuple, dict] = {}
+        try:
+            for sig in detect_steam_moves(self.session):
+                steam_by_key[(sig.event_id, sig.market, sig.outcome, sig.point, sig.scope)] = sig.to_dict()
+        except Exception:
+            steam_by_key = {}
+
         # Enrich with stakes and event context
         enriched_bets = []
         for vb in raw_bets:
@@ -258,6 +270,22 @@ class OpportunityScanner:
                 provider_id=vb.provider,
                 high_confidence=is_high_confidence,
             )
+
+            # NFL key-number annotation (None for non-NFL or non-spread/total).
+            # Diagnostic-only — does not affect edge_pct or stake.
+            from .key_numbers import annotate as key_number_annotate
+
+            key_info = key_number_annotate(
+                sport=event.sport if event else None,
+                market=vb.market,
+                point=vb.point,
+            )
+
+            # Steam-signal lookup — diagnostic-only annotation. Uses the
+            # canonical scope for this sport since that's what the
+            # detector indexes on. None when the feature is disabled.
+            canonical_scope = canonical_scope_for(event.sport if event else None)
+            steam_sig = steam_by_key.get((vb.event_id, vb.market, vb.outcome, vb.point, canonical_scope))
 
             # Create enriched ValueBet
             enriched = ValueBet(
@@ -280,6 +308,9 @@ class OpportunityScanner:
                 prob_sum=vb.prob_sum,
                 pinnacle_overround=vb.pinnacle_overround,
                 odds_snapshot=vb.odds_snapshot,
+                point=vb.point,
+                key_number=key_info.to_dict() if key_info else None,
+                steam_signal=steam_sig,
             )
             # Log ML features (best-effort, never blocks scanning)
             try:
@@ -1164,7 +1195,7 @@ class OpportunityScanner:
             return {}
 
         # Calculate staleness cutoff
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         staleness_cutoff = now - timedelta(hours=MAX_ODDS_AGE_HOURS)
 
         canonical = canonical_scope_for(getattr(event, "sport", None))
@@ -1195,7 +1226,7 @@ class OpportunityScanner:
                 # Handle naive datetime (assume UTC)
                 updated = odds.updated_at
                 if updated.tzinfo is None:
-                    updated = updated.replace(tzinfo=timezone.utc)
+                    updated = updated.replace(tzinfo=UTC)
                 if updated < staleness_cutoff:
                     logger.debug(
                         f"Skipping stale odds for {event.id}/{odds.provider_id}: updated {updated.isoformat()}"

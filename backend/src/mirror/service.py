@@ -5,7 +5,7 @@ import contextlib
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -200,7 +200,7 @@ class MirrorService:
         tab (not History), clicks Claim banner, clicks Redeem buttons, and settles
         matched bets in the database.
         """
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from .workflows.polymarket import PolymarketWorkflow
 
@@ -214,7 +214,7 @@ class MirrorService:
                     logger.info("[mirror:poly-settle] No pending Polymarket bets — stopping loop")
                     break
 
-                now = datetime.now(timezone.utc)
+                now = datetime.now(UTC)
                 has_finished = False
                 for pb in pending:
                     st = pb.get("start_time")
@@ -223,7 +223,7 @@ class MirrorService:
                             if isinstance(st, str):
                                 st = datetime.fromisoformat(st.replace("Z", "+00:00"))
                             if st.tzinfo is None:
-                                st = st.replace(tzinfo=timezone.utc)
+                                st = st.replace(tzinfo=UTC)
                             if st < now:
                                 has_finished = True
                                 break
@@ -518,15 +518,15 @@ class MirrorService:
 
         # Any remaining pending DB bets that DON'T appear in provider history = ghost bets
         # Only check bets where start_time has passed (future bets may not show in history yet)
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for pb in pending:
             # Skip future bets — they won't be in history yet
             start = pb.get("start_time")
             if start:
                 if hasattr(start, "tzinfo") and start.tzinfo is None:
-                    start = start.replace(tzinfo=timezone.utc)
+                    start = start.replace(tzinfo=UTC)
                 if isinstance(start, str):
                     try:
                         from datetime import datetime as dt
@@ -2543,7 +2543,7 @@ class MirrorService:
     ) -> BetTrace:
         """Insert a BetTrace record."""
         trace = BetTrace(
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             provider_id=provider_id,
             request_url=url,
             request_body=request_body,
@@ -2569,7 +2569,7 @@ class MirrorService:
             logger.warning("[mirror] Cannot match — no team names resolved")
             return None
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         cutoff = now + timedelta(days=7)
         events = (
             db.query(Event)
@@ -2627,7 +2627,7 @@ class MirrorService:
 
         recipe = NotificationRecipe(
             provider_id=provider_id,
-            captured_at=datetime.now(timezone.utc).isoformat(),
+            captured_at=datetime.now(UTC).isoformat(),
             method=method,
             url=url,
             content_type=content_type or "application/json",

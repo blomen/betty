@@ -8,7 +8,7 @@ Also provides deduplicate_specials(), filter_expired(), store_specials_to_db().
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from rapidfuzz import fuzz
 from sqlalchemy.orm import Session
@@ -106,7 +106,7 @@ def _match_boosts_to_events(specials: list[dict], db: Session) -> int:
     Sets matched_event_id and corrects event_time from the authoritative Event.start_time.
     Returns count of matched boosts.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Load upcoming events (+ events from last 2 hours to catch just-started ones)
     events = db.query(Event).filter(Event.start_time > now.replace(hour=0, minute=0, second=0)).all()
@@ -350,7 +350,7 @@ def enrich_specials_with_ev(specials: list[dict], db: Session) -> list[dict]:
 
 def filter_expired(specials: list[dict], db: Session | None = None) -> list[dict]:
     """Remove specials whose event has started, expires_at is past, or matched event is past."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # If we have DB access, check matched events for authoritative start_time
     matched_event_times: dict[str, datetime] = {}
@@ -362,7 +362,7 @@ def filter_expired(specials: list[dict], db: Session | None = None) -> list[dict
                 if ev.start_time:
                     st = ev.start_time
                     if st.tzinfo is None:
-                        st = st.replace(tzinfo=timezone.utc)
+                        st = st.replace(tzinfo=UTC)
                     matched_event_times[ev.id] = st
 
     result = []
@@ -378,7 +378,7 @@ def filter_expired(specials: list[dict], db: Session | None = None) -> list[dict
             try:
                 et = datetime.fromisoformat(event_time.replace("Z", "+00:00"))
                 if et.tzinfo is None:
-                    et = et.replace(tzinfo=timezone.utc)
+                    et = et.replace(tzinfo=UTC)
                 if et <= now:
                     continue
             except (ValueError, TypeError):
@@ -392,7 +392,7 @@ def filter_expired(specials: list[dict], db: Session | None = None) -> list[dict
         try:
             dt = datetime.fromisoformat(exp.replace("Z", "+00:00"))
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
             if dt > now:
                 result.append(s)
         except (ValueError, TypeError):

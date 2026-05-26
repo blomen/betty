@@ -24,7 +24,7 @@ Each line is a JSON object:
 import contextlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -79,7 +79,7 @@ class NetworkRecorder:
     def start(self):
         """Open a new recording file."""
         self._recordings_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+        ts = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M-%S")
         self._path = self._recordings_dir / f"{ts}.jsonl"
         self._file = open(self._path, "a", encoding="utf-8")
         self._count = 0
@@ -125,7 +125,7 @@ class NetworkRecorder:
                 request_body = response.request.post_data
 
             entry = {
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": datetime.now(UTC).isoformat(),
                 "method": response.request.method,
                 "url": url,
                 "status": response.status,
@@ -146,7 +146,7 @@ class NetworkRecorder:
         if not self._file:
             return
         entry = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": datetime.now(UTC).isoformat(),
             "type": "dom",
             "event": event_type,
             **data,

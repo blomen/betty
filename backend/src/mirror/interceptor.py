@@ -16,6 +16,7 @@ import logging
 import os
 import sys
 from collections.abc import Awaitable, Callable
+from datetime import UTC
 
 from .event_router import EventRouter
 from .recorder import NetworkRecorder
@@ -160,7 +161,7 @@ class BetInterceptor:
             from patchright.async_api import async_playwright
         except ImportError:
             from playwright.async_api import async_playwright
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         self.user_data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -275,7 +276,7 @@ class BetInterceptor:
         self.context.on("page", lambda p: (_attach_page(p), p.on("console", _on_console)))
 
         self.status = "listening"
-        self._started_at = datetime.now(timezone.utc)
+        self._started_at = datetime.now(UTC)
         logger.info("[mirror] Started — recording all traffic + listening for bets")
 
     def _is_bet_placement(self, url: str, method: str) -> bool:

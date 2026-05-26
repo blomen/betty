@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import numpy as np
 from sqlalchemy.orm import Session
@@ -73,7 +73,7 @@ class EdgeSampler:
         """Query opportunities table to build per-provider distributions."""
         from ..db.models import Opportunity
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+        cutoff = datetime.now(UTC) - timedelta(days=30)
 
         rows = (
             db_session.query(

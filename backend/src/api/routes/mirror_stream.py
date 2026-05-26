@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -36,7 +36,7 @@ async def stream_sync(request: Request):
                 try:
                     msg = await asyncio.wait_for(queue.get(), timeout=10.0)
                     yield {"event": msg["event"], "data": json.dumps(msg["data"])}
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield {"event": "heartbeat", "data": ""}
         except asyncio.CancelledError:
             pass
@@ -57,7 +57,7 @@ async def stream_prices(request: Request):
                 try:
                     msg = await asyncio.wait_for(queue.get(), timeout=10.0)
                     yield {"event": msg["event"], "data": json.dumps(msg["data"])}
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield {"event": "heartbeat", "data": ""}
         except asyncio.CancelledError:
             pass
@@ -78,7 +78,7 @@ async def stream_actions(request: Request):
                 try:
                     msg = await asyncio.wait_for(queue.get(), timeout=10.0)
                     yield {"event": msg["event"], "data": json.dumps(msg["data"])}
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield {"event": "heartbeat", "data": ""}
         except asyncio.CancelledError:
             pass
@@ -198,7 +198,7 @@ def confirm_settlement_queue(req: SettlementConfirmRequest, db=Depends(get_db)):
     if not pending:
         return {"confirmed": 0, "provider_id": req.provider_id}
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     confirmed = 0
 
     for settlement in pending:

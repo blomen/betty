@@ -228,6 +228,8 @@ class OpportunityService:
                     max_kelly=OPTIMAL_MAX_KELLY,
                     single_bet_cap_pct=OPTIMAL_SINGLE_BET_CAP,
                     min_edge=profile.min_edge_pct / 100.0,
+                    db_session=self.db,
+                    profile_id=profile.id,
                 )
             except Exception as e:
                 logger.warning(f"Could not initialize stake calculator: {e}")
@@ -709,6 +711,8 @@ class OpportunityService:
                 event_id=opp.event_id,
                 provider_id=opp.provider1_id,
                 min_odds=min_odds,
+                sport=opp.sport,
+                market=opp.market,
             )
             result["suggested_stake"] = round(stake_rec.raw_kelly_stake, 2)
             result["final_stake"] = round(stake_rec.stake, 2)
@@ -830,6 +834,8 @@ class OpportunityService:
                         edge_raw=best_edge,
                         odds=best_odds,
                         event_id=opp.event_id,
+                        sport=opp.sport,
+                        market=opp.market,
                     )
                     total_stake = stake_rec.stake
 
@@ -877,6 +883,8 @@ class OpportunityService:
                 odds=opp.odds1,
                 event_id=opp.event_id,
                 provider_id="pinnacle",
+                sport=opp.sport,
+                market=opp.market,
             )
 
             # Never skip reverse bets for bankroll/EV reasons — user places these manually

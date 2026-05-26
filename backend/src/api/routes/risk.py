@@ -8,7 +8,7 @@ Endpoints for:
 - Provider cooldown management
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -445,7 +445,7 @@ def set_provider_cooldown(
 
     # Set cooldown
     profile.is_on_cooldown = True
-    profile.cooldown_until = datetime.now(timezone.utc) + timedelta(hours=request.duration_hours)
+    profile.cooldown_until = datetime.now(UTC) + timedelta(hours=request.duration_hours)
     profile.cooldown_reason = request.reason or f"Manual cooldown for {request.duration_hours}h"
 
     db.commit()

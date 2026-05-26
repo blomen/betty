@@ -1,7 +1,7 @@
 """Limit service - provider limit recording with betting snapshot."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
@@ -65,7 +65,7 @@ class LimitService:
         dates = sorted(b.placed_at for b in bets if b.placed_at)
         first_bet_date = dates[0].isoformat() if dates else None
         last_bet_date = dates[-1].isoformat() if dates else None
-        account_age_days = (datetime.now(timezone.utc) - dates[0]).days if dates else None
+        account_age_days = (datetime.now(UTC) - dates[0]).days if dates else None
 
         sport_breakdown = {}
         for b in bets:
@@ -129,7 +129,7 @@ class LimitService:
             provider_id=provider_id,
             limit_type=limit_type,
             limit_level=limit_level,
-            detected_at=detected_at or datetime.now(timezone.utc),
+            detected_at=detected_at or datetime.now(UTC),
             notes=notes,
             betting_snapshot=snapshot,
         )

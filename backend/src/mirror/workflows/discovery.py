@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -270,7 +270,7 @@ async def discover(
         logger.info(f"[discovery] {provider_id} history: API → {url} (mapping needs verification)")
 
     # Build intel
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     intel = {
         "provider_id": provider_id,
         "platform": "unknown",

@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from .base import HistoryEntry, PlacementResult, ProviderWorkflow, WorkflowMode
@@ -169,7 +169,7 @@ class PinnacleWorkflow(ProviderWorkflow):
 
         # API fallback if DOM scrape found nothing
         if not entries:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             start = (now - timedelta(days=30)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
             end = now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
             for status_filter in ("settled",):
@@ -348,7 +348,7 @@ class PinnacleWorkflow(ProviderWorkflow):
         from ...repositories.profile_repo import ProfileRepo
         from ...services.bet_service import BetService
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         start = (now - timedelta(days=30)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         end = now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 

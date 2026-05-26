@@ -16,10 +16,12 @@ import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import yaml
+
+from src.core.asyncio_supervision import supervise_task
 
 # Dedicated thread pool for extraction work. Previously every extraction
 # pipeline run used asyncio.to_thread() which submits to the process-wide
@@ -222,7 +224,7 @@ class ExtractionScheduler:
                 result = session.query(func.max(Odds.updated_at)).filter(Odds.provider_id.in_(provider_ids)).scalar()
                 # SQLite stores naive datetimes in LOCAL time — convert to UTC
                 if result and result.tzinfo is None:
-                    result = result.astimezone(timezone.utc)
+                    result = result.astimezone(UTC)
                 return result
         except Exception as e:
             logger.warning(f"[Scheduler] Could not check last extraction time: {e}")
@@ -251,7 +253,7 @@ class ExtractionScheduler:
                     if result.tzinfo is None:
                         # SQLite stores naive datetimes in LOCAL time.
                         # Interpret as local then convert to UTC for correct arithmetic.
-                        result = result.astimezone(timezone.utc)
+                        result = result.astimezone(UTC)
                     return result
 
                 # Fallback: check Odds.updated_at (for providers without extraction_runs)
@@ -268,7 +270,7 @@ class ExtractionScheduler:
             try:
                 await asyncio.wait_for(self._sharp_ready.wait(), timeout=120)
                 logger.info(f"[Scheduler:{schedule.provider_id}] Sharp ready, starting extraction")
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(f"[Scheduler:{schedule.provider_id}] Sharp timeout (120s), starting anyway")
 
         # Minimal stagger to spread initial network load
@@ -287,7 +289,7 @@ class ExtractionScheduler:
             _EXTRACTION_POOL, self._get_last_completed_run, schedule.category, providers
         )
         if last_completed:
-            age_seconds = (datetime.now(timezone.utc) - last_completed).total_seconds()
+            age_seconds = (datetime.now(UTC) - last_completed).total_seconds()
             remaining = schedule.interval_seconds - age_seconds
             if remaining > 0:
                 logger.info(
@@ -316,13 +318,13 @@ class ExtractionScheduler:
             logger.info(f"[Scheduler:{schedule.provider_id}] No completed run found, running immediately")
 
         while schedule.running:
-            start = datetime.now(timezone.utc)
+            start = datetime.now(UTC)
             schedule.last_run_started = start
             try:
                 async with self._provider_locks[schedule.provider_id]:
                     results = await self._run_provider_extraction(schedule)
 
-                schedule.last_completed = datetime.now(timezone.utc)
+                schedule.last_completed = datetime.now(UTC)
                 schedule.last_duration = (schedule.last_completed - start).total_seconds()
                 schedule.last_error = None
                 schedule.consecutive_failures = 0
@@ -365,7 +367,7 @@ class ExtractionScheduler:
                     # persisted when this fires. Advance last_completed so the scheduler
                     # cools down normally instead of re-running immediately and
                     # amplifying the race with concurrent cleanup_stale().
-                    schedule.last_completed = datetime.now(timezone.utc)
+                    schedule.last_completed = datetime.now(UTC)
                     schedule.last_duration = (schedule.last_completed - start).total_seconds()
                     if schedule.category == "sharp" and not self._sharp_ready.is_set():
                         self._sharp_ready.set()
@@ -560,7 +562,7 @@ class ExtractionScheduler:
         IMPORTANT: This is a refactoring of the existing _watchdog_loop inner body.
         All existing checks are preserved.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for provider_id, schedule in self._schedules.items():
             # ── NEW: Revival scheduling for permanently failed providers ──
             if schedule.consecutive_failures >= 3 and not schedule.running:
@@ -766,7 +768,7 @@ class ExtractionScheduler:
             logger.info("[Scheduler:boosts] Waiting for sharp before first run...")
             try:
                 await asyncio.wait_for(self._sharp_ready.wait(), timeout=120)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("[Scheduler:boosts] Sharp timeout, starting anyway")
 
         while True:
@@ -776,7 +778,7 @@ class ExtractionScheduler:
                 logger.info("[Scheduler:boosts] Boost scrape complete")
                 update_provider_state(
                     "boosts",
-                    {"running": False, "last_completed": datetime.now(timezone.utc).isoformat(), "category": "boosts"},
+                    {"running": False, "last_completed": datetime.now(UTC).isoformat(), "category": "boosts"},
                 )
             except asyncio.CancelledError:
                 logger.info("[Scheduler:boosts] Loop cancelled")
@@ -804,7 +806,6 @@ class ExtractionScheduler:
         if _root not in sys.path:
             sys.path.insert(0, _root)
         from scripts.scrape_specials import save_specials, scrape_all
-
         from src.analysis.ev_enrichment import (
             deduplicate_specials,
             enrich_specials_with_ev,
@@ -862,7 +863,7 @@ class ExtractionScheduler:
         """Remove boosts from DB whose event has already started."""
         from src.db.models import SpecialOdds
 
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(UTC).isoformat()
         deleted = (
             session.query(SpecialOdds)
             .filter(SpecialOdds.event_time.isnot(None), SpecialOdds.event_time <= now_iso)
@@ -875,7 +876,6 @@ class ExtractionScheduler:
     def _persist_boost_log(self, run_log, max_runs: int = 10):
         """Persist boost extraction log to DB. Keeps last `max_runs` runs."""
         from datetime import datetime as dt
-        from datetime import timezone
 
         from sqlalchemy import func
 
@@ -883,7 +883,7 @@ class ExtractionScheduler:
 
         try:
             session = get_session()
-            scraped_at = dt.fromisoformat(run_log.scraped_at) if run_log.scraped_at else dt.now(timezone.utc)
+            scraped_at = dt.fromisoformat(run_log.scraped_at) if run_log.scraped_at else dt.now(UTC)
 
             # Prune old boost runs beyond max_runs (keep N-1, adding 1 new = N total)
             # Each run shares the same run_id, so count distinct run_ids
@@ -991,7 +991,7 @@ class ExtractionScheduler:
             try:
                 from sqlalchemy import or_
 
-                now = datetime.now(timezone.utc)
+                now = datetime.now(UTC)
 
                 # 1. Delete inactive opportunities
                 stats["inactive"] = session.query(Opportunity).filter(not Opportunity.is_active).delete()
@@ -1195,7 +1195,7 @@ class ExtractionScheduler:
 
     def get_status(self) -> dict:
         """Get scheduler status for all schedules, including health info."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         schedules = {}
         for provider_id, schedule in self._schedules.items():
             next_run = None

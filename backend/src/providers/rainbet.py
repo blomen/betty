@@ -941,9 +941,9 @@ class RainbetRetriever(BrowserRetriever):
                         cy = bbox["y"] + bbox["height"] / 2
                         await page.mouse.click(cx, cy)
                     else:
-                        await page.mouse.click(*_TURNSTILE_CLICK_COORD)
+                        await page.mouse.click(210, 290)
                 else:
-                    await page.mouse.click(*_TURNSTILE_CLICK_COORD)
+                    await page.mouse.click(210, 290)
             except Exception as e:
                 logger.debug(f"[{self.provider_id}] Turnstile click failed: {e}")
             await page.wait_for_timeout(2000)

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
@@ -39,7 +39,7 @@ def _utc_iso(dt: datetime | None) -> str | None:
     if dt is None:
         return None
     if not dt.tzinfo:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt.isoformat()
 
 
@@ -511,8 +511,8 @@ class BatchBuilder:
 
         # Skip live events (TTK <= 0) and events beyond 48h
         if event.start_time:
-            now = datetime.now(timezone.utc)
-            st = event.start_time if event.start_time.tzinfo else event.start_time.replace(tzinfo=timezone.utc)
+            now = datetime.now(UTC)
+            st = event.start_time if event.start_time.tzinfo else event.start_time.replace(tzinfo=UTC)
             ttk_hours = (st - now).total_seconds() / 3600
             if ttk_hours <= 0:
                 return None
@@ -680,7 +680,7 @@ class BatchBuilder:
         """Bulk-lookup Odds.updated_at to compute odds_age_minutes for each bet."""
         if not batch:
             return
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         keys = [(b.event_id, b.provider_id, b.market, b.outcome, b.point) for b in batch]
         # Single query for all odds timestamps
         from ..db.models import Odds
@@ -701,7 +701,7 @@ class BatchBuilder:
             ts = lookup.get((b.event_id, b.provider_id, b.market, b.outcome, row_point))
             if ts:
                 if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
+                    ts = ts.replace(tzinfo=UTC)
                 b.odds_age_minutes = (now - ts).total_seconds() / 60.0
 
     def _populate_provider_meta(self, batch: list[BatchBet]) -> None:
@@ -934,7 +934,7 @@ class BatchBuilder:
         """Count bets placed today per provider."""
         from ..db.models import Bet
 
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         rows = (
             self.db.query(Bet.provider_id, Bet.id)
             .filter(

@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -424,7 +424,7 @@ def snapshot_current_state(db_session: Session, profile_id: int) -> SimState:
 
     # Build provider sim states
     providers: dict[str, ProviderSimState] = {}
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     for bal in balances:
         pid = bal.provider_id

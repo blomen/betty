@@ -1,7 +1,7 @@
 """Extract feature vectors for sports betting opportunities (M1 Edge Quality)."""
 
 import statistics
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from src.constants import PLATFORM_MAP, SHARP_PROVIDERS
 
@@ -21,7 +21,7 @@ def extract_betting_features(
     event_start_time: datetime | None,
     point: float | None = None,
 ) -> dict:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Find the outcome that contains this provider's odds
     all_outcome_odds = odds_by_outcome.get(_find_outcome_for_provider(odds_by_outcome, provider, provider_odds), [])
@@ -47,7 +47,7 @@ def extract_betting_features(
     time_to_start = None
     if event_start_time:
         if event_start_time.tzinfo is None:
-            event_start_time = event_start_time.replace(tzinfo=timezone.utc)
+            event_start_time = event_start_time.replace(tzinfo=UTC)
         time_to_start = (event_start_time - now).total_seconds() / 60
 
     return {
@@ -77,7 +77,7 @@ def _compute_age_minutes(entry: dict, now: datetime) -> float | None:
     if isinstance(updated, str):
         updated = datetime.fromisoformat(updated)
     if updated.tzinfo is None:
-        updated = updated.replace(tzinfo=timezone.utc)
+        updated = updated.replace(tzinfo=UTC)
     return (now - updated).total_seconds() / 60
 
 

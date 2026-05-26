@@ -1,7 +1,7 @@
 """Bankroll service - balance management, bonus tracking, stake calculation."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
@@ -224,7 +224,7 @@ class BankrollService:
                 # Deadline info
                 days_remaining = None
                 if bonus.expires_at and bonus.bonus_status in ("in_progress", "trigger_needed"):
-                    delta = bonus.expires_at - datetime.now(timezone.utc).replace(tzinfo=None)
+                    delta = bonus.expires_at - datetime.now(UTC).replace(tzinfo=None)
                     days_remaining = max(0, round(delta.total_seconds() / 86400, 1))
 
                 wagering_info = {
@@ -288,6 +288,8 @@ class BankrollService:
                 max_kelly=OPTIMAL_MAX_KELLY,
                 single_bet_cap_pct=OPTIMAL_SINGLE_BET_CAP,
                 min_edge=min_edge,
+                db_session=self.db,
+                profile_id=profile_id,
             )
 
         calc = _stake_calculators[profile_id]
@@ -297,6 +299,10 @@ class BankrollService:
         calc.max_kelly = OPTIMAL_MAX_KELLY
         calc.single_bet_cap_pct = OPTIMAL_SINGLE_BET_CAP
         calc.min_edge = min_edge
+        # Refresh DB session + profile — service can be instantiated with a
+        # different session per request than the one cached on the calculator.
+        calc.db_session = self.db
+        calc.profile_id = profile_id
 
         # Always reload bonus statuses from DB
         calc.bonus_tracker.bonuses.clear()
@@ -334,14 +340,14 @@ class BankrollService:
         active_statuses = ("in_progress", "trigger_needed")
 
         bonus_progress = {}
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for bonus in bonuses:
             provider_min_odds = bonus.min_odds if bonus.min_odds else BONUS_MIN_ODDS
 
             # Ensure expires_at is timezone-aware for comparison
             expires_at = bonus.expires_at
             if expires_at and expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
+                expires_at = expires_at.replace(tzinfo=UTC)
 
             # Auto-expire active bonuses past deadline
             if bonus.bonus_status in active_statuses and expires_at and now > expires_at:
@@ -446,7 +452,7 @@ class BankrollService:
 
         # Track cumulative deposits for ROI calculation
         active_profile.total_deposited = (active_profile.total_deposited or 0.0) + deposit_amount
-        active_profile.updated_at = datetime.now(timezone.utc)
+        active_profile.updated_at = datetime.now(UTC)
 
         old_balance = self.profile_repo.get_balance(active_profile.id, provider_id)
 

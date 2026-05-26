@@ -28,7 +28,7 @@ import json
 import logging
 import os
 import socket
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -211,7 +211,7 @@ class VbetRetriever(Retriever):
             start_time = None
             if start_ts:
                 with contextlib.suppress(ValueError, TypeError, OSError):
-                    start_time = datetime.fromtimestamp(int(start_ts), tz=timezone.utc)
+                    start_time = datetime.fromtimestamp(int(start_ts), tz=UTC)
 
             # Normalize team names
             home_team = normalize_team_name(team1)

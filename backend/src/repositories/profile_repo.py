@@ -1,7 +1,7 @@
 """Profile repository - balance, bonus, and profile data access."""
 
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -63,7 +63,7 @@ class ProfileRepo:
 
         if record:
             record.balance = balance
-            record.updated_at = datetime.now(timezone.utc)
+            record.updated_at = datetime.now(UTC)
         else:
             record = ProfileProviderBalance(profile_id=profile_id, provider_id=provider_id, balance=balance)
             self.db.add(record)
@@ -78,7 +78,7 @@ class ProfileRepo:
 
         if record:
             record.balance += amount
-            record.updated_at = datetime.now(timezone.utc)
+            record.updated_at = datetime.now(UTC)
             return record.balance
         else:
             record = ProfileProviderBalance(profile_id=profile_id, provider_id=provider_id, balance=amount)
@@ -169,7 +169,7 @@ class ProfileRepo:
 
         from ..db.models import Bet
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        cutoff = datetime.now(UTC) - timedelta(days=lookback_days)
 
         rows = (
             self.db.query(
@@ -248,10 +248,10 @@ class ProfileRepo:
         active_statuses = ("in_progress", "trigger_needed")
         _expires = record.expires_at
         if _expires and _expires.tzinfo is None:
-            _expires = _expires.replace(tzinfo=timezone.utc)
-        if record.bonus_status in active_statuses and _expires and datetime.now(timezone.utc) > _expires:
+            _expires = _expires.replace(tzinfo=UTC)
+        if record.bonus_status in active_statuses and _expires and datetime.now(UTC) > _expires:
             record.bonus_status = "completed"
-            record.updated_at = datetime.now(timezone.utc)
+            record.updated_at = datetime.now(UTC)
 
         is_cleared = record.bonus_status in ("completed", "available", "claimed") or (
             record.wagering_requirement > 0 and record.wagered_amount >= record.wagering_requirement
@@ -263,8 +263,8 @@ class ProfileRepo:
 
         days_remaining = None
         if record.expires_at and record.bonus_status in active_statuses:
-            exp = record.expires_at if record.expires_at.tzinfo else record.expires_at.replace(tzinfo=timezone.utc)
-            delta = exp - datetime.now(timezone.utc)
+            exp = record.expires_at if record.expires_at.tzinfo else record.expires_at.replace(tzinfo=UTC)
+            delta = exp - datetime.now(UTC)
             days_remaining = max(0, delta.days)
 
         return {
@@ -307,7 +307,7 @@ class ProfileRepo:
             "expires_at": None,
             "days_remaining": None,
         }
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         active_statuses = ("in_progress", "trigger_needed")
         result = {}
 
@@ -319,7 +319,7 @@ class ProfileRepo:
 
             _expires = record.expires_at
             if _expires and _expires.tzinfo is None:
-                _expires = _expires.replace(tzinfo=timezone.utc)
+                _expires = _expires.replace(tzinfo=UTC)
             if record.bonus_status in active_statuses and _expires and now > _expires:
                 record.bonus_status = "completed"
                 record.updated_at = now
@@ -332,7 +332,7 @@ class ProfileRepo:
                 progress_pct = min(100.0, (record.wagered_amount or 0.0) / record.wagering_requirement * 100)
             days_remaining = None
             if record.expires_at and record.bonus_status in active_statuses:
-                exp = record.expires_at if record.expires_at.tzinfo else record.expires_at.replace(tzinfo=timezone.utc)
+                exp = record.expires_at if record.expires_at.tzinfo else record.expires_at.replace(tzinfo=UTC)
                 days_remaining = max(0, (exp - now).days)
 
             result[pid] = {
@@ -366,10 +366,10 @@ class ProfileRepo:
         # Check if bonus has expired
         _rec_expires = record.expires_at
         if _rec_expires and _rec_expires.tzinfo is None:
-            _rec_expires = _rec_expires.replace(tzinfo=timezone.utc)
-        if _rec_expires and datetime.now(timezone.utc) > _rec_expires:
+            _rec_expires = _rec_expires.replace(tzinfo=UTC)
+        if _rec_expires and datetime.now(UTC) > _rec_expires:
             record.bonus_status = "completed"
-            record.updated_at = datetime.now(timezone.utc)
+            record.updated_at = datetime.now(UTC)
             return self.get_bonus_status(profile_id, provider_id)
 
         provider_min_odds = record.min_odds if record.min_odds else BONUS_MIN_ODDS
@@ -377,7 +377,7 @@ class ProfileRepo:
             return self.get_bonus_status(profile_id, provider_id)
 
         record.wagered_amount = (record.wagered_amount or 0.0) + stake
-        record.updated_at = datetime.now(timezone.utc)
+        record.updated_at = datetime.now(UTC)
 
         if record.wagering_requirement > 0 and record.wagered_amount >= record.wagering_requirement:
             if record.bonus_status == "trigger_needed":
@@ -426,7 +426,7 @@ class ProfileRepo:
         )
 
         wagering_requirement = bonus_amount * wagering_multiplier
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expires = now + timedelta(days=deadline_days or BONUS_WAGERING_DAYS)
 
         if record:
@@ -482,7 +482,7 @@ class ProfileRepo:
             .first()
         )
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expires = now + timedelta(days=deadline_days or BONUS_WAGERING_DAYS)
 
         kwargs = dict(
@@ -522,7 +522,7 @@ class ProfileRepo:
             .first()
         )
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if record:
             record.bonus_status = "claimed"
             record.claimed_at = now
@@ -555,7 +555,7 @@ class ProfileRepo:
             record.bonus_amount = 0.0
             record.wagering_requirement = 0.0
             record.wagered_amount = 0.0
-            record.updated_at = datetime.now(timezone.utc)
+            record.updated_at = datetime.now(UTC)
 
         return self.get_bonus_status(profile_id, provider_id)
 
@@ -577,7 +577,7 @@ class ProfileRepo:
         )
 
         wagering_req = trigger_wagering or bonus_amount
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expires = now + timedelta(days=deadline_days or BONUS_WAGERING_DAYS)
 
         kwargs = dict(
@@ -628,7 +628,7 @@ class ProfileRepo:
             return self.get_bonus_status(profile_id, provider_id)
 
         record.bonus_status = new_status
-        record.updated_at = datetime.now(timezone.utc)
+        record.updated_at = datetime.now(UTC)
 
         return self.get_bonus_status(profile_id, provider_id)
 
@@ -655,7 +655,7 @@ class ProfileRepo:
 
         from ..db.models import Bet
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+        cutoff = datetime.now(UTC) - timedelta(days=30)
         min_odds = record.min_odds or BONUS_MIN_ODDS
 
         # --- Required pace from deadline ---
@@ -664,8 +664,8 @@ class ProfileRepo:
         if record.expires_at:
             expires_at = record.expires_at
             if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
-            days_remaining = max(0, (expires_at - datetime.now(timezone.utc)).total_seconds() / 86400)
+                expires_at = expires_at.replace(tzinfo=UTC)
+            days_remaining = max(0, (expires_at - datetime.now(UTC)).total_seconds() / 86400)
             weeks_remaining = days_remaining / 7
             required_weekly_wagering = remaining / weeks_remaining if weeks_remaining > 0 else remaining
 
@@ -690,8 +690,8 @@ class ProfileRepo:
             if not count:
                 return 0.0, 0.0, 0.0, None
             if earliest.tzinfo is None:
-                earliest = earliest.replace(tzinfo=timezone.utc)
-            days_span = max(1, (datetime.now(timezone.utc) - earliest).days)
+                earliest = earliest.replace(tzinfo=UTC)
+            days_span = max(1, (datetime.now(UTC) - earliest).days)
             bets_per_week = count / (days_span / 7) if days_span > 0 else 0
             avg_stake = float(stake_sum) / count
             weekly_wagering = bets_per_week * avg_stake

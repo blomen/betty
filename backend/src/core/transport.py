@@ -762,7 +762,7 @@ class BrowserTransport(Transport):
         # chrome processes that pile up until the OOM watchdog fires.
         try:
             await asyncio.wait_for(self._graceful_close(), timeout=8)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("[BrowserTransport] graceful close timed out — force-killing browser processes")
             self._kill_spawned_processes()
         except Exception as e:

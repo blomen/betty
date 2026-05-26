@@ -16,7 +16,7 @@ import hashlib
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 from sqlalchemy.orm import Session
@@ -88,7 +88,7 @@ def _save_result_to_cache(db: Session, key: str, title: str, boosted_odds: float
     """Save a single LLM result to the persistent cache table (upsert)."""
     from src.db.models import LlmBoostCache
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     existing = db.query(LlmBoostCache).filter_by(cache_key=key).first()
     if existing:
         existing.llm_title = result.get("title") or ""
@@ -126,7 +126,7 @@ def _touch_cache_entries(db: Session, keys: list[str]) -> None:
         return
     from src.db.models import LlmBoostCache
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     try:
         db.query(LlmBoostCache).filter(LlmBoostCache.cache_key.in_(keys)).update(
             {"last_used_at": now}, synchronize_session=False
@@ -140,7 +140,7 @@ def _carry_forward_from_cache(specials: list[dict], cache: dict[str, dict]) -> t
     """Apply cached LLM data to matching specials. Returns (count, list of used keys)."""
     count = 0
     used_keys = []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for s in specials:
         key = _cache_key(s.get("title", ""), s.get("boosted_odds", 0), s.get("event", ""))
         prev = cache.get(key)
@@ -151,7 +151,7 @@ def _carry_forward_from_cache(specials: list[dict], cache: dict[str, dict]) -> t
                 try:
                     created_dt = datetime.fromisoformat(created_str)
                     if created_dt.tzinfo is None:
-                        created_dt = created_dt.replace(tzinfo=timezone.utc)
+                        created_dt = created_dt.replace(tzinfo=UTC)
                     age_hours = (now - created_dt).total_seconds() / 3600
                     if age_hours > CACHE_TTL_HOURS:
                         continue
@@ -259,7 +259,7 @@ def _build_user_prompt(special: dict) -> str:
 
     matched_event_id = special.get("matched_event_id") or ""
 
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
     parts = [
         f"TODAY'S DATE: {today}",
         f"BOOST TITLE: {title}",
@@ -309,7 +309,7 @@ def _parse_event_time(raw: str) -> str | None:
         dt = datetime.fromisoformat(raw)
         # Ensure timezone-aware (assume UTC if naive)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt.isoformat()
     except (ValueError, TypeError):
         return None
@@ -681,7 +681,7 @@ async def enrich_specials_with_llm(specials: list[dict], db: Session | None = No
     Skipped if ANTHROPIC_API_KEY is not set.
     """
     global _anthropic_dead, _anthropic_error_msg
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
 
     # Reset per-run short-circuit flags (allow retry each scrape cycle)
     _anthropic_dead = False

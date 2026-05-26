@@ -2,7 +2,7 @@
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -71,7 +71,7 @@ class ProviderAllocator:
 
     def preload_daily_bets(self) -> None:
         """Single query: count today's bets per provider."""
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         rows = (
             self.db.query(Bet.provider_id, func.count(Bet.id))
             .filter(

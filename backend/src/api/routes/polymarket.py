@@ -67,6 +67,8 @@ def get_polymarket_value(
                 max_kelly=OPTIMAL_MAX_KELLY,
                 single_bet_cap_pct=OPTIMAL_SINGLE_BET_CAP,
                 min_edge=profile.min_edge_pct / 100.0,
+                db_session=db,
+                profile_id=profile.id,
             )
             bonus_status = profile_repo.get_bonus_status(profile.id, "polymarket")
         except Exception as e:
@@ -156,6 +158,8 @@ def get_polymarket_value(
                     event_id=opp.event_id,
                     provider_id="polymarket",
                     min_odds=min_odds,
+                    sport=event.sport,
+                    market=opp.market,
                 )
                 stake_sek = stake_rec.stake
                 stake_usdc = round(stake_sek / usdc_rate, 2) if usdc_rate > 0 else 0
@@ -392,6 +396,8 @@ def get_polymarket_matched(
 # ──────────────────── Rewards ────────────────────
 
 # Import SERIES_TO_SPORT from polymarket provider for sport detection
+from datetime import UTC
+
 from ...providers.polymarket import SERIES_TO_SPORT
 
 # Simple TTL cache for Gamma API reward data
@@ -628,20 +634,20 @@ async def get_polymarket_rewards(
         # Parse start_time
         start_time_raw = ev.get("startTime")
         if isinstance(start_time_raw, (int, float)):
-            from datetime import datetime, timezone
+            from datetime import datetime
 
             ts = start_time_raw / 1000 if start_time_raw > 1e10 else start_time_raw
-            start_time_str = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+            start_time_str = datetime.fromtimestamp(ts, tz=UTC).isoformat()
         else:
             start_time_str = start_time_raw
 
         # Skip started events
         if start_time_str:
             try:
-                from datetime import datetime, timezone
+                from datetime import datetime
 
                 st = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
-                if st <= datetime.now(timezone.utc):
+                if st <= datetime.now(UTC):
                     continue
             except Exception:
                 pass

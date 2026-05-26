@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -91,7 +91,7 @@ def _best_anchor(counter: Bet, anchors: list[Bet], events: dict) -> Bet | None:
 def correlate_arbs(session: Session) -> dict:
     """Link ungrouped arb legs. Returns {"linked": n, "groups": n}."""
     # naive UTC — bets.placed_at is TIMESTAMP WITHOUT TIME ZONE (reads back naive)
-    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=LOOKBACK_DAYS)
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=LOOKBACK_DAYS)
     legs = session.query(Bet).filter(Bet.arb_group_id.is_(None), Bet.placed_at >= cutoff).all()
     counters = [b for b in legs if b.provider_id in COUNTER_PROVIDERS and b.bet_type == "arb_counter"]
     anchors = [b for b in legs if b.provider_id not in COUNTER_PROVIDERS]

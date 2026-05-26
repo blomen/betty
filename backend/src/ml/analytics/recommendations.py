@@ -6,7 +6,7 @@ for the same provider+category arrives, the existing one is updated.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ class RecommendationManager:
             return None
 
         rec.status = status
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         if status == "acted_on":
             rec.acted_on_at = now

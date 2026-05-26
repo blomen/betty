@@ -6,7 +6,7 @@ value outcomes.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
@@ -26,18 +26,18 @@ def extract_extraction_features(
     events_starting_next_2h: int | None = None,
     events_starting_next_6h: int | None = None,
 ) -> dict:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     minutes_since_sharp = None
     if last_sharp_run_time:
         if last_sharp_run_time.tzinfo is None:
-            last_sharp_run_time = last_sharp_run_time.replace(tzinfo=timezone.utc)
+            last_sharp_run_time = last_sharp_run_time.replace(tzinfo=UTC)
         minutes_since_sharp = (now - last_sharp_run_time).total_seconds() / 60
 
     minutes_since_soft = None
     if last_soft_run_time:
         if last_soft_run_time.tzinfo is None:
-            last_soft_run_time = last_soft_run_time.replace(tzinfo=timezone.utc)
+            last_soft_run_time = last_soft_run_time.replace(tzinfo=UTC)
         minutes_since_soft = (now - last_soft_run_time).total_seconds() / 60
 
     return {

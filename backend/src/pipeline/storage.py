@@ -7,7 +7,7 @@ Functions for storing events and odds in the database.
 import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import literal_column
 
@@ -1396,7 +1396,7 @@ def upsert_odds(
 
     if existing:
         existing.odds = odds
-        existing.updated_at = datetime.now(timezone.utc)
+        existing.updated_at = datetime.now(UTC)
         if provider_meta:
             existing.provider_meta = provider_meta
         existing.bid = bid
@@ -1524,7 +1524,7 @@ class OddsBatchProcessor:
 
     def _flush_inner(self):
         """Inner flush logic — uses PostgreSQL ON CONFLICT upsert for atomicity."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -1533,9 +1533,17 @@ class OddsBatchProcessor:
             self._pending.clear()
             return
 
+        # Steam-detector pre-fetch: when enabled, capture pre-upsert odds
+        # so we can log significant deltas to `odds_movements`. Skipped
+        # entirely when the env flag is off — keeps the hot path free.
+        from ..analysis.steam_detector import is_enabled as steam_enabled
+
+        steam_on = steam_enabled()
+
         # Process in batches of 500
         for i in range(0, len(records), 500):
             batch = records[i : i + 500]
+            prev_odds_map = self._fetch_prev_odds_for_batch(batch) if steam_on else {}
             rows = [
                 {
                     "event_id": r["event_id"],
@@ -1586,7 +1594,97 @@ class OddsBatchProcessor:
             for r in batch:
                 self.changed_event_ids.add(r["event_id"])
 
+            if steam_on and prev_odds_map:
+                self._log_movements(batch, prev_odds_map, now)
+
         self._pending.clear()
+
+    @staticmethod
+    def _key_for(r: dict) -> tuple:
+        """Composite key matching the Odds unique constraint."""
+        return (
+            r["event_id"],
+            r["provider_id"],
+            r["market"],
+            r["outcome"],
+            r.get("point"),
+            r.get("scope", "ft"),
+        )
+
+    def _fetch_prev_odds_for_batch(self, batch: list[dict]) -> dict[tuple, float]:
+        """Return {key: prev_odds} for rows that already exist in the DB.
+
+        Only consulted when STEAM_DETECTOR_ENABLED. A single SELECT
+        bounded by the batch's event ids. Within a flush a batch is
+        usually one provider × N events, so the IN-clause stays small.
+        """
+        if not batch:
+            return {}
+        from sqlalchemy import select
+
+        event_ids = list({r["event_id"] for r in batch})
+        provider_ids = list({r["provider_id"] for r in batch})
+        if not event_ids:
+            return {}
+
+        stmt = select(
+            Odds.event_id,
+            Odds.provider_id,
+            Odds.market,
+            Odds.outcome,
+            Odds.point,
+            Odds.scope,
+            Odds.odds,
+        ).where(Odds.event_id.in_(event_ids), Odds.provider_id.in_(provider_ids))
+
+        out: dict[tuple, float] = {}
+        for row in self.session.execute(stmt):
+            key = (row.event_id, row.provider_id, row.market, row.outcome, row.point, row.scope)
+            out[key] = float(row.odds) if row.odds is not None else None
+        return out
+
+    def _log_movements(
+        self,
+        batch: list[dict],
+        prev_odds_map: dict[tuple, float],
+        now: datetime,
+    ) -> None:
+        """Write movement rows for upserts whose implied probability shifted
+        by at least `STEAM_DELTA_PP_MIN` percentage points."""
+        from ..analysis.steam_detector import delta_pp_threshold
+
+        threshold_pp = delta_pp_threshold()
+        movement_rows: list[dict] = []
+        for r in batch:
+            key = self._key_for(r)
+            prev = prev_odds_map.get(key)
+            new = r.get("odds")
+            if prev is None or new is None or prev <= 1.0 or new <= 1.0:
+                continue
+            prev_imp_pp = (1.0 / prev) * 100.0
+            new_imp_pp = (1.0 / new) * 100.0
+            delta_pp = new_imp_pp - prev_imp_pp
+            if abs(delta_pp) < threshold_pp:
+                continue
+            movement_rows.append(
+                {
+                    "event_id": r["event_id"],
+                    "provider_id": r["provider_id"],
+                    "market": r["market"],
+                    "outcome": r["outcome"],
+                    "point": r.get("point"),
+                    "scope": r.get("scope", "ft"),
+                    "prev_odds": prev,
+                    "new_odds": new,
+                    "delta_implied_pp": round(delta_pp, 3),
+                    "direction": "up" if delta_pp > 0 else "down",
+                    "recorded_at": now,
+                }
+            )
+        if movement_rows:
+            from ..db.models import OddsMovement
+
+            self.session.execute(OddsMovement.__table__.insert(), movement_rows)
 
     def get_stats(self) -> tuple[int, int]:
         """Return (new_count, update_count)."""

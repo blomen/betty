@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
 
@@ -163,7 +163,7 @@ class MonteCarloPlanner:
             confidence=1 / (1 + best_stats["std"] / max(1, best_stats["mean"])),
             downside_p10=best_stats["p10"],
             all_results=results,
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
         )
 
     def _greedy_policy(self, state: SimState, bonus_configs: dict) -> Action:

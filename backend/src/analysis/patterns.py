@@ -6,7 +6,7 @@ actionable insights (losing segments, winning segments, erosion hotspots, etc.).
 """
 
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from ..db.models import Bet, BetPostmortem
 
@@ -198,7 +198,7 @@ def detect_bet_patterns(rows: list[tuple[Bet, BetPostmortem]]) -> list[dict]:
             )
 
     # Rule 5: Sizing alert — >=3 sizing_error in trailing 30 days
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cutoff = now - timedelta(days=30)
     recent_sizing = [
         (b, p)

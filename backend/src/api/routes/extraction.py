@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
@@ -108,7 +108,7 @@ async def run_extraction_task(providers: list[str] | None):
     # Initialize state
     update_extraction_state(
         running=True,
-        start_time=datetime.now(timezone.utc),
+        start_time=datetime.now(UTC),
         total_events=0,
         total_odds=0,
         providers={},
@@ -138,14 +138,14 @@ async def run_extraction_task(providers: list[str] | None):
                     completed_providers=final["completed_providers"],
                     total_providers=final["total_providers"],
                     current_provider=None,
-                    last_run=datetime.now(timezone.utc).isoformat(),
+                    last_run=datetime.now(UTC).isoformat(),
                 )
             except Exception:
                 pass
         # Compute final elapsed time before clearing running flag
         start = extraction_state.get("start_time")
         if start:
-            final_elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+            final_elapsed = (datetime.now(UTC) - start).total_seconds()
             update_extraction_state(elapsed_seconds=final_elapsed)
         update_extraction_state(running=False)
 
@@ -214,7 +214,7 @@ async def extraction_stream(request: Request):
                         "event": msg["event"],
                         "data": json.dumps(msg["data"]),
                     }
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield {"event": "heartbeat", "data": ""}
         except asyncio.CancelledError:
             pass

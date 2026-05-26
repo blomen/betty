@@ -15,7 +15,7 @@ Supports PostgreSQL (via DATABASE_URL env var) and SQLite fallback.
 import logging
 import os
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from sqlalchemy.pool import NullPool
 
 
-class RiskLevel(str, Enum):
+class RiskLevel(StrEnum):
     """Risk level classification for providers."""
 
     LOW = "low"
@@ -56,7 +56,7 @@ class RiskLevel(str, Enum):
     CRITICAL = "critical"
 
 
-class LimitRisk(str, Enum):
+class LimitRisk(StrEnum):
     """How aggressively a provider is known to limit winners."""
 
     LOW = "low"
@@ -65,7 +65,7 @@ class LimitRisk(str, Enum):
     INSTANT = "instant"
 
 
-class LimitType(str, Enum):
+class LimitType(StrEnum):
     """Type of limit imposed by a bookmaker."""
 
     STAKE_LIMITED = "stake_limited"
@@ -234,6 +234,62 @@ class Odds(Base):
     # Relationships
     event = relationship("Event", back_populates="odds")
     provider = relationship("Provider", back_populates="odds")
+
+
+class OddsMovement(Base):
+    """Append-only log of significant odds changes for steam-move detection.
+
+    Written by `OddsBatchProcessor` only when `STEAM_DETECTOR_ENABLED=1` is
+    set in env — keeps the hot path overhead-free in default deployments.
+    A row is emitted only when the implied-probability delta on an upsert
+    exceeds `STEAM_DELTA_PP_MIN` (default 0.5 percentage points), so small
+    noise upserts (e.g. odds flicker) are filtered out at write time.
+
+    Steam detection (`backend/src/analysis/steam_detector.py`) groups
+    movements by `(event_id, market, outcome, point, scope)` over a short
+    rolling window and counts how many distinct providers moved in the
+    same direction — that's the syndicate-style signal we exploit.
+    """
+
+    __tablename__ = "odds_movements"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    event_id = Column(String, ForeignKey("events.id"), nullable=False)
+    provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
+
+    market = Column(String, nullable=False)
+    outcome = Column(String, nullable=False)
+    point = Column(Float, nullable=True)
+    scope = Column(String(16), nullable=False, server_default="ft", default="ft")
+
+    prev_odds = Column(Float, nullable=False)
+    new_odds = Column(Float, nullable=False)
+    # Signed implied-probability delta in percentage points
+    # (positive = probability increased = price shortened).
+    delta_implied_pp = Column(Float, nullable=False)
+    # 'up' = implied probability increased, 'down' = decreased. Stored as
+    # a string for query simplicity (steam_detector groups by direction).
+    direction = Column(String(4), nullable=False)
+
+    recorded_at = Column(DateTime, default=_utcnow, nullable=False)
+
+    __table_args__ = (
+        # Detector hot path: group recent movements by (event, market, outcome, point, scope)
+        Index(
+            "ix_odds_movements_event_market",
+            "event_id",
+            "market",
+            "outcome",
+            "point",
+            "scope",
+            "recorded_at",
+        ),
+        # Retention sweep + time-window queries
+        Index("ix_odds_movements_recorded_at", "recorded_at"),
+        # Per-provider analytics (which books are leading vs trailing)
+        Index("ix_odds_movements_provider", "provider_id", "recorded_at"),
+    )
 
 
 # ============ Bet Tracking ============

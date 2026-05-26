@@ -9,7 +9,7 @@ import asyncio
 import contextlib
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query
@@ -273,7 +273,7 @@ def _persist_boost_log(run_log):
 
     try:
         session = get_session()
-        scraped_at = datetime.fromisoformat(run_log.scraped_at) if run_log.scraped_at else datetime.now(timezone.utc)
+        scraped_at = datetime.fromisoformat(run_log.scraped_at) if run_log.scraped_at else datetime.now(UTC)
 
         session.query(BoostExtractionLog).delete()
 

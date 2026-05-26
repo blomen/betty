@@ -3,7 +3,7 @@
 import contextlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -294,7 +294,7 @@ def set_account_opened_date(
     except ValueError:
         raise HTTPException(400, f"Invalid date format: {data.opened_at}. Use ISO format (YYYY-MM-DD)")
 
-    if opened_at > datetime.now(timezone.utc):
+    if opened_at > datetime.now(UTC):
         raise HTTPException(400, "Account opened date cannot be in the future")
 
     profile_repo = ProfileRepo(db)
@@ -308,7 +308,7 @@ def set_account_opened_date(
 
     if balance:
         balance.account_opened_at = opened_at
-        balance.updated_at = datetime.now(timezone.utc)
+        balance.updated_at = datetime.now(UTC)
     else:
         balance = ProfileProviderBalance(
             profile_id=profile.id, provider_id=provider_id, balance=0.0, account_opened_at=opened_at
@@ -317,7 +317,7 @@ def set_account_opened_date(
 
     db.commit()
 
-    age_days = (datetime.now(timezone.utc) - opened_at).days
+    age_days = (datetime.now(UTC) - opened_at).days
 
     return {
         "success": True,
@@ -346,7 +346,7 @@ def get_account_opened_date(
     if not balance or not balance.account_opened_at:
         return {"provider_id": provider_id, "account_opened_at": None, "account_age_days": None, "source": "none"}
 
-    age_days = (datetime.now(timezone.utc) - balance.account_opened_at).days
+    age_days = (datetime.now(UTC) - balance.account_opened_at).days
 
     return {
         "provider_id": provider_id,
@@ -375,7 +375,7 @@ def clear_account_opened_date(
         raise HTTPException(404, f"No balance record for {provider_id}")
 
     balance.account_opened_at = None
-    balance.updated_at = datetime.now(timezone.utc)
+    balance.updated_at = datetime.now(UTC)
     db.commit()
 
     return {

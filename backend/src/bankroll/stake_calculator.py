@@ -340,6 +340,7 @@ def calculate_stake(
     high_confidence: bool = True,
     max_kelly: float = OPTIMAL_MAX_KELLY,
     min_expected_profit: float | None = None,
+    confidence_multiplier: float = 1.0,
 ) -> StakeResult:
     """
     Calculate optimal stake using dynamic Kelly with safety rails.
@@ -418,6 +419,24 @@ def calculate_stake(
 
     # Get dynamic Kelly fraction (capped by scaled max_kelly, clamped if low confidence)
     kelly = get_kelly_fraction(edge_used, high_confidence=high_confidence, max_kelly=scaled_max_kelly)
+
+    # Sport×market CLV confidence multiplier (default 1.0 = no-op).
+    # When a (sport, market) bucket has poor historical CLV, deflate Kelly
+    # so we bleed less in known-bad buckets. Zero multiplier = skip the bet.
+    if confidence_multiplier <= 0.0:
+        return StakeResult(
+            stake=0.0,
+            kelly_fraction=0.0,
+            edge_used=edge_used,
+            edge_raw=edge_raw,
+            bankroll=bankroll_total,
+            raw_kelly_stake=0.0,
+            single_bet_cap=0.0,
+            was_capped_single=False,
+            skip_reason="bucket confidence zero (negative historical CLV)",
+            counts_toward_wagering=_counts_toward_wagering,
+        )
+    kelly = kelly * confidence_multiplier
 
     # ML adaptive Kelly (M8) — DISABLED: features are hardcoded placeholders,
     # causing a constant ~0.289 override that crushes high-odds stakes below min_stake.
@@ -585,6 +604,8 @@ class StakeCalculator:
         max_kelly: float = OPTIMAL_MAX_KELLY,
         min_stake: float | None = None,
         min_expected_profit: float = DEFAULT_MIN_EXPECTED_PROFIT,
+        db_session=None,
+        profile_id: int | None = None,
     ):
         self.bankroll = bankroll
         self.single_bet_cap_pct = single_bet_cap_pct
@@ -593,6 +614,11 @@ class StakeCalculator:
         self.profile_max_kelly = max_kelly  # Original profile setting
         self.max_kelly = max_kelly  # calculate_stake() applies effective_max_kelly() internally
         self.min_expected_profit = dynamic_min_expected_profit(bankroll)
+        # Optional DB session + profile_id for CLV multiplier and drawdown
+        # circuit breaker lookups. When either is None, those checks become
+        # no-ops — preserves current behavior by default.
+        self.db_session = db_session
+        self.profile_id = profile_id
 
         self.bonus_tracker = BonusTracker()
 
@@ -624,6 +650,8 @@ class StakeCalculator:
         provider_id: str | None = None,
         high_confidence: bool = True,
         min_odds: float | None = None,
+        sport: str | None = None,
+        market: str | None = None,
     ) -> StakeResult:
         """
         Calculate stake for a bet.
@@ -636,6 +664,8 @@ class StakeCalculator:
             high_confidence: Whether this is a high-confidence bet
                 (strong match score, fresh odds, low slippage history)
             min_odds: Override for minimum odds (None = auto-detect from bonus status)
+            sport: Optional sport (e.g. "soccer") for CLV confidence multiplier
+            market: Optional market (e.g. "moneyline") for CLV confidence multiplier
 
         Returns:
             StakeResult
@@ -646,6 +676,41 @@ class StakeCalculator:
                 min_odds = self.get_min_odds_for_provider(provider_id)
             else:
                 min_odds = BONUS_MIN_ODDS  # Default to bonus requirement
+
+        # Drawdown circuit breaker. Returns (False, None) when env is off,
+        # session/profile missing, or threshold not breached — so this is a
+        # no-op until DRAWDOWN_BREAKER_ENABLED=1 in production.
+        if self.db_session is not None and self.profile_id and provider_id:
+            from .drawdown_guard import is_paused
+
+            paused, reason = is_paused(
+                self.db_session,
+                self.profile_id,
+                provider_id,
+                stake_bankroll_sek=self.bankroll,
+            )
+            if paused:
+                return StakeResult(
+                    stake=0.0,
+                    kelly_fraction=0.0,
+                    edge_used=0.0,
+                    edge_raw=edge_raw,
+                    bankroll=self.bankroll,
+                    raw_kelly_stake=0.0,
+                    single_bet_cap=0.0,
+                    was_capped_single=False,
+                    skip_reason=f"drawdown paused: {reason}",
+                )
+
+        # Sport×market historical CLV multiplier. Returns 1.0 when the
+        # feature is disabled (env BUCKET_CONFIDENCE_ENABLED) or when the
+        # bucket has insufficient samples — preserves current behavior by
+        # default.
+        confidence_multiplier = 1.0
+        if self.db_session is not None and sport and market:
+            from .bucket_confidence import lookup_multiplier
+
+            confidence_multiplier = lookup_multiplier(self.db_session, sport, market)
 
         return calculate_stake(
             bankroll_total=self.bankroll,
@@ -658,6 +723,7 @@ class StakeCalculator:
             high_confidence=high_confidence,
             max_kelly=self.max_kelly,
             min_expected_profit=self.min_expected_profit,
+            confidence_multiplier=confidence_multiplier,
         )
 
     def record_bet(

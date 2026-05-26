@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+from datetime import UTC
 from pathlib import Path
 
 import yaml
@@ -742,9 +743,9 @@ async def debug_history(provider_id: str):
     # Try API call directly to see error
     api_result = None
     try:
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         start = (now - timedelta(days=30)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         end = now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
         url = f"https://api.arcadia.pinnacle.se/0.1/bets?status=settled&startDate={start}&endDate={end}"

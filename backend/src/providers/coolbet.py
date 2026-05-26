@@ -22,7 +22,7 @@ import contextlib
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from ..core import StandardEvent
@@ -226,7 +226,7 @@ class CoolbetRetriever(BrowserRetriever):
                 self._camoufox_browser.__aexit__(None, None, None),
                 timeout=8,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(f"[{self.provider_id}] camoufox graceful close timed out — force-killing")
             force_kill_camoufox_tree(self._camoufox_driver_pid, self.provider_id)
         except (Exception, OSError, ValueError) as e:
@@ -710,9 +710,7 @@ class CoolbetRetriever(BrowserRetriever):
 
         # Fallback: use current time so fuzzy matching has a valid date
         if not start_time:
-            from datetime import timezone
-
-            start_time = datetime.now(timezone.utc)
+            start_time = datetime.now(UTC)
             logger.debug(f"[{self.provider_id}] No start_time for match {match.get('id')}, using now()")
 
         # Parse markets — store ALL spread/total lines (storage layer filters to Pinnacle's point)

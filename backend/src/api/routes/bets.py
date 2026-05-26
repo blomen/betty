@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+from datetime import UTC
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import tuple_
@@ -416,7 +417,7 @@ def get_analytics(
     leaking — the difference between displayed edge and realized ROI shows
     whether the signal is real or noise per slice.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from ...db.models import Bet
 
@@ -425,7 +426,7 @@ def get_analytics(
     if not profile:
         raise HTTPException(404, "No active profile")
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = datetime.now(UTC) - timedelta(days=days)
     q = db.query(Bet).filter(
         Bet.profile_id == profile.id,
         Bet.placed_at >= cutoff,
@@ -498,6 +499,34 @@ def get_analytics(
         key = f"{split_event_id(b.event_id)}|{bucket(edge_of(b))}"
         by_sport_x_edge.setdefault(key, []).append(b)
 
+    # Sport×market CLV bucket — drives the Kelly confidence multiplier when
+    # BUCKET_CONFIDENCE_ENABLED is set. Diagnostic-first: we always expose
+    # the bucket stats + the multiplier we WOULD apply, even when the
+    # multiplier is currently no-op'd by the env flag.
+    from ...bankroll.bucket_confidence import get_multiplier
+    from ...bankroll.bucket_confidence import is_enabled as bucket_conf_enabled
+    from ...db.models import Event
+
+    event_ids = {b.event_id for b in bets if b.event_id}
+    sport_by_event: dict[str, str | None] = {}
+    if event_ids:
+        for eid, sport in db.query(Event.id, Event.sport).filter(Event.id.in_(event_ids)).all():
+            sport_by_event[eid] = sport
+
+    by_sport_x_market: dict[str, list] = {}
+    for b in bets:
+        sport = sport_by_event.get(b.event_id) or split_event_id(b.event_id)
+        market = b.market or "unknown"
+        key = f"{sport}|{market}"
+        by_sport_x_market.setdefault(key, []).append(b)
+
+    def summarize_with_multiplier(rows):
+        base = summarize(rows)
+        if base is None:
+            return None
+        base["confidence_multiplier"] = get_multiplier(base.get("avg_clv_pct"), base["n"])
+        return base
+
     return {
         "provider_id": provider_id,
         "days": days,
@@ -506,6 +535,8 @@ def get_analytics(
         "by_sport": {k: summarize(v) for k, v in by_sport.items()},
         "by_edge_bucket": {k: summarize(v) for k, v in by_edge.items()},
         "by_sport_and_bucket": {k: summarize(v) for k, v in by_sport_x_edge.items()},
+        "by_sport_and_market": {k: summarize_with_multiplier(v) for k, v in by_sport_x_market.items()},
+        "bucket_confidence_enabled": bucket_conf_enabled(),
     }
 
 
@@ -518,6 +549,37 @@ def close_started_bets(service: BetService = Depends(_get_service)):
     """
     result = service.snapshot_closing_odds()
     return {"success": True, **result}
+
+
+@router.get("/steam")
+def get_steam_signals(db: Session = Depends(get_db)):
+    """Currently-active steam moves detected across the extracted books.
+
+    Reads `odds_movements` for the last `STEAM_WINDOW_MIN` minutes and
+    surfaces outcomes where `STEAM_MIN_PROVIDERS` distinct providers
+    moved in the same direction. Empty when `STEAM_DETECTOR_ENABLED=0`
+    (default) — the writes are gated by the same flag.
+
+    Diagnostic surface for the value-bet pipeline. The scanner already
+    annotates each `ValueBet.steam_signal` with the matching entry.
+    """
+    from ...analysis.steam_detector import (
+        delta_pp_threshold,
+        detect_steam_moves,
+        is_enabled,
+        min_providers,
+        window_minutes,
+    )
+
+    signals = detect_steam_moves(db)
+    return {
+        "enabled": is_enabled(),
+        "window_minutes": window_minutes(),
+        "min_providers": min_providers(),
+        "delta_pp_threshold": delta_pp_threshold(),
+        "count": len(signals),
+        "signals": [s.to_dict() for s in signals],
+    }
 
 
 @router.post("/batch")

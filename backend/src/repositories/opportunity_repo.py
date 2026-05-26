@@ -1,6 +1,6 @@
 """Opportunity repository - opportunity data access."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -38,7 +38,7 @@ class OpportunityRepo:
         # Base filters
         query = query.filter(Opportunity.is_active)
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         query = query.filter((Event.start_time.is_(None)) | (Event.start_time > now))
         # Exclude live/finished events even if start_time check is borderline
         query = query.filter((Event.match_status.is_(None)) | (Event.match_status == "prematch"))
@@ -91,7 +91,7 @@ class OpportunityRepo:
             .first()
         )
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         if existing:
             existing.is_active = True
@@ -151,7 +151,7 @@ class OpportunityRepo:
             .first()
         )
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         legs_list = [
             {
@@ -231,7 +231,7 @@ class OpportunityRepo:
             .first()
         )
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         outcomes_json = [
             {
@@ -305,7 +305,7 @@ class OpportunityRepo:
             .first()
         )
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         if existing:
             existing.is_active = True
@@ -357,7 +357,7 @@ class OpportunityRepo:
         Returns cleanup stats dict.
         """
         stats = {"inactive": 0, "orphaned": 0, "past_events": 0, "past_events_deleted": 0, "deactivated": 0}
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # 1. Delete inactive opportunities — SA column needs ~, not Python `not`
         stats["inactive"] = self.db.query(Opportunity).filter(~Opportunity.is_active).delete()

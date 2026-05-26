@@ -1,6 +1,6 @@
 """Provider API routes."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import lru_cache
 
 import yaml
@@ -142,7 +142,7 @@ def update_provider(provider_id: str, data: ProviderUpdate, db: Session = Depend
     if data.balance is not None:
         provider.balance = data.balance
 
-    provider.updated_at = datetime.now(timezone.utc)
+    provider.updated_at = datetime.now(UTC)
     db.commit()
 
     return {
@@ -190,7 +190,7 @@ def update_bonus_status(provider_id: str, status: str, db: Session = Depends(get
 
     if bonus_record:
         bonus_record.bonus_status = status
-        bonus_record.updated_at = datetime.now(timezone.utc)
+        bonus_record.updated_at = datetime.now(UTC)
     else:
         bonus_record = ProfileProviderBonus(profile_id=active_profile.id, provider_id=provider_id, bonus_status=status)
         db.add(bonus_record)
@@ -220,7 +220,7 @@ def update_limit_risk(
     provider.limit_risk = data.limit_risk
     if data.limit_notes is not None:
         provider.limit_notes = data.limit_notes
-    provider.updated_at = datetime.now(timezone.utc)
+    provider.updated_at = datetime.now(UTC)
     db.commit()
 
     return {

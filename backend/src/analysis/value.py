@@ -62,6 +62,19 @@ class ValueBet:
     pinnacle_overround: float | None = None
     odds_snapshot: list | None = None
 
+    # NFL key-number annotation (None for non-NFL or non-spread/total markets).
+    # Diagnostic-only — does NOT affect edge or stake calculations.
+    # Shape: {"on_key": bool, "straddles_key": bool, "nearest_key": int,
+    #         "distance": float, "half_point_value_pp": float | None}
+    key_number: dict | None = None
+
+    # Steam-move signal (None when STEAM_DETECTOR_ENABLED is off, or when
+    # no aligned cross-book move was detected on this outcome within the
+    # rolling window). Diagnostic-only for v1.
+    # Shape: {"direction": "up"|"down", "provider_count": int,
+    #         "providers": [...], "total_delta_pp": float, ...}
+    steam_signal: dict | None = None
+
     @property
     def expected_value(self) -> float:
         """Expected value per $1 bet."""

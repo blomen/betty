@@ -1,6 +1,7 @@
 """Events API routes."""
 
 import json
+from datetime import UTC
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -25,7 +26,7 @@ def list_events(
     by API recorders matching against fresh events (default ASC + limit cuts
     today's events when the DB has many historical rows).
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     query = db.query(Event)
     if sport:
@@ -33,7 +34,7 @@ def list_events(
     if upcoming_only:
         from sqlalchemy import or_
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         query = query.filter(or_(Event.start_time.is_(None), Event.start_time >= now))
         events = query.order_by(Event.start_time.asc()).limit(limit).all()
     else:

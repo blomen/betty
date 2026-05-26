@@ -1,7 +1,7 @@
 """Bankroll API routes."""
 
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -51,6 +51,72 @@ def get_bankroll_full(service: BankrollService = Depends(_get_service)):
 def get_provider_bonuses():
     """Get bonus configurations for all providers from providers.yaml."""
     return load_provider_bonuses()
+
+
+@router.get("/drawdown")
+def get_drawdown_status(db: Session = Depends(get_db)):
+    """Per-provider rolling 7d P&L + whether the drawdown breaker would
+    pause placements.
+
+    Diagnostic-first: the `breached` flag is computed against the
+    threshold even when the env flag is off, so the user can see what
+    *would* happen before enabling. Frontend uses this for the per-
+    provider drawdown badge.
+    """
+    from ...bankroll.drawdown_guard import (
+        _DEFAULT_LOOKBACK_DAYS,
+        _MIN_BETS_FOR_BREACH,
+        compute_provider_pnl_sek,
+        is_breached,
+        is_enabled,
+        pause_threshold_pct,
+    )
+    from ...db.models import Bet
+
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get_active()
+    if not profile:
+        raise HTTPException(404, "No active profile")
+
+    stake_bankroll = profile_repo.get_stake_bankroll(profile.id)
+    threshold = pause_threshold_pct()
+    enabled = is_enabled()
+
+    # Providers with any settled activity in the last 30d — wider than the
+    # 7d window so the panel still shows recently-paused providers as they
+    # exit cooldown.
+    from datetime import datetime, timedelta
+
+    cutoff_30d = datetime.now(UTC) - timedelta(days=30)
+    active_providers = [
+        pid
+        for (pid,) in db.query(Bet.provider_id)
+        .filter(Bet.profile_id == profile.id, Bet.settled_at >= cutoff_30d)
+        .distinct()
+        .all()
+        if pid
+    ]
+
+    rows = []
+    for pid in sorted(active_providers):
+        pnl_sek, n = compute_provider_pnl_sek(db, profile.id, pid, days=_DEFAULT_LOOKBACK_DAYS)
+        breached = is_breached(pnl_sek, stake_bankroll, threshold, n)
+        rows.append(
+            {
+                "provider_id": pid,
+                "pnl_sek_7d": round(pnl_sek, 2),
+                "n_bets": n,
+                "breached": breached,
+            }
+        )
+
+    return {
+        "enabled": enabled,
+        "threshold_pct": threshold,
+        "min_bets_for_breach": _MIN_BETS_FOR_BREACH,
+        "stake_bankroll_sek": round(stake_bankroll, 2),
+        "providers": rows,
+    }
 
 
 @router.get("/stats")
@@ -287,7 +353,7 @@ def bonus_transition(
             bonus_record.wagered_amount = 0.0
             bonus_record.wagering_requirement = bonus_amount * bonus_config.get("wagering_multiplier", 12.0)
             bonus_record.min_odds = bonus_config.get("min_odds", 1.80)
-            bonus_record.updated_at = datetime.now(timezone.utc)
+            bonus_record.updated_at = datetime.now(UTC)
             result = profile_repo.get_bonus_status(profile.id, provider_id)
             result["bonus_credited"] = bonus_amount
         else:

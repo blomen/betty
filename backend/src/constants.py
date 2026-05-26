@@ -374,13 +374,6 @@ SPORT_CANONICAL_SCOPE: dict[str, str] = {
 }
 
 
-def canonical_scope_for(sport: str | None) -> str:
-    """Return the canonical scope for a sport, falling back to DEFAULT_SCOPE."""
-    if sport is None:
-        return DEFAULT_SCOPE
-    return SPORT_CANONICAL_SCOPE.get(sport, DEFAULT_SCOPE)
-
-
 # ============ Trading Constants ============
 
 TRADING_ACCOUNT_TYPES = frozenset({"intraday", "swing", "hodl"})

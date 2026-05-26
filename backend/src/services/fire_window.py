@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from ..db.models import Odds, get_session
 from ..mirror.workflows import get_workflow
@@ -56,7 +56,7 @@ class FireWindow:
     provider_queue: list[str]
     provider_bets: dict[str, list[FireWindowBet]]
     current_provider: str | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     status: str = "ready"  # ready | active | firing | complete
     fired_results: dict[str, dict] = field(default_factory=dict)
     deposit_recommendations: list[dict] = field(default_factory=list)
@@ -404,7 +404,7 @@ async def open_needed_tabs(mirror_service) -> dict:
         return {"error": "no_browser_context"}
 
     cfg = load_config()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Get balances
     db = get_session()
@@ -425,7 +425,7 @@ async def open_needed_tabs(mirror_service) -> dict:
             if start:
                 # Normalize timezone — DB may store naive datetimes
                 if start.tzinfo is None:
-                    start = start.replace(tzinfo=timezone.utc)
+                    start = start.replace(tzinfo=UTC)
                 if start < now:
                     providers_needing_settle.add(bet.provider_id)
     finally:
@@ -694,12 +694,12 @@ def _settle_expired_bets() -> dict:
 
     Returns {provider_id: {"expired": N, "voided": N}}.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from ..db.models import Bet, Event
     from .bet_service import BetService
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     result = {}
     db = get_session()
     try:
@@ -716,7 +716,7 @@ def _settle_expired_bets() -> dict:
 
             if start:
                 if start.tzinfo is None:
-                    start = start.replace(tzinfo=timezone.utc)
+                    start = start.replace(tzinfo=UTC)
                 if start < now:
                     expired_by_provider.setdefault(bet.provider_id, []).append(bet)
 
@@ -1544,7 +1544,7 @@ async def check_settlements(mirror_service) -> dict:
 
     db = get_session()
     staged: list[dict] = []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     try:
         repo = ProfileRepo(db)
@@ -1667,7 +1667,7 @@ async def check_settlements(mirror_service) -> dict:
                     event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
                     start = getattr(event, "start_time", None) if event else None
                 if start and start.tzinfo is None:
-                    start = start.replace(tzinfo=timezone.utc)
+                    start = start.replace(tzinfo=UTC)
                 if start and start < now:
                     event = db.query(Event).filter(Event.id == bet.event_id).first() if bet.event_id else None
                     event_name = (

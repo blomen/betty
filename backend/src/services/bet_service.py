@@ -2,7 +2,7 @@
 
 import contextlib
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
@@ -28,7 +28,7 @@ class BetService:
         risk_profile = self.db.query(ProviderRiskProfile).filter(ProviderRiskProfile.provider_id == provider_id).first()
         if not risk_profile or not risk_profile.is_on_cooldown:
             return None
-        if risk_profile.cooldown_until and risk_profile.cooldown_until < datetime.now(timezone.utc):
+        if risk_profile.cooldown_until and risk_profile.cooldown_until < datetime.now(UTC):
             # Cooldown expired — clear it
             risk_profile.is_on_cooldown = False
             risk_profile.cooldown_until = None
@@ -108,7 +108,7 @@ class BetService:
         # event_id-keyed check above can't compare.
         from datetime import timedelta as _td
 
-        near_dup_cutoff = datetime.now(timezone.utc) - _td(seconds=60)
+        near_dup_cutoff = datetime.now(UTC) - _td(seconds=60)
         near = (
             self.db.query(Bet)
             .filter(
@@ -148,7 +148,7 @@ class BetService:
             fmt_req = f"${stake:.2f}" if currency != "SEK" else f"{stake:.0f} kr"
             return {"error": f"Insufficient balance: {fmt} available, {fmt_req} required"}
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         risk_score = self._get_risk_score(provider_id)
 
         # Compute fair odds at placement from current Pinnacle odds (or use passed value for boosts).
@@ -276,7 +276,7 @@ class BetService:
             )
             if bonus:
                 bonus.bonus_status = "completed"
-                bonus.updated_at = datetime.now(timezone.utc)
+                bonus.updated_at = datetime.now(UTC)
                 logger.info(f"[BetService] Auto-completed freebet for {provider_id}")
 
         # Check current wagering status (but don't record — wagering counts on settlement)
@@ -317,7 +317,7 @@ class BetService:
 
         bet.result = result
         bet.payout = payout
-        bet.settled_at = datetime.now(timezone.utc)
+        bet.settled_at = datetime.now(UTC)
 
         # Calculate CLV (Closing Line Value)
         clv_pct = self._calculate_clv(bet)
@@ -351,14 +351,14 @@ class BetService:
                     if bet.odds >= (bonus.min_odds or 1.80) and bet.stake >= (bonus.bonus_amount or 0):
                         bonus.bonus_status = "freebet_available"
                         bonus.wagered_amount = bet.stake
-                        bonus.updated_at = datetime.now(timezone.utc)
+                        bonus.updated_at = datetime.now(UTC)
                 else:
                     # Cumulative: total wagered across bets meets the requirement
                     if (bonus.wagering_requirement or 0) > 0 and (
                         bonus.wagered_amount or 0
                     ) >= bonus.wagering_requirement:
                         bonus.bonus_status = "freebet_available"
-                        bonus.updated_at = datetime.now(timezone.utc)
+                        bonus.updated_at = datetime.now(UTC)
 
         # Invalidate planner cache if bonus status changed (triggers re-plan on next request)
         if bet.profile_id and wagering_status:
@@ -530,7 +530,7 @@ class BetService:
 
         Returns: {"processed": int, "updated": int, "provider_clv_updated": int}
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Find pending bets on started events — need either Pinnacle or provider CLV
         pending_bets = (
@@ -645,7 +645,7 @@ class BetService:
             bet.result = result
             # Set settled_at when transitioning from pending to a final result
             if old_result == "pending" and result in ("won", "lost", "void"):
-                bet.settled_at = datetime.now(timezone.utc)
+                bet.settled_at = datetime.now(UTC)
             # Clear settled_at when reverting back to pending
             elif result == "pending":
                 bet.settled_at = None

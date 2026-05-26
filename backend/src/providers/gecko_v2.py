@@ -420,7 +420,7 @@ class GeckoV2Retriever(BrowserRetriever):
                         self._session_ready = False
                         await self.transport.close()
                         await self.transport._ensure_browser()
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         logger.warning(f"[{self.provider_id}] Session init attempt {attempt + 1} timed out")
                         self._api_headers = None
                         self._api_base = None
@@ -500,7 +500,7 @@ class GeckoV2Retriever(BrowserRetriever):
                     context.request.get(url_p1, headers=self._api_headers),
                     timeout=FETCH_TIMEOUT_S,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.error(
                     f"[{self.provider_id}] API page 1 request timed out after {FETCH_TIMEOUT_S}s — url={url_p1}"
                 )
@@ -525,7 +525,7 @@ class GeckoV2Retriever(BrowserRetriever):
                                 context.request.get(url_p1, headers=self._api_headers),
                                 timeout=FETCH_TIMEOUT_S,
                             )
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             logger.error(f"[{self.provider_id}] Retry API request timed out after {FETCH_TIMEOUT_S}s")
                             return []
                         except Exception as e:
@@ -565,7 +565,7 @@ class GeckoV2Retriever(BrowserRetriever):
                         )
                         if r.ok:
                             return (await r.json()).get("data", {})
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         logger.debug(f"[{self.provider_id}] Page {pg} timed out after {FETCH_TIMEOUT_S}s")
                     except Exception as exc:
                         logger.debug(f"[{self.provider_id}] Page {pg} failed: {exc}")

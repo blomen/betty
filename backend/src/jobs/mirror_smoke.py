@@ -24,14 +24,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
 import yaml
 from sqlalchemy import func, select
 
-from ..db.models import MirrorEventLog, MirrorProviderHealth
+from ..db.models import MirrorEventLog, MirrorProviderHealth, get_session_factory
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +180,7 @@ async def _run_one_pass() -> dict[str, str]:
                 row.last_provider_skipped_at = last_skip_row.ts
                 row.last_provider_skipped_reason = (last_skip_row.data or {}).get("reason")
             row.overall = _compute_overall(row)
-            row.checked_at = datetime.now(timezone.utc)
+            row.checked_at = datetime.now(UTC)
             summary[pid] = row.overall or "?"
 
         db.commit()
