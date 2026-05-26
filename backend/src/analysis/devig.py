@@ -13,8 +13,6 @@ Most common use: Multiplicative for Pinnacle odds.
 
 import logging
 
-from ..constants import PREDICTION_MARKETS
-
 logger = logging.getLogger(__name__)
 
 
@@ -198,16 +196,24 @@ def compute_consensus_fair_odds(
     min_platforms: int = 5,
 ) -> tuple[float, int] | None:
     """
-    Compute fair odds from platform-weighted harmonic mean of soft books.
+    Compute fair odds from platform-weighted harmonic mean of non-sharp books.
 
     Each platform contributes ONE devigged odds value (average if multiple
     providers on same platform). Then harmonic mean across platforms.
+
+    Prediction markets (Polymarket, Kalshi) participate — for the reverse-
+    value question ("where does the broader market price this vs Pinnacle?")
+    sharper non-Pinnacle inputs only strengthen the consensus, and
+    excluding them was a stale assumption from when this was only used as
+    a "sportsbook consensus" baseline. PREDICTION_MARKETS is no longer
+    imported here.
 
     Args:
         outcome: The outcome to get consensus for ("home", "away", etc.)
         odds_by_outcome: {outcome: [{provider, odds}, ...]}
         platform_map: {provider_id: platform_name}
-        sharp_providers: Providers to exclude (Pinnacle, etc.)
+        sharp_providers: Providers to exclude (Pinnacle is the bet provider
+            in reverse_value; never let it contribute to its own "fair").
         min_platforms: Minimum independent platforms required
 
     Returns:
@@ -222,8 +228,8 @@ def compute_consensus_fair_odds(
     for out, providers in odds_by_outcome.items():
         for p in providers:
             pid = p["provider"]
-            if pid in sharp_providers or pid in PREDICTION_MARKETS:
-                continue  # Sharp + prediction-market pricing don't belong in sportsbook consensus
+            if pid in sharp_providers:
+                continue  # Bet provider can't contribute to its own "fair" baseline
             if pid not in provider_markets:
                 provider_markets[pid] = {}
             provider_markets[pid][out] = p["odds"]

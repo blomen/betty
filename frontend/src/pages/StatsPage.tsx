@@ -226,7 +226,7 @@ function BankrollChart({ bets, netDeposited, totalStaked }: { bets: Bet[]; netDe
   );
 }
 
-export function CLVChart({ bets }: { bets: Bet[]; showTTKLegend?: boolean }) {
+export function CLVChart({ bets, title = 'CLV Trend', recentWindow = 10 }: { bets: Bet[]; showTTKLegend?: boolean; title?: string; recentWindow?: number }) {
   const data = useMemo(() => {
     return bets
       .filter(b => b.result !== 'pending' && b.clv_pct != null)
@@ -285,6 +285,14 @@ export function CLVChart({ bets }: { bets: Bet[]; showTTKLegend?: boolean }) {
   const positiveCount = data.filter(d => d.clv >= 0).length;
   const beatPct = ((positiveCount / data.length) * 100).toFixed(0);
 
+  // Trailing-window CLV — a strategy that USED to beat the close but no
+  // longer does shows up here first (cumulative avg lags by sample size).
+  // Coloured RED when the last `recentWindow` bets average below zero, so
+  // the user notices before the cumulative line crosses over.
+  const recent = data.slice(-recentWindow);
+  const recentAvg = recent.length ? recent.reduce((s, d) => s + d.clv, 0) / recent.length : 0;
+  const recentPositive = recentAvg >= 0;
+
   // X labels — month at first occurrence in sequence
   const xLabels: { label: string; pos: number }[] = [];
   const seen = new Set<string>();
@@ -303,10 +311,18 @@ export function CLVChart({ bets }: { bets: Bet[]; showTTKLegend?: boolean }) {
   return (
     <div className="bg-[#0d1117] overflow-hidden">
       <div className="px-3 py-2 flex items-center justify-between">
-        <span className="text-[11px] text-[#8b949e] uppercase tracking-wider font-medium">CLV Trend</span>
+        <span className="text-[11px] text-[#8b949e] uppercase tracking-wider font-medium">{title}</span>
         <div className="flex items-center gap-3">
           <span className="text-[10px] text-[#484f58]">{data.length} bets</span>
           <span className="text-[10px] text-[#484f58]">{beatPct}% beat close</span>
+          {recent.length >= 3 && (
+            <span
+              className={`text-[10px] px-1.5 py-0.5 rounded ${recentPositive ? 'bg-[#3fb950]/15 text-[#3fb950]' : 'bg-[#f85149]/15 text-[#f85149]'}`}
+              title={`Trailing avg over the last ${recent.length} settled bets — flips red when the strategy stops beating the close.`}
+            >
+              last {recent.length}: {recentAvg >= 0 ? '+' : ''}{recentAvg.toFixed(1)}%
+            </span>
+          )}
           <span className={`text-sm font-semibold ${isPositive ? 'text-[#3fb950]' : 'text-[#f85149]'}`}>
             {totalAvg >= 0 ? '+' : ''}{totalAvg.toFixed(1)}% avg
           </span>
@@ -646,6 +662,20 @@ export function BetsPage() {
           )}
           <CLVChart bets={bets.filter(b => !b.is_bonus)} />
         </div>
+        {/* Reverse-value CLV — Pinnacle is the sharp source, so any bet
+            placed AT Pinnacle came from scan_reverse_value (Pinnacle's price
+            vs soft consensus). Tracking this lane separately makes the
+            "consensus drift catches Pinnacle mispricing" thesis falsifiable
+            — when cumulative CLV stops being positive, the strategy is
+            dead and the scanner should be gated. */}
+        {bets.some(b => b.provider === 'pinnacle' && !b.is_bonus) && (
+          <div className="grid grid-cols-1 gap-[1px] bg-[#161b22] mt-[1px]">
+            <CLVChart
+              bets={bets.filter(b => b.provider === 'pinnacle' && !b.is_bonus)}
+              title="Reverse-Value CLV (Pinnacle vs soft consensus)"
+            />
+          </div>
+        )}
       </div>
 
       {/* Realized-ROI Analytics — per-sport + per-edge-bucket breakdown */}

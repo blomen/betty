@@ -43,6 +43,36 @@ class BetService:
         risk_profile = self.db.query(ProviderRiskProfile).filter(ProviderRiskProfile.provider_id == provider_id).first()
         return risk_profile.risk_score if risk_profile else 0.0
 
+    def _infer_bet_type_from_opportunity(
+        self,
+        provider_id: str,
+        event_id: str,
+        market: str,
+        outcome: str,
+        point: float | None,
+    ) -> str | None:
+        """Return the type of an active opportunity matching this placement.
+
+        Used by create_bet to refine the generic 'value' label that mirror
+        callers hardcode. The match is on (provider_id, event, market,
+        outcome) — point is checked when present so a spread/total bet picks
+        the right line. Returns None when no matching opp is found (caller
+        keeps its passed bet_type).
+        """
+        from ..db.models import Opportunity
+
+        q = self.db.query(Opportunity.type).filter(
+            Opportunity.event_id == event_id,
+            Opportunity.market == market,
+            Opportunity.is_active.is_(True),
+            Opportunity.outcome1 == outcome,
+            (Opportunity.provider1_id == provider_id) | (Opportunity.provider2_id == provider_id),
+        )
+        if point is not None:
+            q = q.filter(Opportunity.point == point)
+        row = q.first()
+        return row[0] if row else None
+
     def create_bet(
         self,
         event_id: str | None,
@@ -174,6 +204,23 @@ class BetService:
                 fair = get_fair_odds_for_outcome(outcome, pin_market, method="multiplicative")
                 if fair and fair > 1.0:
                     fair_odds_at_placement = round(fair, 4)
+
+        # Refine bet_type from the matching active opportunity. Mirror callers
+        # hardcode bet_type="value" for every recorded placement, which hides
+        # reverse_value bets at Pinnacle in the bets table — making CLV trend
+        # analysis impossible for the strategy. Look up an active opp keyed on
+        # (provider, event, market, outcome) and inherit its type when the
+        # caller didn't pass something more specific (arb_anchor, boost, etc.).
+        if bet_type in (None, "value") and event_id and market and outcome:
+            inferred = self._infer_bet_type_from_opportunity(
+                provider_id=provider_id,
+                event_id=event_id,
+                market=market,
+                outcome=outcome,
+                point=point,
+            )
+            if inferred:
+                bet_type = inferred
 
         # Edge gate: reject bets with edge < MIN_EDGE_PCT unless they're part of an arb
         # pair (arb legs can individually be -EV as long as the pair locks profit),

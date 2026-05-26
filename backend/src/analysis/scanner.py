@@ -24,6 +24,7 @@ from ..constants import (
     SHARP_PROVIDERS,
     SIGNAL_ONLY_PROVIDERS,
     canonical_scope_for,
+    consensus_staleness_minutes_for,
     staleness_minutes_for,
 )
 from ..db.models import Event
@@ -702,16 +703,32 @@ class OpportunityScanner:
         if self._has_odds_discrepancy(odds_by_outcome, exclude_providers=set(PREDICTION_MARKETS), market=market):
             return []
 
+        # Tighter freshness gate for soft-book consensus. group_odds already
+        # dropped truly-stale rows (6x cadence), but for *consensus* — "where
+        # is the market now?" — even 3-4h old browser-soft prices are just a
+        # memory of where the book sat, not a current view. Use 3x cadence
+        # here so single-cycle hiccups don't drop a book, but multi-cycle
+        # gaps do. Pinnacle row keeps full window — its freshness is gated
+        # by group_odds and the bet itself sits at Pinnacle.
+        consensus_odds = self._filter_to_consensus_fresh(odds_by_outcome)
+
+        # Outlier filter: drop providers whose price is >30% off the median.
+        # Catches extraction bugs (over/under swaps, wrong-scope reads, dead
+        # lines that didn't refresh past the freshness gate) that otherwise
+        # pollute the consensus and surface phantom reverse-value edges —
+        # the unibet hockey total bug being the canonical example.
+        consensus_odds = self._drop_consensus_outliers(consensus_odds)
+
         for outcome in pinnacle_market:
             pin_raw = pinnacle_market[outcome]
 
             if pin_raw < MIN_REVERSE_ODDS or pin_raw > MAX_REVERSE_ODDS:
                 continue
 
-            # Compute consensus fair odds from soft book platforms
+            # Compute consensus fair odds from soft book platforms (fresh only)
             consensus_result = compute_consensus_fair_odds(
                 outcome=outcome,
-                odds_by_outcome=odds_by_outcome,
+                odds_by_outcome=consensus_odds,
                 platform_map=PLATFORM_MAP,
                 sharp_providers=SHARP_PROVIDERS,
                 min_platforms=MIN_CONSENSUS_PLATFORMS,
@@ -1738,6 +1755,102 @@ class OpportunityScanner:
                     pinnacle_market[outcome] = entry["odds"]
                     break
         return pinnacle_market
+
+    def _filter_to_consensus_fresh(
+        self,
+        odds_by_outcome: dict[str, list[dict]],
+    ) -> dict[str, list[dict]]:
+        """Drop soft-book entries whose updated_at is older than the per-
+        provider consensus cutoff. Pinnacle and signal-only providers are
+        kept untouched — the gate is specifically for soft books being read
+        as the market's current view in scan_reverse_value.
+
+        Entries without an updated_at timestamp are kept (test fixtures and
+        pre-migration rows); the broader placement-staleness gate already
+        ran in group_odds.
+        """
+        now = datetime.now(UTC)
+        filtered: dict[str, list[dict]] = {}
+        for outcome, entries in odds_by_outcome.items():
+            kept = []
+            for entry in entries:
+                pid = entry.get("provider", "")
+                if pid in SHARP_PROVIDERS or pid in SIGNAL_ONLY_PROVIDERS:
+                    kept.append(entry)
+                    continue
+                updated = entry.get("updated_at")
+                if updated is None:
+                    kept.append(entry)
+                    continue
+                if updated.tzinfo is None:
+                    updated = updated.replace(tzinfo=UTC)
+                cutoff = now - timedelta(minutes=consensus_staleness_minutes_for(pid))
+                if updated < cutoff:
+                    continue
+                kept.append(entry)
+            if kept:
+                filtered[outcome] = kept
+        return filtered
+
+    def _drop_consensus_outliers(
+        self,
+        odds_by_outcome: dict[str, list[dict]],
+    ) -> dict[str, list[dict]]:
+        """Drop non-Pinnacle providers whose odds deviate >30% from the
+        per-outcome median. Catches extraction errors (e.g. unibet hockey
+        total returning over/under-swapped prices: 1.40 / 3.00 when the
+        rest of the market is 2.10 / 1.70) that would otherwise pollute
+        the consensus and surface phantom reverse-value edges.
+
+        Outlier dropping is per-PROVIDER, not per-entry — if a provider's
+        price is off-median on ANY outcome, that provider is removed from
+        ALL outcomes in this market. The underlying assumption is a
+        convention/extraction error affects the whole market for that
+        provider, not just one side.
+
+        Skipped when fewer than 3 non-sharp providers cover the outcome
+        (median is unstable below that). Pinnacle is never dropped — it's
+        the bet provider, its odds are the thing we're measuring drift
+        against.
+        """
+        outlier_threshold = 0.30
+        bad_providers: set[str] = set()
+
+        for entries in odds_by_outcome.values():
+            non_sharp = [e for e in entries if e.get("provider", "") not in SHARP_PROVIDERS]
+            if len(non_sharp) < 3:
+                continue
+            odds_values = sorted(e["odds"] for e in non_sharp if e.get("odds", 0) > 1)
+            if len(odds_values) < 3:
+                continue
+            mid = len(odds_values) // 2
+            median = odds_values[mid] if len(odds_values) % 2 else (odds_values[mid - 1] + odds_values[mid]) / 2
+            if median <= 0:
+                continue
+            for e in non_sharp:
+                odds = e.get("odds", 0)
+                if odds <= 0:
+                    continue
+                deviation = abs(odds - median) / median
+                if deviation > outlier_threshold:
+                    bad_providers.add(e["provider"])
+                    logger.debug(
+                        "consensus_outlier: drop %s (odds=%.2f, median=%.2f, dev=%.0f%%)",
+                        e["provider"],
+                        odds,
+                        median,
+                        deviation * 100,
+                    )
+
+        if not bad_providers:
+            return odds_by_outcome
+
+        filtered: dict[str, list[dict]] = {}
+        for outcome, entries in odds_by_outcome.items():
+            kept = [e for e in entries if e.get("provider", "") not in bad_providers]
+            if kept:
+                filtered[outcome] = kept
+        return filtered
 
     def _enrich_spread_complement(
         self,

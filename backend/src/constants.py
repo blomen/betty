@@ -340,6 +340,34 @@ def staleness_minutes_for(provider_id: str) -> int:
     return max(_STALENESS_FLOOR_MINUTES, _STALENESS_CYCLE_MULTIPLIER * interval)
 
 
+# Tighter cap for "is this provider's price a current view of the market"
+# decisions — specifically the reverse-value scanner's soft-book consensus.
+# A 4h-old 888sport row is fresh enough to keep its bet placeable (so it
+# stays in group_odds), but it's NOT fresh enough to count as the soft
+# market's view of "where the line is right now" for measuring Pinnacle
+# drift. 3x cadence absorbs 1-2 missed cycles without admitting prices
+# that predate any news the consensus is supposed to reflect.
+_CONSENSUS_STALENESS_CYCLE_MULTIPLIER = 3
+
+
+def consensus_staleness_minutes_for(provider_id: str) -> int:
+    """Return how old an odds row may be to count toward soft-book consensus.
+
+    Tighter than the generic placement-staleness gate. Reverse-value treats
+    the soft consensus as the market's current view of fair probability —
+    so a stale row (no recent update) is no longer evidence of consensus,
+    just a memory of where the book sat hours ago.
+
+    Falls back to 60 min for unlisted providers (half the legacy 120-min
+    placement gate) so an unknown provider still gets a reasonable bar.
+    """
+    canonical = PROVIDER_CANONICAL.get(provider_id, provider_id)
+    interval = PROVIDER_EXTRACTION_INTERVAL_MINUTES.get(canonical)
+    if interval is None:
+        return 60
+    return max(_STALENESS_FLOOR_MINUTES, _CONSENSUS_STALENESS_CYCLE_MULTIPLIER * interval)
+
+
 # Sports to extract - these have pinnacle_id in sports.yaml
 # Only extract sports where Pinnacle provides sharp lines AND soft providers
 # have head-to-head match coverage for value comparison.
