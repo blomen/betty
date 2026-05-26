@@ -46,8 +46,10 @@ for _name in ("httpx", "httpcore", "playwright", "urllib3", "asyncio"):
 
 logger = logging.getLogger(__name__)
 
-TUNNEL_URL = os.environ.get("ARNOLD_TUNNEL_URL") or os.environ.get(
-    "ARNOLDSPORTS_TUNNEL_URL", "http://localhost:18000"
+TUNNEL_URL = (
+    os.environ.get("BETTY_TUNNEL_URL")
+    or os.environ.get("ARNOLD_TUNNEL_URL")
+    or os.environ.get("ARNOLDSPORTS_TUNNEL_URL", "http://localhost:18000")
 )
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 

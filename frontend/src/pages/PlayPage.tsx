@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { api } from '../hooks/useApi'
 import { useMirrorStream } from '../hooks/useMirrorStream'
 import { useMirrorState } from '../hooks/useMirrorState'
+import { migratedLocalStorageGet } from '../utils/localStorageMigration'
 
 // Unlimited providers — value-bet flow (Section B) + arb counter pool. All other providers route through arbitrage (Section A).
 // `rainbet` is intentionally excluded: KYC blocks Swedish residents (Sumsub
@@ -293,12 +294,13 @@ export default function PlayPage() {
   // growing unbounded over weeks of use. We track per-eid timestamps in a
   // ref so re-saves preserve the original drain time (otherwise every save
   // would reset the TTL clock to "now").
-  const DRAINED_EVENTS_KEY = 'arnold:drainedEventIds:v1'
+  const DRAINED_EVENTS_KEY = 'betty:drainedEventIds:v1'
+  const DRAINED_EVENTS_KEY_LEGACY = 'arnold:drainedEventIds:v1'
   const DRAINED_EVENTS_TTL_MS = 24 * 60 * 60 * 1000
   const drainedTimestampsRef = useRef<Record<string, number>>({})
   const [drainedEventIds, setDrainedEventIds] = useState<Set<string>>(() => {
     try {
-      const raw = localStorage.getItem(DRAINED_EVENTS_KEY)
+      const raw = migratedLocalStorageGet(DRAINED_EVENTS_KEY, DRAINED_EVENTS_KEY_LEGACY)
       if (!raw) return new Set()
       const parsed = JSON.parse(raw) as { eid: string; ts: number }[]
       const now = Date.now()
@@ -384,7 +386,8 @@ export default function PlayPage() {
   // polled from a previous session). applyOverrides re-checks `ts` so an
   // entry that survives the initial load filter still gets dropped once
   // it ages past the TTL during a session.
-  const LIVE_ODDS_KEY = 'arnold:liveLegOdds:v1'
+  const LIVE_ODDS_KEY = 'betty:liveLegOdds:v1'
+  const LIVE_ODDS_KEY_LEGACY = 'arnold:liveLegOdds:v1'
   const LIVE_ODDS_TTL_MS = 90 * 1000
   type LiveOddsEntry = { odds: number; ts: number }
   // Key for live-odds overrides. Resolves soft cluster so QUICKCASINO and
@@ -442,10 +445,11 @@ export default function PlayPage() {
   // the arb-page header narrows the search (e.g. play only BETINIA-vs-
   // Pinnacle arbs). Persisted to localStorage. Must always contain at
   // least one entry — UI enforces a minimum-of-one click rule.
-  const COUNTER_FILTER_KEY = 'arnold:counterPoolFilter:v1'
+  const COUNTER_FILTER_KEY = 'betty:counterPoolFilter:v1'
+  const COUNTER_FILTER_KEY_LEGACY = 'arnold:counterPoolFilter:v1'
   const [enabledCounters, setEnabledCounters] = useState<Set<string>>(() => {
     try {
-      const raw = localStorage.getItem(COUNTER_FILTER_KEY)
+      const raw = migratedLocalStorageGet(COUNTER_FILTER_KEY, COUNTER_FILTER_KEY_LEGACY)
       if (!raw) return new Set(UNLIMITED_PROVIDERS)
       const arr = JSON.parse(raw) as string[]
       const valid = arr.filter(p => UNLIMITED_PROVIDERS.has(p))
@@ -475,7 +479,7 @@ export default function PlayPage() {
 
   const [liveLegOdds, setLiveLegOdds] = useState<Record<string, LiveOddsEntry>>(() => {
     try {
-      const raw = localStorage.getItem(LIVE_ODDS_KEY)
+      const raw = migratedLocalStorageGet(LIVE_ODDS_KEY, LIVE_ODDS_KEY_LEGACY)
       if (!raw) return {}
       const parsed = JSON.parse(raw) as Record<string, LiveOddsEntry>
       const now = Date.now()
@@ -549,11 +553,12 @@ export default function PlayPage() {
   // INSTANTLY (no flash of empty + 1-3min wait for the next scan). The next
   // loadArbOpps run replaces it with fresh API data + applyOverrides re-applies
   // any saved live-leg odds on top.
-  const OPPS_CACHE_KEY = 'arnold:oppsByCluster:v1'
+  const OPPS_CACHE_KEY = 'betty:oppsByCluster:v1'
+  const OPPS_CACHE_KEY_LEGACY = 'arnold:oppsByCluster:v1'
   const OPPS_CACHE_TTL_MS = 6 * 60 * 60 * 1000
   const [oppsByCluster, setOppsByCluster] = useState<Record<string, any[]>>(() => {
     try {
-      const raw = localStorage.getItem(OPPS_CACHE_KEY)
+      const raw = migratedLocalStorageGet(OPPS_CACHE_KEY, OPPS_CACHE_KEY_LEGACY)
       if (!raw) return {}
       const parsed = JSON.parse(raw) as { ts: number; data: Record<string, any[]> }
       if (!parsed?.ts || Date.now() - parsed.ts >= OPPS_CACHE_TTL_MS) return {}

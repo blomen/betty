@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from playwright.async_api import Page
@@ -16,13 +15,26 @@ logger = logging.getLogger(__name__)
 
 # Keywords that identify API endpoint categories
 _BALANCE_KEYWORDS = ("/wallet", "/balance", "/account/balance", "/wallets")
-_HISTORY_KEYWORDS = ("/bets", "/history", "/coupons", "/bethistory", "/bet-history", "/mybets")
+_HISTORY_KEYWORDS = (
+    "/bets",
+    "/history",
+    "/coupons",
+    "/bethistory",
+    "/bet-history",
+    "/mybets",
+)
 _PLACEMENT_KEYWORDS = ("/place", "/placewidget", "/placebet")
 
 # Domains to ignore (CDNs, tracking, etc.)
 _IGNORE_DOMAINS = (
-    "google", "facebook", "hotjar", "clarity", "analytics",
-    "doubleclick", "cloudflare", "fonts.googleapis",
+    "google",
+    "facebook",
+    "hotjar",
+    "clarity",
+    "analytics",
+    "doubleclick",
+    "cloudflare",
+    "fonts.googleapis",
 )
 
 
@@ -42,17 +54,33 @@ def analyze_recordings(
     if recordings_dir is None:
         try:
             from ...paths import get_data_dir
+
             recordings_dir = get_data_dir() / "mirror_recordings"
         except ImportError:
             import os
-            recordings_dir = Path(os.environ.get("ARNOLD_DATA_DIR", str(Path(__file__).parent.parent.parent.parent / "data"))) / "mirror_recordings"
+
+            recordings_dir = (
+                Path(
+                    os.environ.get("BETTY_DATA_DIR")
+                    or os.environ.get(
+                        "ARNOLD_DATA_DIR",
+                        str(Path(__file__).parent.parent.parent.parent / "data"),
+                    )
+                )
+                / "mirror_recordings"
+            )
 
     provider_dir = recordings_dir / provider_id
     if not provider_dir.exists():
         return {"balance": [], "history": [], "placement": [], "other_api": []}
 
     seen: set[str] = set()
-    categorized: dict[str, list[str]] = {"balance": [], "history": [], "placement": [], "other_api": []}
+    categorized: dict[str, list[str]] = {
+        "balance": [],
+        "history": [],
+        "placement": [],
+        "other_api": [],
+    }
 
     for jsonl_file in sorted(provider_dir.glob("*.jsonl")):
         try:
@@ -201,9 +229,11 @@ async def discover(
 
     # Phase 1: Analyze recordings
     endpoints = analyze_recordings(provider_id, recordings_dir)
-    logger.info(f"[discovery] {provider_id} recordings: balance={len(endpoints['balance'])}, "
-                f"history={len(endpoints['history'])}, placement={len(endpoints['placement'])}, "
-                f"other={len(endpoints['other_api'])}")
+    logger.info(
+        f"[discovery] {provider_id} recordings: balance={len(endpoints['balance'])}, "
+        f"history={len(endpoints['history'])}, placement={len(endpoints['placement'])}, "
+        f"other={len(endpoints['other_api'])}"
+    )
 
     # Phase 2: Discover balance (recordings first, DOM fallback)
     balance_intel = None
@@ -230,13 +260,17 @@ async def discover(
                     "api": {"url": url, "path": path, "currency": "SEK"},
                     "dom": None,
                 }
-                logger.info(f"[discovery] {provider_id} balance: API → {url} path={path}")
+                logger.info(
+                    f"[discovery] {provider_id} balance: API → {url} path={path}"
+                )
                 break
 
     if not balance_intel:
         balance_intel = await discover_balance_dom(page)
         if balance_intel:
-            logger.info(f"[discovery] {provider_id} balance: DOM fallback → {balance_intel['dom']['selector']}")
+            logger.info(
+                f"[discovery] {provider_id} balance: DOM fallback → {balance_intel['dom']['selector']}"
+            )
 
     # Phase 3: History endpoints from recordings
     history_intel = None
@@ -263,7 +297,9 @@ async def discover(
             },
             "dom": None,
         }
-        logger.info(f"[discovery] {provider_id} history: API → {url} (mapping needs verification)")
+        logger.info(
+            f"[discovery] {provider_id} history: API → {url} (mapping needs verification)"
+        )
 
     # Build intel
     now = datetime.now(timezone.utc).isoformat()
@@ -279,9 +315,13 @@ async def discover(
             "placement": "none",
         },
         "login": {
-            "method": "balance_api" if (balance_intel and balance_intel.get("method") == "api") else "dom",
+            "method": "balance_api"
+            if (balance_intel and balance_intel.get("method") == "api")
+            else "dom",
             "indicator": balance_intel.get("dom") if balance_intel else None,
-        } if balance_intel else None,
+        }
+        if balance_intel
+        else None,
         "balance": balance_intel,
         "history": history_intel,
         "betslip": None,
@@ -291,5 +331,7 @@ async def discover(
     }
 
     save_intel(provider_id, intel, intel_dir)
-    logger.info(f"[discovery] {provider_id} discovery complete: {intel['capabilities']}")
+    logger.info(
+        f"[discovery] {provider_id} discovery complete: {intel['capabilities']}"
+    )
     return intel

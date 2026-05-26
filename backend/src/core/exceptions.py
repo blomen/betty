@@ -5,8 +5,8 @@ Structured exceptions for distinguishing retryable vs fatal errors.
 """
 
 
-class ArnoldError(Exception):
-    """Base exception for all Arnold errors."""
+class BettyError(Exception):
+    """Base exception for all Betty errors."""
 
     def __init__(self, message: str, provider_id: str | None = None):
         super().__init__(message)
@@ -14,7 +14,7 @@ class ArnoldError(Exception):
         self.message = message
 
 
-class RetryableError(ArnoldError):
+class RetryableError(BettyError):
     """
     Errors that can be retried (timeouts, rate limits, transient failures).
 
@@ -58,7 +58,7 @@ class TimeoutError(RetryableError):
         super().__init__(message, provider_id)
 
 
-class FatalError(ArnoldError):
+class FatalError(BettyError):
     """
     Errors that should not be retried (bad config, auth failed).
 

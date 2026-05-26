@@ -1,10 +1,11 @@
 """
 Centralized path resolution for Betty.
 
-Uses environment variables with defaults:
-  ARNOLD_DATA_DIR  → /app/data   (Docker) or backend/data (dev)
-  ARNOLD_LOGS_DIR  → /app/logs   (Docker) or backend/logs (dev)
-  ARNOLD_CONFIG_DIR → src/config  (always relative to source)
+Uses environment variables with defaults (BETTY_* preferred, ARNOLD_*
+fallback during the arnold→betty rename window — see PR C1):
+  BETTY_DATA_DIR / ARNOLD_DATA_DIR    → /app/data (Docker) or backend/data (dev)
+  BETTY_LOGS_DIR / ARNOLD_LOGS_DIR    → /app/logs (Docker) or backend/logs (dev)
+  BETTY_CONFIG_DIR / ARNOLD_CONFIG_DIR → src/config (always relative to source)
 """
 
 import os
@@ -16,7 +17,7 @@ _BACKEND_DIR = Path(__file__).parent.parent
 
 def get_data_dir() -> Path:
     """Persistent data directory (DB files, exports)."""
-    d = Path(os.environ.get("ARNOLD_DATA_DIR", str(_BACKEND_DIR / "data")))
+    d = Path(os.environ.get("BETTY_DATA_DIR") or os.environ.get("ARNOLD_DATA_DIR", str(_BACKEND_DIR / "data")))
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -33,7 +34,7 @@ def get_market_db_path() -> Path:
 
 def get_logs_dir() -> Path:
     """Logs directory."""
-    d = Path(os.environ.get("ARNOLD_LOGS_DIR", str(_BACKEND_DIR / "logs")))
+    d = Path(os.environ.get("BETTY_LOGS_DIR") or os.environ.get("ARNOLD_LOGS_DIR", str(_BACKEND_DIR / "logs")))
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -41,7 +42,8 @@ def get_logs_dir() -> Path:
 def get_config_path(filename: str) -> Path:
     """Config file path (providers.yaml, sports.yaml)."""
     config_dir = Path(
-        os.environ.get(
+        os.environ.get("BETTY_CONFIG_DIR")
+        or os.environ.get(
             "ARNOLD_CONFIG_DIR",
             str(Path(__file__).parent / "config"),
         )
@@ -52,7 +54,8 @@ def get_config_path(filename: str) -> Path:
 def get_config_dir() -> Path:
     """Config directory."""
     return Path(
-        os.environ.get(
+        os.environ.get("BETTY_CONFIG_DIR")
+        or os.environ.get(
             "ARNOLD_CONFIG_DIR",
             str(Path(__file__).parent / "config"),
         )

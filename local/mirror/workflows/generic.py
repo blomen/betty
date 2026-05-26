@@ -22,7 +22,13 @@ def _default_intel_dir() -> Path:
         import os
 
         d = (
-            Path(os.environ.get("ARNOLD_DATA_DIR", str(Path(__file__).parent.parent.parent.parent / "data")))
+            Path(
+                os.environ.get("BETTY_DATA_DIR")
+                or os.environ.get(
+                    "ARNOLD_DATA_DIR",
+                    str(Path(__file__).parent.parent.parent.parent / "data"),
+                )
+            )
             / "mirror_intel"
         )
     d.mkdir(parents=True, exist_ok=True)
@@ -88,7 +94,9 @@ class GenericWorkflow(ProviderWorkflow):
         self.strategy = load_strategy(provider_id)
         # Intel JSON may declare this provider as autonomous (API-based place_bet
         # called on user confirm instead of waiting for a placement interception).
-        self.autonomous_placement = bool((self.intel or {}).get("autonomous_placement", False))
+        self.autonomous_placement = bool(
+            (self.intel or {}).get("autonomous_placement", False)
+        )
         # fetch_balance is OPTIONAL on the workflow surface — provider_runner /
         # arb_runner gate the ready-state passive refresh on
         # hasattr(workflow, "fetch_balance"), so we only expose it when the
@@ -247,23 +255,35 @@ class GenericWorkflow(ProviderWorkflow):
         entries = []
         for bet in bets_data:
             try:
-                raw_status = str(_extract_path(bet, mapping.get("status", "status")) or "")
+                raw_status = str(
+                    _extract_path(bet, mapping.get("status", "status")) or ""
+                )
                 status = status_map.get(raw_status, raw_status)
                 payout_val = _extract_path(bet, mapping.get("payout", "payout"))
                 entries.append(
                     HistoryEntry(
-                        provider_bet_id=str(_extract_path(bet, mapping.get("bet_id", "id")) or ""),
-                        event_name=str(_extract_path(bet, mapping.get("event_name", "event")) or ""),
+                        provider_bet_id=str(
+                            _extract_path(bet, mapping.get("bet_id", "id")) or ""
+                        ),
+                        event_name=str(
+                            _extract_path(bet, mapping.get("event_name", "event")) or ""
+                        ),
                         market="",
                         outcome="",
-                        odds=float(_extract_path(bet, mapping.get("odds", "odds")) or 0),
-                        stake=float(_extract_path(bet, mapping.get("stake", "stake")) or 0),
+                        odds=float(
+                            _extract_path(bet, mapping.get("odds", "odds")) or 0
+                        ),
+                        stake=float(
+                            _extract_path(bet, mapping.get("stake", "stake")) or 0
+                        ),
                         status=status,
                         payout=float(payout_val) if payout_val else None,
                     )
                 )
             except (TypeError, ValueError, KeyError) as e:
-                logger.debug(f"[{self.provider_id}] Skip unparseable history entry: {e}")
+                logger.debug(
+                    f"[{self.provider_id}] Skip unparseable history entry: {e}"
+                )
         return entries
 
     async def _sync_history_dom(self, page: Page, dom_cfg: dict) -> list[HistoryEntry]:
@@ -280,13 +300,25 @@ class GenericWorkflow(ProviderWorkflow):
             try:
                 entry = HistoryEntry(
                     provider_bet_id="",
-                    event_name=await self._extract_dom_field(row, fields.get("event_name", {})),
+                    event_name=await self._extract_dom_field(
+                        row, fields.get("event_name", {})
+                    ),
                     market="",
                     outcome="",
-                    odds=float(await self._extract_dom_field(row, fields.get("odds", {})) or 0),
-                    stake=float(await self._extract_dom_field(row, fields.get("stake", {})) or 0),
-                    status=await self._extract_dom_status(row, fields.get("status", {})),
-                    payout=float(await self._extract_dom_field(row, fields.get("payout", {})) or 0) or None,
+                    odds=float(
+                        await self._extract_dom_field(row, fields.get("odds", {})) or 0
+                    ),
+                    stake=float(
+                        await self._extract_dom_field(row, fields.get("stake", {})) or 0
+                    ),
+                    status=await self._extract_dom_status(
+                        row, fields.get("status", {})
+                    ),
+                    payout=float(
+                        await self._extract_dom_field(row, fields.get("payout", {}))
+                        or 0
+                    )
+                    or None,
                 )
                 if entry.odds > 0 and entry.stake > 0:
                     entries.append(entry)
@@ -324,7 +356,9 @@ class GenericWorkflow(ProviderWorkflow):
             return await self.strategy.navigate_to_event(page, bet, self.intel)
 
         if not self.intel or not self.intel.get("navigation"):
-            logger.info(f"[{self.provider_id}] No navigation intel — user navigates manually")
+            logger.info(
+                f"[{self.provider_id}] No navigation intel — user navigates manually"
+            )
             return True
 
         nav = self.intel["navigation"]
@@ -346,7 +380,14 @@ class GenericWorkflow(ProviderWorkflow):
             return str(val or "")
 
         url = template
-        for key in ("event_id", "provider_event_id", "matchup_id", "event_slug", "market_slug", "slug"):
+        for key in (
+            "event_id",
+            "provider_event_id",
+            "matchup_id",
+            "event_slug",
+            "market_slug",
+            "slug",
+        ):
             url = url.replace(f"{{{key}}}", _g(key))
         if not url.startswith("http"):
             url = f"https://{self.domain}{url}"
@@ -377,7 +418,12 @@ class GenericWorkflow(ProviderWorkflow):
             return await self.strategy.place_bet(page, bet, stake, self.intel)
 
         if not self.intel or not self.intel.get("betslip"):
-            return PlacementResult(status="manual", bet_id=bet.bet_id, actual_stake=stake, reason="no_betslip_intel")
+            return PlacementResult(
+                status="manual",
+                bet_id=bet.bet_id,
+                actual_stake=stake,
+                reason="no_betslip_intel",
+            )
 
         bs = self.intel["betslip"]
 
@@ -418,7 +464,9 @@ class GenericWorkflow(ProviderWorkflow):
     # Live price (optional)
     # ------------------------------------------------------------------
 
-    async def check_live_price(self, page: Page, bet) -> tuple[float | None, float | None]:
+    async def check_live_price(
+        self, page: Page, bet
+    ) -> tuple[float | None, float | None]:
         if self.strategy and self.strategy.check_live_price:
             result = await self.strategy.check_live_price(page, bet, self.intel)
             # Strategies may return (odds, edge) tuple or bare edge float — normalise
@@ -492,7 +540,9 @@ class GenericWorkflow(ProviderWorkflow):
 
             count = _settle_from_history(self.provider_id, history)
         except ImportError:
-            logger.warning(f"[{self.provider_id}] _settle_from_history not available (backend not installed)")
+            logger.warning(
+                f"[{self.provider_id}] _settle_from_history not available (backend not installed)"
+            )
             count = 0
         balance = await self.sync_balance(page)
         return {"settled": count, "new_balance": balance}
@@ -510,7 +560,9 @@ class GenericWorkflow(ProviderWorkflow):
 
         try:
             self.intel = await discover(page, self.provider_id)
-            logger.info(f"[{self.provider_id}] Auto-discovery complete: {self.intel.get('capabilities', {})}")
+            logger.info(
+                f"[{self.provider_id}] Auto-discovery complete: {self.intel.get('capabilities', {})}"
+            )
             return True
         except Exception as e:
             logger.warning(f"[{self.provider_id}] Auto-discovery failed: {e}")

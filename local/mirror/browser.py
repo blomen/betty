@@ -7,8 +7,9 @@ chromium-1200 bundle was observed to crash on launch with this profile
 1217 from patchright's bundle handles the same profile fine, so we default
 there for stability.
 
-Set env `ARNOLD_USE_VANILLA_PLAYWRIGHT=1` to force vanilla (useful for
-testing whether the chromium-1200 issue has been resolved).
+Set env `BETTY_USE_VANILLA_PLAYWRIGHT=1` (or legacy `ARNOLD_USE_VANILLA_PLAYWRIGHT=1`)
+to force vanilla (useful for testing whether the chromium-1200 issue has been
+resolved).
 """
 
 import asyncio
@@ -19,7 +20,10 @@ from collections.abc import Callable
 from pathlib import Path  # noqa: F401
 from typing import Any
 
-if os.getenv("ARNOLD_USE_VANILLA_PLAYWRIGHT") == "1":
+if (
+    os.getenv("BETTY_USE_VANILLA_PLAYWRIGHT") == "1"
+    or os.getenv("ARNOLD_USE_VANILLA_PLAYWRIGHT") == "1"
+):
     from playwright.async_api import (
         Browser,
         BrowserContext,
@@ -218,7 +222,9 @@ class MirrorBrowser:
         self._context: BrowserContext | None = None
         self._running = False
         # Intercepted data per provider
-        self.provider_data: dict[str, dict] = {}  # pid → {logged_in, balance, last_url, ...}
+        self.provider_data: dict[
+            str, dict
+        ] = {}  # pid → {logged_in, balance, last_url, ...}
         # Callback for broadcasting events
         self._on_event: Callable[[str, dict], None] | None = None
         # Callback for stream dispatch (provider_id, event_type, data)
@@ -337,7 +343,9 @@ class MirrorBrowser:
         if prefs_file.exists():
             try:
                 prefs = json.loads(prefs_file.read_text(encoding="utf-8"))
-                prefs.setdefault("session", {})["restore_on_startup"] = 5  # 5 = open blank
+                prefs.setdefault("session", {})["restore_on_startup"] = (
+                    5  # 5 = open blank
+                )
                 # Explicitly mark previous run as clean. Just popping exit_type
                 # isn't enough — Chromium's session-crashed recovery checks both
                 # exit_type and exited_cleanly. Force both into the "no crash"
@@ -527,7 +535,12 @@ class MirrorBrowser:
         from ._urls import hostname_matches
 
         u = (url or "").lower()
-        if not u or u == "about:blank" or u.startswith("chrome:") or u.startswith("devtools:"):
+        if (
+            not u
+            or u == "about:blank"
+            or u.startswith("chrome:")
+            or u.startswith("devtools:")
+        ):
             return True
         if any(hostname_matches(d, u) for d in self._ALLOWED_TAB_DOMAINS):
             return True
@@ -584,7 +597,10 @@ class MirrorBrowser:
             print(f"[browser] Blocked ghost navigation: {url[:120]}", flush=True)
             await route.abort("aborted")
         except Exception as e:
-            print(f"[browser] _ghost_route_filter error ({type(e).__name__}): {e}", flush=True)
+            print(
+                f"[browser] _ghost_route_filter error ({type(e).__name__}): {e}",
+                flush=True,
+            )
             try:
                 await route.continue_()
             except Exception:
@@ -741,9 +757,15 @@ class MirrorBrowser:
                         if self._is_tab_allowed(url):
                             continue
                         await page.close()
-                        print(f"[browser] Watchdog closed stray tab: {url[:80]}", flush=True)
+                        print(
+                            f"[browser] Watchdog closed stray tab: {url[:80]}",
+                            flush=True,
+                        )
                     except Exception as e:
-                        print(f"[browser] watchdog inner error: {type(e).__name__}: {e}", flush=True)
+                        print(
+                            f"[browser] watchdog inner error: {type(e).__name__}: {e}",
+                            flush=True,
+                        )
                 await asyncio.sleep(10.0)
         except asyncio.CancelledError:
             print("[browser] watchdog: cancelled", flush=True)
@@ -807,15 +829,21 @@ class MirrorBrowser:
             profile_str_win = str(_USER_DATA_DIR)
             killed = 0
             for line in result.stdout.splitlines():
-                if (profile_str in line or profile_str_win in line or "browser_profile" in line) and (
-                    "disable-blink-features" in line
-                ):
+                if (
+                    profile_str in line
+                    or profile_str_win in line
+                    or "browser_profile" in line
+                ) and ("disable-blink-features" in line):
                     parts = line.strip().split(",")
                     if parts:
                         pid = parts[-1].strip()
                         if pid.isdigit():
                             try:
-                                subprocess.run(["taskkill", "/PID", pid, "/F"], capture_output=True, timeout=5)
+                                subprocess.run(
+                                    ["taskkill", "/PID", pid, "/F"],
+                                    capture_output=True,
+                                    timeout=5,
+                                )
                                 killed += 1
                             except Exception:
                                 pass
@@ -824,7 +852,10 @@ class MirrorBrowser:
         try:
             killed = await asyncio.to_thread(_do_kill)
             if killed:
-                print(f"[browser] Killed {killed} orphaned Chromium process(es)", flush=True)
+                print(
+                    f"[browser] Killed {killed} orphaned Chromium process(es)",
+                    flush=True,
+                )
                 await asyncio.sleep(1)
         except Exception:
             pass
@@ -841,7 +872,9 @@ class MirrorBrowser:
             if host:
                 # Strip leading "www." so the substring match in _is_tab_allowed
                 # catches both apex and www variants.
-                self._dynamic_allowlist.add(host[4:] if host.startswith("www.") else host)
+                self._dynamic_allowlist.add(
+                    host[4:] if host.startswith("www.") else host
+                )
         except Exception:
             pass
         # Lazy-init the lock here — __init__ runs without an event loop so we
@@ -866,7 +899,10 @@ class MirrorBrowser:
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             except Exception as e:
-                print(f"[browser] Navigation slow/failed ({e}), tab still usable", flush=True)
+                print(
+                    f"[browser] Navigation slow/failed ({e}), tab still usable",
+                    flush=True,
+                )
         try:
             from .state_writer import write_provider_state
 
@@ -881,7 +917,12 @@ class MirrorBrowser:
         pages = []
         if self._context:
             for page in self._context.pages:
-                pages.append({"url": page.url, "title": page.url.split("/")[2] if "/" in page.url else ""})
+                pages.append(
+                    {
+                        "url": page.url,
+                        "title": page.url.split("/")[2] if "/" in page.url else "",
+                    }
+                )
         return {
             "running": self._running,
             "tabs": len(pages),
@@ -1076,7 +1117,10 @@ class MirrorBrowser:
             host = (urlparse(url).hostname or "").lower()
         except Exception:
             host = ""
-        if host and any(host == suffix or host.endswith("." + suffix) for suffix in _TRACKER_HOST_SUFFIXES):
+        if host and any(
+            host == suffix or host.endswith("." + suffix)
+            for suffix in _TRACKER_HOST_SUFFIXES
+        ):
             return
 
         # Detect provider from PAGE URL (which tab made the request)
@@ -1089,10 +1133,23 @@ class MirrorBrowser:
         provider_id = self._detect_provider(page_url) or self._detect_provider(url)
 
         # Log API calls for debugging (skip static assets)
-        if provider_id and not any(ext in url for ext in (".js", ".css", ".png", ".jpg", ".svg", ".woff", ".ico")):
+        if provider_id and not any(
+            ext in url
+            for ext in (".js", ".css", ".png", ".jpg", ".svg", ".woff", ".ico")
+        ):
             if any(
                 kw in url.lower()
-                for kw in ("api", "balance", "wallet", "account", "relay", "graphql", "login", "auth", "session")
+                for kw in (
+                    "api",
+                    "balance",
+                    "wallet",
+                    "account",
+                    "relay",
+                    "graphql",
+                    "login",
+                    "auth",
+                    "session",
+                )
             ):
                 print(f"[intercept] {provider_id} API: {url[:120]}", flush=True)
 
@@ -1117,14 +1174,20 @@ class MirrorBrowser:
                 # /balance only (we filter out /balances + /event_positions etc.
                 # via the URL keyword check above; only the singular /balance
                 # endpoint reaches here as a {balance: int} payload).
-                if provider_id == "kalshi" and "/balance" in url_lower and not url_lower.endswith("/balances"):
+                if (
+                    provider_id == "kalshi"
+                    and "/balance" in url_lower
+                    and not url_lower.endswith("/balances")
+                ):
                     balance = balance / 100.0
                 if provider_id not in self.provider_data:
                     self.provider_data[provider_id] = {}
                 self.provider_data[provider_id]["logged_in"] = True
                 self.provider_data[provider_id]["balance"] = balance
                 self.provider_data[provider_id]["last_balance_url"] = url
-                logger.info(f"[browser] {provider_id} BALANCE: {balance} (from {url[:80]})")
+                logger.info(
+                    f"[browser] {provider_id} BALANCE: {balance} (from {url[:80]})"
+                )
                 try:
                     from .state_writer import write_provider_state
 
@@ -1141,14 +1204,18 @@ class MirrorBrowser:
                         },
                     )
                 if self._on_stream_callback:
-                    self._on_stream_callback(provider_id, "balance_intercepted", {"balance": balance})
+                    self._on_stream_callback(
+                        provider_id, "balance_intercepted", {"balance": balance}
+                    )
             return
 
         # GraphQL relay (LeoVegas etc.) — check body for balance data
         if "relay" in url_lower or "graphql" in url_lower:
             try:
                 body_text = await response.text()
-                if '"balance"' in body_text and ('"totalAmount"' in body_text or '"amount"' in body_text):
+                if '"balance"' in body_text and (
+                    '"totalAmount"' in body_text or '"amount"' in body_text
+                ):
                     body = json.loads(body_text)
                     balance = self._extract_balance(body)
                     if balance is not None and balance >= 0:
@@ -1156,11 +1223,15 @@ class MirrorBrowser:
                             self.provider_data[provider_id] = {}
                         self.provider_data[provider_id]["logged_in"] = True
                         self.provider_data[provider_id]["balance"] = balance
-                        logger.info(f"[browser] {provider_id} BALANCE (relay): {balance}")
+                        logger.info(
+                            f"[browser] {provider_id} BALANCE (relay): {balance}"
+                        )
                         try:
                             from .state_writer import write_provider_state
 
-                            write_provider_state(provider_id, logged_in=True, balance=balance)
+                            write_provider_state(
+                                provider_id, logged_in=True, balance=balance
+                            )
                         except Exception as e:
                             logger.debug(f"[browser] state_writer failed: {e!r}")
                         if self._on_event:
@@ -1173,7 +1244,9 @@ class MirrorBrowser:
                                 },
                             )
                         if self._on_stream_callback:
-                            self._on_stream_callback(provider_id, "balance_intercepted", {"balance": balance})
+                            self._on_stream_callback(
+                                provider_id, "balance_intercepted", {"balance": balance}
+                            )
             except Exception:
                 pass
             return
@@ -1182,7 +1255,9 @@ class MirrorBrowser:
         if any(kw in url_lower for kw in _HISTORY_KEYWORDS):
             try:
                 body = await response.text()
-                logger.info(f"[browser] {provider_id} history: {url[:80]} ({len(body)}b)")
+                logger.info(
+                    f"[browser] {provider_id} history: {url[:80]} ({len(body)}b)"
+                )
                 # Cache the parsed body on provider_data so workflow.sync_history
                 # can read it without making its own API call. Several Gecko V2
                 # providers hijack window.fetch (Spelklubben's GTM tracker.js
@@ -1200,8 +1275,12 @@ class MirrorBrowser:
                 except Exception:
                     parsed = None
                 if parsed is not None:
-                    self.provider_data.setdefault(provider_id, {})["coupon_history_raw"] = parsed
-                    by_url = self.provider_data[provider_id].setdefault("coupon_history_by_url", {})
+                    self.provider_data.setdefault(provider_id, {})[
+                        "coupon_history_raw"
+                    ] = parsed
+                    by_url = self.provider_data[provider_id].setdefault(
+                        "coupon_history_by_url", {}
+                    )
                     by_url[url] = parsed
                 if self._on_event:
                     self._on_event(
@@ -1227,7 +1306,9 @@ class MirrorBrowser:
                 qs = parse_qs(urlparse(url).query)
                 event_id = qs.get("eventId", [None])[0]
                 if event_id and body_parsed:
-                    logger.info(f"[browser] {provider_id} EventDetails: event={event_id}")
+                    logger.info(
+                        f"[browser] {provider_id} EventDetails: event={event_id}"
+                    )
                     if self._on_event:
                         self._on_event(
                             "event_details_intercepted",
@@ -1311,7 +1392,9 @@ class MirrorBrowser:
                         },
                     )
                 if self._on_stream_callback:
-                    self._on_stream_callback(provider_id, "bet_intercepted", {"body": body_parsed})
+                    self._on_stream_callback(
+                        provider_id, "bet_intercepted", {"body": body_parsed}
+                    )
             except Exception:
                 pass
             return
@@ -1362,7 +1445,9 @@ class MirrorBrowser:
                 if not any(kw in payload for kw in _WS_BET_SENT_KEYWORDS):
                     return
                 pid = provider_id or self._detect_provider(page.url)
-                logger.info(f"[browser] {pid} WS bet request sent ({len(payload)} bytes)")
+                logger.info(
+                    f"[browser] {pid} WS bet request sent ({len(payload)} bytes)"
+                )
             except Exception:
                 pass
 
@@ -1382,7 +1467,9 @@ class MirrorBrowser:
             return None
         # Altenar: {result: {cash: {total: X}, bonus: {total: Y}}} — sum all wallets
         data = body.get("result", body) if "result" in body else body
-        if isinstance(data, dict) and any(w in data for w in ("cash", "bonus", "sport")):
+        if isinstance(data, dict) and any(
+            w in data for w in ("cash", "bonus", "sport")
+        ):
             total = 0.0
             for wallet in ("cash", "bonus", "sport"):
                 try:
@@ -1409,7 +1496,11 @@ class MirrorBrowser:
             if key in body:
                 val = body[key]
                 try:
-                    return float(val) if not isinstance(val, dict) else float(val.get("amount", val.get("total", -1)))
+                    return (
+                        float(val)
+                        if not isinstance(val, dict)
+                        else float(val.get("amount", val.get("total", -1)))
+                    )
                 except (TypeError, ValueError):
                     pass
         # GraphQL relay: {data: {viewer: {user: {balance: {totalAmount: X}}}}}
@@ -1419,7 +1510,12 @@ class MirrorBrowser:
             relay = body[0]
         if isinstance(relay, dict):
             try:
-                bal = relay.get("data", {}).get("viewer", {}).get("user", {}).get("balance", {})
+                bal = (
+                    relay.get("data", {})
+                    .get("viewer", {})
+                    .get("user", {})
+                    .get("balance", {})
+                )
                 if isinstance(bal, dict) and "totalAmount" in bal:
                     return float(bal["totalAmount"])
             except (TypeError, ValueError, AttributeError):

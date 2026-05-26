@@ -25,20 +25,39 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
 # Skip recording these — static assets, tracking pixels, noise
-_SKIP_EXTENSIONS = frozenset({
-    ".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
-    ".woff", ".woff2", ".ttf", ".eot", ".map",
-})
+_SKIP_EXTENSIONS = frozenset(
+    {
+        ".js",
+        ".css",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".svg",
+        ".ico",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".eot",
+        ".map",
+    }
+)
 
 _SKIP_PATTERNS = (
-    "/analytics", "/tracking", "/pixel", "/beacon",
-    "google-analytics", "googletagmanager", "facebook.com/tr",
-    "hotjar", "clarity.ms", "doubleclick",
+    "/analytics",
+    "/tracking",
+    "/pixel",
+    "/beacon",
+    "google-analytics",
+    "googletagmanager",
+    "facebook.com/tr",
+    "hotjar",
+    "clarity.ms",
+    "doubleclick",
 )
 
 
@@ -50,11 +69,19 @@ class NetworkRecorder:
         if data_dir is None:
             try:
                 from ..paths import get_data_dir
+
                 data_dir = get_data_dir()
             except ImportError:
                 import os
                 from pathlib import Path
-                data_dir = Path(os.environ.get("ARNOLD_DATA_DIR", str(Path(__file__).parent.parent.parent / "data")))
+
+                data_dir = Path(
+                    os.environ.get("BETTY_DATA_DIR")
+                    or os.environ.get(
+                        "ARNOLD_DATA_DIR",
+                        str(Path(__file__).parent.parent.parent / "data"),
+                    )
+                )
         self._recordings_dir = data_dir / "mirror_recordings" / provider_id
         self._file = None
         self._path: Path | None = None
@@ -73,7 +100,9 @@ class NetworkRecorder:
         """Close the recording file."""
         if self._file:
             self._file.close()
-            logger.info(f"[recorder:{self.provider_id}] Stopped — {self._count} entries in {self._path}")
+            logger.info(
+                f"[recorder:{self.provider_id}] Stopped — {self._count} entries in {self._path}"
+            )
             self._file = None
 
     def _should_skip(self, url: str) -> bool:

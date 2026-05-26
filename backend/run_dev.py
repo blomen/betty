@@ -14,6 +14,8 @@ import uvicorn
 
 if __name__ == "__main__":
     # Local dev: no extraction scheduler, no trading, no RL — server handles all of that
+    os.environ.setdefault("BETTY_MIRROR_ONLY", "1")
+    # Legacy env var name — set both so older code paths still see it.
     os.environ.setdefault("ARNOLD_MIRROR_ONLY", "1")
     use_reload = "--reload" in sys.argv
 
