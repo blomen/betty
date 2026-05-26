@@ -56,7 +56,36 @@ _COMBAT_SPORTS = frozenset({"boxing", "mma"})
 _THREE_WAY_SUFFIXES = frozenset({"1x2", "match_odds", "matchOdds"})
 
 # Sport key mapping: internal → Cloudbet
-_SPORT_MAP = {
+# Cloudbet has no unified `/sports/esports` endpoint (returns 400). Esport
+# titles are top-level sports, either under `esport-<name>` (Valorant, NBA2K,
+# FIFA, Arena of Valor, ...) or bare game names (`counter-strike`, `dota-2`,
+# `league-of-legends`, `call-of-duty`, `starcraft`, `rocket-league`, `overwatch`,
+# `crossfire`). We discover them at extract time by listing /sports and picking
+# entries with `eventCount > 0` whose key is an esport — keeps the wire-up
+# automatic as cloudbet ships new titles. The seed set below is the union of
+# "key starts with esport-" plus the bare-name games observed live 2026-05-26;
+# anything starting with `esport-` is treated as esports regardless of the
+# explicit list.
+_CLOUDBET_BARE_ESPORT_KEYS: frozenset[str] = frozenset(
+    {
+        "call-of-duty",
+        "counter-strike",
+        "crossfire",
+        "dota-2",
+        "league-of-legends",
+        "overwatch",
+        "rocket-league",
+        "starcraft",
+    }
+)
+
+
+def _is_esport_key(key: str) -> bool:
+    """True if a cloudbet /sports key represents an esport title."""
+    return key.startswith("esport-") or key in _CLOUDBET_BARE_ESPORT_KEYS
+
+
+_SPORT_MAP: dict[str, str | None] = {
     "football": "soccer",
     "basketball": "basketball",
     "ice_hockey": "ice-hockey",
@@ -65,7 +94,7 @@ _SPORT_MAP = {
     "baseball": "baseball",
     "mma": "mma",
     "boxing": "boxing",
-    "esports": "esports",
+    "esports": None,  # sentinel — handled separately via _is_esport_key + /sports discovery
 }
 
 # Markets to request per Cloudbet sport key
@@ -327,35 +356,82 @@ class CloudbetRetriever(Retriever):
     def _headers(self) -> dict:
         return {"X-API-Key": self._api_key}
 
+    async def _discover_esport_keys(self) -> tuple[str, ...]:
+        """List cloudbet's /sports and return every esport key with active events.
+
+        Auto-discovers new titles as cloudbet adds them — we don't need to keep
+        a hardcoded list in sync. One extra HTTP call per esports extraction
+        cycle (~10 KB response), then the rest of the flow is the same per-key
+        as for traditional sports.
+        """
+        data = await self.transport.get(
+            "https://sports-api.cloudbet.com/pub/v2/odds/sports",
+            headers=self._headers(),
+        )
+        if not isinstance(data, dict):
+            return ()
+        keys: list[str] = []
+        for s in data.get("sports") or []:
+            key = s.get("key") or ""
+            if not _is_esport_key(key):
+                continue
+            if (s.get("eventCount") or 0) <= 0:
+                continue
+            keys.append(key)
+        if keys:
+            logger.info(f"[{self.provider_id}] Discovered {len(keys)} active esport titles: {keys}")
+        return tuple(keys)
+
     async def extract(self, sport: str, limit: int = 0, **kwargs) -> list[StandardEvent]:
         """Extract pre-match events for a sport from Cloudbet REST API.
 
         Two-step process:
-          1. Fetch competition list for the sport
+          1. Fetch competition list for the sport(s)
           2. Fetch each competition's events with odds
+
+        Esports special case: cloudbet has no unified `/sports/esports` endpoint
+        (returns 400 MALFORMED_REQUEST). Discover per-title keys from the
+        catalogue: `GET /sports` → filter by `_is_esport_key` and
+        `eventCount > 0`. Every parsed event is tagged with the internal
+        `sport="esports"` so it matches pinnacle's catalogue.
         """
-        sport_key = _SPORT_MAP.get(sport)
-        if not sport_key:
-            logger.warning(f"[{self.provider_id}] Sport '{sport}' not mapped for Cloudbet")
-            return []
+        if sport == "esports":
+            sport_keys = await self._discover_esport_keys()
+            if not sport_keys:
+                logger.debug(f"[{self.provider_id}] No active esport titles right now")
+                return []
+        else:
+            mapped = _SPORT_MAP.get(sport)
+            if not mapped:
+                logger.warning(f"[{self.provider_id}] Sport '{sport}' not mapped for Cloudbet")
+                return []
+            sport_keys = (mapped,)
 
-        # Step 1: get competitions
-        sport_url = f"{BASE_URL}/sports/{sport_key}"
-        sport_data = await self.transport.get(sport_url, headers=self._headers())
-        if not sport_data:
-            logger.warning(f"[{self.provider_id}] No sport data for '{sport}'")
-            return []
-
-        # Competitions are nested under categories
-        competitions = []
-        for category in sport_data.get("categories") or []:
-            for comp in category.get("competitions") or []:
-                if comp.get("eventCount", 0) > 0:
-                    competitions.append(comp)
+        # Step 1: get competitions across every cloudbet sport key for this
+        # internal sport. For non-esports this is a single call; for esports
+        # we walk counter-strike / dota-2 / league-of-legends / ...
+        competitions: list[tuple[str, dict]] = []  # (sport_key, comp)
+        for sk in sport_keys:
+            sport_url = f"{BASE_URL}/sports/{sk}"
+            sport_data = await self.transport.get(sport_url, headers=self._headers())
+            if not sport_data:
+                logger.debug(f"[{self.provider_id}] No sport data for cloudbet key '{sk}' (sport={sport})")
+                continue
+            n_sk = 0
+            for category in sport_data.get("categories") or []:
+                for comp in category.get("competitions") or []:
+                    if comp.get("eventCount", 0) > 0:
+                        competitions.append((sk, comp))
+                        n_sk += 1
+            if n_sk:
+                logger.debug(f"[{self.provider_id}] {sport}/{sk}: {n_sk} active comps")
         if not competitions:
             logger.debug(f"[{self.provider_id}] No competitions found for sport '{sport}'")
             return []
-        logger.info(f"[{self.provider_id}] {sport}: {len(competitions)} active competitions")
+        logger.info(
+            f"[{self.provider_id}] {sport}: {len(competitions)} active competitions"
+            + (f" across {len(sport_keys)} cloudbet sport keys" if len(sport_keys) > 1 else "")
+        )
 
         events: list[StandardEvent] = []
 
@@ -381,7 +457,7 @@ class CloudbetRetriever(Retriever):
         # parse_event filters to the markets we want (soccer.match_odds,
         # asian_handicap, total_goals via parse_selections_to_market) so
         # downloading the full payload doesn't pollute the result set.
-        for comp in competitions:
+        for sport_key, comp in competitions:
             comp_key = comp.get("key") or comp.get("id")
             if not comp_key:
                 continue

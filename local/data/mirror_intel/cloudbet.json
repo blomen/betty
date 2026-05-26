@@ -5,6 +5,6 @@
     "method": "api"
   },
   "navigation": {
-    "history_path": "/en/sports/bet-history"
+    "history_path": "/en/my-bets"
   }
 }

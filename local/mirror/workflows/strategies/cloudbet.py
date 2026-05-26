@@ -81,18 +81,34 @@ async def _api_post(page: Page, url: str, body: dict | None = None) -> Any:
 
 
 async def _check_login(page: Page, intel: dict | None) -> bool:
-    """Logged in iff /iam-me returns 200 with a populated me.id."""
+    """Two-signal login proof (mirrors the kalshi pattern):
+
+    1. /iam-me returns 200 with ANY populated identifier — id / uuid / email
+       / currency. The id is a UUID string (the JWT carries the same uuid),
+       not an int, so the previous `isinstance(me_id, int)` check was
+       rejecting every real login. Accept any non-empty value on either the
+       root or the nested `me` object.
+    2. If /iam-me 4xxs (cookie missing a requested_attribute, edge cache
+       miss, etc.), fall back to /iam-balances — a successful balance call
+       is itself proof of an authenticated session.
+    """
     data = await _api_get(page, _IAM_ME_URL)
-    if not isinstance(data, dict):
-        return False
-    if data.get("__error"):
-        return False
-    me = data.get("me") or {}
-    me_id = me.get("id")
-    if not isinstance(me_id, int) or me_id <= 0:
-        return False
-    logger.info(f"[cloudbet] Login confirmed: id={me_id} currency={me.get('currency') or '?'}")
-    return True
+    if isinstance(data, dict) and not data.get("__error"):
+        me = data.get("me") if isinstance(data.get("me"), dict) else data
+        for key in ("id", "uuid", "email", "currency"):
+            val = me.get(key) if isinstance(me, dict) else None
+            if val not in (None, "", 0):
+                logger.info(
+                    f"[cloudbet] Login confirmed via /iam-me ({key}={val!s:.40} "
+                    f"currency={(me or {}).get('currency') or '?'})"
+                )
+                return True
+
+    bal = await _api_post(page, _IAM_BALANCES_URL, body={})
+    if isinstance(bal, dict) and not bal.get("__error"):
+        logger.info("[cloudbet] Login confirmed via /iam-balances fallback")
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -163,20 +179,40 @@ def _parse_position_item(raw: dict) -> HistoryEntry | None:
     names and log+skip rows that can't be parsed at all.
     """
     try:
-        bet_id = raw.get("id") or raw.get("betId") or raw.get("ticketId") or raw.get("referenceNumber") or ""
+        bet_id = (
+            raw.get("id")
+            or raw.get("betId")
+            or raw.get("ticketId")
+            or raw.get("referenceNumber")
+            or ""
+        )
         # Selections / legs — single-leg bets typical for our 1x2/spread/total scope.
         sels = raw.get("selections") or raw.get("legs") or raw.get("outcomes") or []
         first = sels[0] if isinstance(sels, list) and sels else {}
-        event_name = raw.get("eventName") or raw.get("event") or first.get("eventName") or first.get("event") or ""
+        event_name = (
+            raw.get("eventName")
+            or raw.get("event")
+            or first.get("eventName")
+            or first.get("event")
+            or ""
+        )
         if not event_name:
             home = raw.get("home") or first.get("home") or ""
             away = raw.get("away") or first.get("away") or ""
             if home and away:
                 event_name = f"{home} vs {away}"
 
-        odds_raw = raw.get("price") or raw.get("odds") or first.get("price") or first.get("odds") or 0
+        odds_raw = (
+            raw.get("price")
+            or raw.get("odds")
+            or first.get("price")
+            or first.get("odds")
+            or 0
+        )
         stake_raw = raw.get("stake") or raw.get("amount") or raw.get("stakeAmount") or 0
-        payout_raw = raw.get("payout") or raw.get("returnAmount") or raw.get("winAmount")
+        payout_raw = (
+            raw.get("payout") or raw.get("returnAmount") or raw.get("winAmount")
+        )
 
         raw_status = str(raw.get("status") or raw.get("state") or "").strip()
         status = _STATUS_MAP.get(raw_status, raw_status.lower() or "pending")
@@ -196,7 +232,9 @@ def _parse_position_item(raw: dict) -> HistoryEntry | None:
             payout=payout,
         )
     except (TypeError, ValueError, KeyError) as e:
-        logger.debug(f"[cloudbet] skip unparseable position row ({e}): {str(raw)[:120]}")
+        logger.debug(
+            f"[cloudbet] skip unparseable position row ({e}): {str(raw)[:120]}"
+        )
         return None
 
 
@@ -204,8 +242,11 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
     """Fetch open + completed bets from /sports-betting/v4/bets/positions.
 
     Two-call merge: ACCEPTED for currently-open, COMPLETED for settled.
-    Currency forced to USD so the response uses fiat-equivalents — matches
-    what we record at placement time.
+    Currency is left unset so the response uses the wallet's native unit —
+    forcing USD reshapes amounts and we only need status for settlement.
+
+    Logs the raw response keys + first item on the first call so the
+    parser can be tightened if the shape differs from the spec.
     """
     from datetime import datetime, timedelta, timezone
 
@@ -214,17 +255,39 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
     start_iso = start.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
     open_url = f"{_POSITIONS_URL}?status=ACCEPTED"
-    settled_url = f"{_POSITIONS_URL}?status=COMPLETED&from={start_iso}&limit=100&offset=0&currency=USD"
+    settled_url = (
+        f"{_POSITIONS_URL}?status=COMPLETED&from={start_iso}&limit=100&offset=0"
+    )
 
     entries: list[HistoryEntry] = []
     seen_ids: set[str] = set()
-    for url in (open_url, settled_url):
+    for label, url in (("open", open_url), ("settled", settled_url)):
         data = await _api_get(page, url)
         if not isinstance(data, dict) or data.get("__error"):
+            logger.warning(
+                f"[cloudbet] sync_history {label} request failed: "
+                f"{data.get('__error') if isinstance(data, dict) else data!r}"
+            )
             continue
         items = data.get("items")
         if not isinstance(items, list):
+            # Some Cloudbet endpoints use `positions` / `bets` / `data` instead.
+            for alt in ("positions", "bets", "data", "results"):
+                if isinstance(data.get(alt), list):
+                    items = data[alt]
+                    logger.debug(
+                        f"[cloudbet] sync_history {label}: items under '{alt}'"
+                    )
+                    break
+        if not isinstance(items, list):
+            logger.warning(
+                f"[cloudbet] sync_history {label}: no items[] — response keys={list(data.keys())[:10]}"
+            )
             continue
+        if items:
+            logger.debug(
+                f"[cloudbet] sync_history {label}: {len(items)} raw items; sample={str(items[0])[:300]}"
+            )
         for raw in items:
             entry = _parse_position_item(raw if isinstance(raw, dict) else {})
             if entry is None:

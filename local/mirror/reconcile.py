@@ -30,7 +30,14 @@ _FUZZY_ODDS_TOL_PCT = 5.0  # max % drift on odds for fuzzy match
 
 
 def _normalize(name: str) -> str:
-    return (name or "").lower().strip().replace(" vs. ", " v ").replace(" vs ", " v ").replace(" - ", " v ")
+    return (
+        (name or "")
+        .lower()
+        .strip()
+        .replace(" vs. ", " v ")
+        .replace(" vs ", " v ")
+        .replace(" - ", " v ")
+    )
 
 
 def _bet_event(bet: dict) -> str:
@@ -42,7 +49,9 @@ def _bet_event(bet: dict) -> str:
     return _normalize(name)
 
 
-def _has_meaningful_diff(old: float | None, new: float | None, abs_tol: float = 0.01, pct_tol: float = 0.5) -> bool:
+def _has_meaningful_diff(
+    old: float | None, new: float | None, abs_tol: float = 0.01, pct_tol: float = 0.5
+) -> bool:
     """Return True if old vs new differ enough to be worth recording.
     abs_tol: absolute floor (cents). pct_tol: percent of old."""
     if old is None and new is None:
@@ -55,7 +64,9 @@ def _has_meaningful_diff(old: float | None, new: float | None, abs_tol: float = 
     return delta >= max(abs_tol, abs(float(old)) * pct_tol / 100.0)
 
 
-def reconcile_from_history(db_pending: list[dict], history: list[dict]) -> list[ReconcileDelta]:
+def reconcile_from_history(
+    db_pending: list[dict], history: list[dict]
+) -> list[ReconcileDelta]:
     """Compute reconciliation deltas: how each DB bet should be updated to match provider truth.
 
     Match precedence:
@@ -89,17 +100,28 @@ def reconcile_from_history(db_pending: list[dict], history: list[dict]) -> list[
             deltas.append(delta)
         matched_bets.add(bet_id)
 
-    # Pass 2: fuzzy match for unmatched DB bets
+    # Pass 2: fuzzy match for unmatched DB bets.
+    #
+    # Two sub-modes by DB-bet-odds:
+    #   bet_odds > 0 (normal): name match ≥ 80 + odds within ±5%.
+    #   bet_odds == 0 (placement interceptor lost the odds — cloudbet bet 792
+    #     is the canonical case): name match ≥ 90, MUST be a terminal-status
+    #     history entry, AND the event_name must uniquely match ONE history
+    #     row. Multiple matches → ambiguous (could be ML + total + spread on
+    #     the same event) → bail rather than mis-settle.
     for bet in db_pending:
         bet_id = bet.get("bet_id") or bet.get("id")
         if not bet_id or bet_id in matched_bets:
             continue
         bet_event = _bet_event(bet)
         bet_odds = float(bet.get("odds", 0) or 0)
-        if not bet_event or bet_odds <= 0:
+        if not bet_event:
             continue
+        zero_odds_mode = bet_odds <= 0
+        name_threshold = 90 if zero_odds_mode else _FUZZY_NAME_THRESHOLD
 
         best: tuple[int, dict, float] | None = None  # (idx, entry, score)
+        candidate_count = 0
         for idx, entry in enumerate(history):
             if idx in used_history:
                 continue
@@ -107,7 +129,7 @@ def reconcile_from_history(db_pending: list[dict], history: list[dict]) -> list[
             if not h_event:
                 continue
             score = fuzz.token_set_ratio(bet_event, h_event)
-            if score < _FUZZY_NAME_THRESHOLD:
+            if score < name_threshold:
                 continue
             h_odds = float(entry.get("odds", 0) or 0)
             h_status = (entry.get("status") or "").lower()
@@ -117,21 +139,33 @@ def reconcile_from_history(db_pending: list[dict], history: list[dict]) -> list[
             # for terminal statuses; non-terminal h_odds=0 still gets skipped
             # because matching an open bet by name without odds is meaningless.
             is_terminal = h_status in ("won", "lost", "void", "cashout")
+            if zero_odds_mode and not is_terminal:
+                # 0-odds DB bet only reconciles against settled history rows
+                # — matching against an open entry leaves both sides pending.
+                continue
             if h_odds <= 0:
                 if not is_terminal:
                     continue
-            else:
+            elif not zero_odds_mode:
                 odds_drift = abs(h_odds - bet_odds) / bet_odds * 100.0
                 if odds_drift > _FUZZY_ODDS_TOL_PCT:
                     continue
+            candidate_count += 1
             if best is None or score > best[2]:
                 best = (idx, entry, score)
 
         if best is None:
             continue
+        if zero_odds_mode and candidate_count > 1:
+            logger.info(
+                f"[reconcile] bet {bet_id} ({bet_event!r}): skipping 0-odds name-match — "
+                f"{candidate_count} terminal candidates on same event (ambiguous)"
+            )
+            continue
         idx, entry, score = best
         used_history.add(idx)
-        delta = _compute_delta(bet_id, bet, entry, "fuzzy", score)
+        method = "name_terminal" if zero_odds_mode else "fuzzy"
+        delta = _compute_delta(bet_id, bet, entry, method, score)
         if delta:
             deltas.append(delta)
             matched_bets.add(bet_id)
@@ -178,7 +212,9 @@ def reconcile_from_history(db_pending: list[dict], history: list[dict]) -> list[
     return deltas
 
 
-def _compute_delta(bet_id: int, bet: dict, entry: dict, method: str, confidence: float) -> ReconcileDelta | None:
+def _compute_delta(
+    bet_id: int, bet: dict, entry: dict, method: str, confidence: float
+) -> ReconcileDelta | None:
     """Build a ReconcileDelta with only the fields that meaningfully differ."""
     changes: dict[str, Any] = {}
 
@@ -204,7 +240,11 @@ def _compute_delta(bet_id: int, bet: dict, entry: dict, method: str, confidence:
     # the history row didn't expose them, not that the bet had zero odds.
     h_odds = entry.get("odds")
     bet_odds = bet.get("odds")
-    if h_odds is not None and h_odds > 1.0 and _has_meaningful_diff(bet_odds, h_odds, abs_tol=0.01, pct_tol=0.1):
+    if (
+        h_odds is not None
+        and h_odds > 1.0
+        and _has_meaningful_diff(bet_odds, h_odds, abs_tol=0.01, pct_tol=0.1)
+    ):
         changes["odds"] = float(h_odds)
 
     # payout
@@ -212,8 +252,10 @@ def _compute_delta(bet_id: int, bet: dict, entry: dict, method: str, confidence:
     if h_payout is not None and _has_meaningful_diff(bet.get("payout"), h_payout):
         changes["payout"] = float(h_payout)
 
-    # provider_bet_id backfill (only when fuzzy matched and DB has none)
-    if method == "fuzzy":
+    # provider_bet_id backfill — any match method that wasn't already keyed
+    # on the id itself benefits from stamping it now so the next reconcile
+    # cycle hits Pass 1 instead of re-fuzzying.
+    if method in ("fuzzy", "name_terminal", "signature"):
         h_pid = entry.get("provider_bet_id")
         bet_pid = bet.get("provider_bet_id")
         if h_pid and not bet_pid:
@@ -272,10 +314,14 @@ async def _fallback_reconcile_unmatched(
             continue
         for delta in deltas:
             try:
-                resp = await client.patch(f"/api/bets/{delta.bet_id}", json=delta.changes, timeout=15.0)
+                resp = await client.patch(
+                    f"/api/bets/{delta.bet_id}", json=delta.changes, timeout=15.0
+                )
                 resp.raise_for_status()
             except Exception:
-                logger.exception(f"[reconcile-fallback] PATCH bet {delta.bet_id} failed")
+                logger.exception(
+                    f"[reconcile-fallback] PATCH bet {delta.bet_id} failed"
+                )
                 continue
             n += 1
             broadcaster.publish(
@@ -320,7 +366,9 @@ async def reconcile_and_publish(
     client = _tc()
     for delta in deltas:
         try:
-            resp = await client.patch(f"/api/bets/{delta.bet_id}", json=delta.changes, timeout=15.0)
+            resp = await client.patch(
+                f"/api/bets/{delta.bet_id}", json=delta.changes, timeout=15.0
+            )
             resp.raise_for_status()
         except Exception:
             logger.exception(f"[reconcile] PATCH bet {delta.bet_id} failed")
@@ -341,7 +389,9 @@ async def reconcile_and_publish(
 
     # Fallback for unmatched stale bets (requires page + workflow from caller)
     if page is not None and workflow is not None:
-        unmatched = [b for b in db_pending if (b.get("bet_id") or b.get("id")) not in matched_ids]
+        unmatched = [
+            b for b in db_pending if (b.get("bet_id") or b.get("id")) not in matched_ids
+        ]
         if unmatched:
             n_fallback = await _fallback_reconcile_unmatched(
                 page,
