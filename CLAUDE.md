@@ -179,7 +179,7 @@ Multiple Claude Code agents may work on this repo concurrently. **Follow these r
 The `bets.currency` column is authoritative — query it (`SELECT provider_id, currency, COUNT(*) FROM bets GROUP BY 1,2`) when in doubt.
 
 **The rule:**
-- **In code:** use `money.Money` + `money.Currency` from the [`money/`](money/) package. `money.convert(amount, from, to)` pivots through SEK. Never write `stake_a + stake_b` across providers as raw floats.
+- **In code:** currency conversion is implemented inline in `backend/src/{services,bankroll,repositories}` — look for `exchange_rate_sek`, `to_sek`, and `convert` functions. The old shared `money/` package was removed during the trading strip; do not look for it. Never write `stake_a + stake_b` across providers as raw floats — always convert to one base currency first.
 - **In SQL analysis:** wrap with `CASE WHEN currency='SEK' THEN x/<sek_per_usd> WHEN currency IN ('USD','USDC') THEN x END` BEFORE any cross-provider `SUM`/`MIN`/`MAX`. A `MIN(stake * odds)` across legs without conversion is meaningless.
 - **For arb checks:** worst-case payout = `MIN(stake_i × odds_i)` in **one base currency**, total stake = `SUM(stake_i)` in the **same base currency**. An arb is "guaranteed" iff `worst_payout_base ≥ total_stake_base`.
 - **For bankroll / Kelly / stats / ROI:** same rule. Aggregate views over mixed-currency bets that don't convert are wrong by construction.
