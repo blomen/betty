@@ -13,7 +13,7 @@ WORKDIR /app
 
 # Python deps — cached layer, only rebuilds when pyproject.toml changes
 # IMPORTANT: Do NOT copy source code before this — it busts the cache
-COPY pyproject.toml ./
+COPY backend/pyproject.toml ./
 RUN mkdir -p backend/src && touch backend/src/__init__.py && \
     pip install --no-cache-dir -e ".[scrape]" && \
     pip install --no-cache-dir uvloop scikit-learn joblib lightgbm && \

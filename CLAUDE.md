@@ -21,15 +21,15 @@ Arnold compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to 
 
 ```
 Hetzner Server (24/7, headless)              Your PC
-├── backend/src/                             ├── local/                # Local client
-│   ├── providers/    # 16 extractors        │   ├── server.py         # FastAPI: /api proxy + /mirror + static
-│   ├── pipeline/     # orchestrator         │   ├── launch.py         # SSH tunnel + uvicorn + browser open
-│   ├── analysis/     # scanner, devig       │   ├── proxy.py          # /api/* reverse-proxy to server via tunnel
-│   ├── matching/     # Fuzzy matching       │   └── mirror/
-│   ├── bankroll/     # Kelly sizing         │       ├── browser.py    # Playwright lifecycle + interception
-│   ├── api/          # FastAPI              │       ├── play_loop.py  # Automated betting state machine
-│   └── db/           # PostgreSQL ORM       │       ├── arb_runner.py
-└── docker-compose.yml                       │       ├── pending_loop.py
+├── backend/                                 ├── local/                # Local client
+│   ├── src/          # FastAPI + extractors │   ├── server.py         # FastAPI: /api proxy + /mirror + static
+│   ├── Dockerfile                           │   ├── launch.py         # SSH tunnel + uvicorn + browser open
+│   ├── docker-compose.yml                   │   ├── proxy.py          # /api/* reverse-proxy to server via tunnel
+│   ├── pyproject.toml                       │   └── mirror/
+│   ├── scripts/      # server-deploy.sh ... │       ├── browser.py    # Playwright lifecycle + interception
+│   ├── nginx/        # nginx.conf, htpasswd │       ├── play_loop.py  # Automated betting state machine
+│   └── docker/       # pg-backup.sh, init   │       ├── arb_runner.py
+└── (no root Dockerfile/compose after A2b)   │       ├── pending_loop.py
                                              │       └── workflows/    # Provider DOM automation
                                              ├── frontend/             # React app (Vite + TS)
                                              │   └── src/pages/
@@ -127,15 +127,16 @@ ssh root@148.251.40.251 "bash /opt/arnold/backend/scripts/server-deploy.sh statu
 ssh root@148.251.40.251 "bash /opt/arnold/backend/scripts/server-deploy.sh cleanup"
 
 # Check extraction:
-ssh root@148.251.40.251 "cd /opt/arnold && docker compose exec -T backend cat /app/logs/extraction.log | tail -30"
+ssh root@148.251.40.251 "cd /opt/arnold/backend && docker compose exec -T backend cat /app/logs/extraction.log | tail -30"
 ```
 
 ### Docker Build (Multi-Stage)
-The `Dockerfile` uses a 2-stage build for fast rebuilds:
+The `backend/Dockerfile` uses a 2-stage build for fast rebuilds:
 - **Stage 1** (Node.js): Builds frontend → only `dist/` carried to final image (no Node.js runtime)
-- **Stage 2** (Python): pip install cached by `pyproject.toml` layer → code-only changes skip pip rebuild
+- **Stage 2** (Python): pip install cached by `backend/pyproject.toml` layer → code-only changes skip pip rebuild
 - **Auto-cleanup**: `docker image prune` runs after each rebuild to prevent disk bloat
 - Code-only rebuilds take ~30s (cached deps). Full rebuilds (pyproject.toml change) take ~2min.
+- **Build context = repo root** (compose `context: ..`) so the Dockerfile can `COPY backend/` and `COPY frontend/` (if Stage 1 ever bakes the frontend); compose file lives at `backend/docker-compose.yml`.
 
 ### Health Endpoints (Public, No Auth)
 - `GET /health` — basic status, boot_id, uptime
@@ -159,11 +160,11 @@ Multiple Claude Code agents may work on this repo concurrently. **Follow these r
 10. **Health verification**: Deploy script waits up to 2 min for `/health` to respond after rebuild. If it fails, deploy exits non-zero — investigate before retrying.
 11. **Container watchdog**: Cron checks every 5 min and auto-restarts if backend is down.
 12. **Verify the running container actually has your code**: docker build cache + cached `COPY backend/ backend/` layers can ship an image whose source predates the latest `git pull`. After every rebuild, confirm:
-    - `ssh root@148.251.40.251 "cd /opt/arnold && git rev-parse HEAD"` — server's git HEAD
+    - `ssh root@148.251.40.251 "cd /opt/arnold && git rev-parse HEAD"` — server's git HEAD (git repo at /opt/arnold)
     - `ssh root@148.251.40.251 "curl -sf http://localhost:8000/health"` — note the `boot_id` (changes on every container restart)
-    - `ssh root@148.251.40.251 "cd /opt/arnold && docker compose ps backend --format json | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get(\"CreatedAt\"))'"` — container creation time should be after your deploy completed
+    - `ssh root@148.251.40.251 "cd /opt/arnold/backend && docker compose ps backend --format json | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get(\"CreatedAt\"))'"` — container creation time should be after your deploy completed (docker-compose.yml lives at /opt/arnold/backend)
     - If git HEAD is ahead of what your deploy pulled (e.g. another agent pushed mid-deploy), the running container is stale — re-deploy with `--no-cache` or wait for the next pull cycle.
-13. **Backend deploys vs frontend/local-client changes**: a commit touching ONLY `local/`, `frontend/`, `docs/`, or `CLAUDE.md` is **local-client / docs only** and ships via `arnold.bat` (Vite + local FastAPI) — do NOT trigger a backend rebuild for these. Quick check: `git diff --name-only origin/main...HEAD | grep -vE '^(local|frontend|docs)/|^CLAUDE\.md$|^\.gitignore$|^\.dockerignore$' | head -1` — if empty, no backend deploy needed. Note: `backend/` (which now includes `backend/scripts/`, `backend/docker/`, `backend/nginx/`) and the root-level `Dockerfile`, `docker-compose*.yml`, `pyproject.toml` all trigger a backend rebuild.
+13. **Backend deploys vs frontend/local-client changes**: a commit touching ONLY `local/`, `frontend/`, `docs/`, or `CLAUDE.md` is **local-client / docs only** and ships via `arnold.bat` (Vite + local FastAPI) — do NOT trigger a backend rebuild for these. Quick check: `git diff --name-only origin/main...HEAD | grep -vE '^(local|frontend|docs)/|^CLAUDE\.md$|^\.gitignore$|^\.dockerignore$' | head -1` — if empty, no backend deploy needed. Note: ANY change under `backend/` triggers a backend rebuild — after PR A2b this includes `backend/Dockerfile`, `backend/docker-compose*.yml`, `backend/pyproject.toml`, plus `backend/src/`, `backend/scripts/`, `backend/docker/`, `backend/nginx/`.
 14. **Background-deploy etiquette**: when running deploys via `Bash run_in_background=true` and SSH, the remote bash survives if you cancel the local task — always `pgrep -fa 'server-deploy.sh'` on the server BEFORE assuming the slot is free.
 
 ### Currencies (READ BEFORE ANY CROSS-PROVIDER MATH)

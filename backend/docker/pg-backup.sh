@@ -8,10 +8,10 @@ DATE=$(date +%Y%m%d_%H%M%S)
 
 echo "Starting backup: $DATE"
 
-docker compose -f /opt/arnold/docker-compose.yml exec -T postgres \
+docker compose -f /opt/arnold/backend/docker-compose.yml exec -T postgres \
     pg_dump -U arnold arnold | gzip > "$BACKUP_DIR/arnold_$DATE.sql.gz"
 
-docker compose -f /opt/arnold/docker-compose.yml exec -T postgres \
+docker compose -f /opt/arnold/backend/docker-compose.yml exec -T postgres \
     pg_dump -U arnold market | gzip > "$BACKUP_DIR/market_$DATE.sql.gz"
 
 # Keep last 7 days

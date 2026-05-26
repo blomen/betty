@@ -1,14 +1,16 @@
 services:
   backend:
-    build: .
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
     ports:
       - "8000:8000"
     volumes:
-      - ./backend:/app/backend
+      - .:/app/backend
       - arnold_data:/app/data
       - arnold_logs:/app/logs
     env_file:
-      - .env.docker
+      - ../.env.docker
     environment:
       - ARNOLD_DATA_DIR=/app/data
       - ARNOLD_LOGS_DIR=/app/logs

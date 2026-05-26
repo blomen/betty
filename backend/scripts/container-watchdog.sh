@@ -8,10 +8,11 @@
 # and nobody notices for hours (13h gap on 2026-04-10).
 
 DEPLOY_DIR="/opt/arnold"
+COMPOSE_DIR="/opt/arnold/backend"  # docker-compose.yml lives here after PR A2b
 LOCK_FILE="/opt/arnold/.deploy.lock"
 LOG_PREFIX="[$(date -u '+%Y-%m-%d %H:%M UTC')]"
 
-cd "$DEPLOY_DIR" || exit 1
+cd "$COMPOSE_DIR" || exit 1
 
 # Don't interfere if a deploy is in progress
 if ! flock -n 200 200>"$LOCK_FILE"; then

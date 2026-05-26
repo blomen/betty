@@ -15,6 +15,7 @@ set -euo pipefail
 LOCK_FILE="/opt/arnold/.deploy.lock"
 STATUS_FILE="/opt/arnold/.deploy-status"
 DEPLOY_DIR="/opt/arnold"
+COMPOSE_DIR="/opt/arnold/backend"  # docker-compose.yml lives here after PR A2b
 DEPLOY_COOLDOWN_FILE="/opt/arnold/.last-deploy"
 DEPLOY_COOLDOWN_SECONDS=300  # 5 min minimum between rebuilds
 
@@ -39,14 +40,14 @@ case "$action" in
         fi
         echo ""
         echo "=== Containers ==="
-        cd "$DEPLOY_DIR" && docker compose ps
+        cd "$COMPOSE_DIR" && docker compose ps
         echo ""
         echo "=== Disk ==="
         docker system df
         exit 0
         ;;
     logs)
-        cd "$DEPLOY_DIR" && docker compose logs "$service" --tail "$lines"
+        cd "$COMPOSE_DIR" && docker compose logs "$service" --tail "$lines"
         exit 0
         ;;
 esac
@@ -86,6 +87,30 @@ wait_for_health() {
     local svc="$1"
     local max_wait=120  # 2 minutes max
     local interval=5
+
+    # Only `backend` exposes /health on port 8000. nginx/postgres have no such
+    # endpoint — checking would always fail and the curl-fallback would target
+    # the wrong container. For those services rely on Docker's HEALTHCHECK
+    # (compose sets one for postgres; nginx has none, so fall back to "running"
+    # state check).
+    if [ "$svc" != "backend" ]; then
+        echo ">>> Skipping /health probe for $svc (no HTTP /health endpoint)"
+        local state
+        state=$(docker compose ps "$svc" --format json 2>/dev/null | python3 -c "
+import sys, json
+for line in sys.stdin:
+    d = json.loads(line)
+    print(d.get('State', d.get('state', 'unknown')))
+    break
+" 2>/dev/null || echo "unknown")
+        if [ "$state" = "running" ]; then
+            echo ">>> $svc is running"
+            return 0
+        fi
+        echo "ERROR: $svc is not running (state: $state)"
+        docker compose logs "$svc" --tail 20
+        return 1
+    fi
 
     echo ">>> Waiting for $svc health (up to ${max_wait}s)..."
     local elapsed=0
@@ -135,17 +160,16 @@ trap clear_status EXIT
 
 write_status
 
-cd "$DEPLOY_DIR"
-
 case "$action" in
     pull)
         echo ">>> git pull"
-        git pull
+        cd "$DEPLOY_DIR" && git pull
         ;;
     rebuild)
         check_cooldown
         echo ">>> git pull + rebuild $service"
-        git pull
+        cd "$DEPLOY_DIR" && git pull
+        cd "$COMPOSE_DIR"
         # Build image first (doesn't affect running container)
         docker compose build "$service"
         docker compose up -d "$service"
@@ -169,7 +193,8 @@ case "$action" in
     restart)
         check_cooldown
         echo ">>> git pull + restart $service"
-        git pull
+        cd "$DEPLOY_DIR" && git pull
+        cd "$COMPOSE_DIR"
         docker compose restart "$service"
         record_deploy_time
         if ! wait_for_health "$service"; then
