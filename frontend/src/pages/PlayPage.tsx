@@ -386,7 +386,10 @@ export default function PlayPage() {
   // polled from a previous session). applyOverrides re-checks `ts` so an
   // entry that survives the initial load filter still gets dropped once
   // it ages past the TTL during a session.
-  const LIVE_ODDS_KEY = 'betty:liveLegOdds:v1'
+  // v3: bumped 2026-05-26 to invalidate any spread overrides that may have
+  // been written during the intermediate fix (which still had the leg.point /
+  // opp.point ambiguity) — the current fix passes opp.point directly.
+  const LIVE_ODDS_KEY = 'betty:liveLegOdds:v3'
   const LIVE_ODDS_KEY_LEGACY = 'arnold:liveLegOdds:v1'
   const LIVE_ODDS_TTL_MS = 90 * 1000
   type LiveOddsEntry = { odds: number; ts: number }
@@ -836,7 +839,12 @@ export default function PlayPage() {
       // spread / total: key is "s;<period>;s;<pt>" or "s;<period>;ou;<pt>"
       const re = new RegExp(`^s;\\d+;${typeChar};`)
       if (!re.test(k)) return false
-      // match the point — Pinnacle stores point either in key or in price.points
+      // Match by Pinnacle market LINE (home-perspective). Pinnacle keys one
+      // market `s;0;s;1.5` carrying home@+1.5 AND away@-1.5; picking by
+      // designation below selects the correct side. Callers MUST pass the
+      // line (opp.point), not the leg's team-perspective point — otherwise
+      // an away spread leg (leg.point=-1.5) would match the wrong market
+      // (`s;0;s;-1.5`, a different line) and read the wrong price.
       if (point != null) {
         const parts = k.split(';')
         const lastPart = parseFloat(parts[parts.length - 1])
@@ -880,11 +888,14 @@ export default function PlayPage() {
     const legsCount = (opp.legs ?? []).length
     const ts = Date.now()
     // Build {legKey: live_odds} overrides for every Pinnacle leg.
+    // LINE lookup uses opp.point (Pinnacle market keys are home-perspective:
+    // `s;0;s;1.5` holds both home@+1.5 and away@-1.5). Override KEY uses
+    // leg.point (team-perspective) so storage/lookup match the leg dict.
     const overrides: Record<string, number> = {}
     for (const leg of (opp.legs ?? [])) {
       const lp = (leg.provider ?? leg.provider_id) as string
       if (lp !== 'pinnacle') continue
-      const live = pickLiveOddsFromMarkets(market, leg.outcome, leg.point ?? point, legsCount, res.markets)
+      const live = pickLiveOddsFromMarkets(market, leg.outcome, point, legsCount, res.markets)
       if (live == null || live <= 0) continue
       overrides[legOddsKey(eid, lp, leg.outcome, leg.point ?? point)] = live
     }
@@ -1760,6 +1771,21 @@ export default function PlayPage() {
               if (!oid) return l
               const newOdds = updates[String(oid)]
               if (newOdds == null || newOdds <= 0 || newOdds === l.odds) return l
+              // Drift guard: reject suspicious updates that change the price by
+              // more than 35% from the current leg odds. A real market move at
+              // that magnitude is rare and would arrive over multiple ticks; a
+              // single tick of that size almost always means the outcome_id
+              // matched a row from the wrong market (e.g., ML outcome_id update
+              // landing on a spread leg because of a meta-lookup miss). Better
+              // to keep the slightly-stale backend price than corrupt the arb.
+              const currentOdds = Number(l.odds ?? 0)
+              if (currentOdds > 0) {
+                const driftRatio = Math.abs(newOdds - currentOdds) / currentOdds
+                if (driftRatio > 0.35) {
+                  console.warn(`[live_provider_odds] reject ${pid} outcome_id=${oid} drift ${(driftRatio * 100).toFixed(1)}% (${currentOdds} → ${newOdds}) — likely outcome_id mismatch`)
+                  return l
+                }
+              }
               legMutated = true
               // Persist override so loadArbOpps reapplies it after the next
               // 5-min server re-scan (server odds may briefly snap back).
@@ -2440,80 +2466,6 @@ export default function PlayPage() {
       <div className="flex-1 overflow-y-auto">
         {/* SECTION A — Per-cluster Arb Opportunities (soft books, arb-only) */}
         {subTab === 'arb' && (() => {
-          // Global event+market blacklist set, derived from every provider's
-          // pending bets. Used by the per-cluster arb-row filter to hide arbs
-          // we've already placed. Normalises 1x2 → moneyline since the scanner
-          // emits both names for the same 3-way/2-way market. Cross-provider:
-          // a BETINIA pending bet on PariVision-G2 hides the same arb under
-          // every cluster including standalone unlimited counters.
-          //
-          // Two key sets:
-          //   1. event_id-keyed — scanner-stamped event_id matches exact.
-          //   2. token-keyed — event_name token-set matches the opp's
-          //      home/away tokens. Needed because manually-recovered bets
-          //      (recorded via _record_unknown_open_bets) have event_id=""
-          //      so the exact-id key never hits. Tokenisation strips punct,
-          //      lowercases, drops short words. Match = 2+ shared tokens.
-          const placedEventMarketKeys = new Set<string>()
-          // For event_name fallback we keep the raw normalised string per
-          // placed bet so we can do bigram-Dice similarity at filter time.
-          // Plain token-set match failed for cases where the bookmaker name
-          // differs from the scanner's canonical name (e.g. "PariVision" vs
-          // "pvision", "FC Barcelona" vs "Barcelona") — substring/dice
-          // catches the abbreviation/expansion pairs that token-set misses.
-          const placedNameMarket: { normName: string; bigrams: Set<string>; market: string }[] = []
-          const stop = new Set(['vs', 'v', 'and', 'the', 'fc', 'cf', 'sc', 'fk', 'ec', 'esports', 'counter', 'strike'])
-          const normalise = (s: string): string =>
-            (s || '')
-              .toLowerCase()
-              .replace(/[.,:;!?'"`()/\\-]/g, ' ')
-              .split(/\s+/)
-              .filter(t => t.length >= 2 && !stop.has(t))
-              .join(' ')
-          const toBigrams = (s: string): Set<string> => {
-            const out = new Set<string>()
-            const clean = s.replace(/\s+/g, '')
-            for (let i = 0; i < clean.length - 1; i++) out.add(clean.slice(i, i + 2))
-            return out
-          }
-          const diceCoeff = (a: Set<string>, b: Set<string>): number => {
-            if (a.size === 0 || b.size === 0) return 0
-            let shared = 0
-            for (const x of a) if (b.has(x)) shared++
-            return (2 * shared) / (a.size + b.size)
-          }
-          for (const bets of Object.values(pendingByProvider)) {
-            for (const b of bets) {
-              const mk = b?.market === '1x2' ? 'moneyline' : (b?.market ?? '')
-              const eid = b?.event_id
-              if (eid && mk) placedEventMarketKeys.add(`${eid}|${mk}`)
-              const name = b?.event_name || (b?.home_team && b?.away_team ? `${b.home_team} v ${b.away_team}` : '')
-              if (name) {
-                const normName = normalise(name)
-                if (normName.length >= 4) {
-                  placedNameMarket.push({ normName, bigrams: toBigrams(normName), market: mk || '*' })
-                }
-              }
-            }
-          }
-          const matchesPlacedByName = (opp: any, oppMarketKey: string): boolean => {
-            const oppName = (opp.display_home && opp.display_away)
-              ? `${opp.display_home} ${opp.display_away}`
-              : ''
-            if (!oppName) return false
-            const oppNorm = normalise(oppName)
-            if (oppNorm.length < 4) return false
-            const oppBigrams = toBigrams(oppNorm)
-            for (const { bigrams, market } of placedNameMarket) {
-              if (market !== '*' && market !== oppMarketKey) continue
-              // 0.55 threshold — empirically catches "parivision g2" vs
-              // "pvision g2" (~0.65), "los angeles dodgers san francisco
-              // giants" vs "dodgers giants" (~0.7), but rejects unrelated
-              // matches like "real madrid" vs "atlético madrid" (~0.4).
-              if (diceCoeff(oppBigrams, bigrams) >= 0.55) return true
-            }
-            return false
-          }
           // Build the soft-cluster universe: canonical siblings + standalones +
           // any provider we have current balance/pending data for. Then filter
           // to only clusters with at least one funded member, OR (drained but)
@@ -3316,24 +3268,6 @@ export default function PlayPage() {
                                       // them so they can't trick the user into placing.
                                       const p = opp.guaranteed_profit_pct ?? 0
                                       if (p > 30) return false
-                                      // Global event+market blacklist — when ANY provider has a
-                                      // pending bet for this (event_id, market) combination, hide
-                                      // every arb on that exact market. Different markets on the
-                                      // same event are still allowed (a moneyline placed → totals
-                                      // / spreads stay visible). Cross-provider: if BETINIA has
-                                      // a moneyline on PariVision-G2 pending, the same row won't
-                                      // resurface on any cluster sibling either.
-                                      // Normalises 1x2 ↔ moneyline (scanner emits both names for
-                                      // 3-way / 2-way variants of the same market).
-                                      // Falls back to event_name fuzzy-token match for manually-
-                                      // recovered bets (no event_id stamped).
-                                      const oppMarketKey = opp.market === '1x2' ? 'moneyline' : (opp.market ?? '')
-                                      if (opp.event_id && placedEventMarketKeys.has(`${opp.event_id}|${oppMarketKey}`)) {
-                                        return false
-                                      }
-                                      if (matchesPlacedByName(opp, oppMarketKey)) {
-                                        return false
-                                      }
                                       return true
                                     }).map((opp: any, i: number) => {
                                       const counterLegs = opp.counter_plan ?? opp.counter_legs ?? opp.legs ?? []

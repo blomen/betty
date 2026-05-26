@@ -649,11 +649,11 @@ async def _check_live_price(page: Page, bet, intel: dict | None) -> float | None
 
     market = getattr(bet, "market", "")
     point = getattr(bet, "point", None)
-    target = _find_market(markets, market, point, intel)
+    outcome = getattr(bet, "outcome", "")
+    target = _find_market(markets, market, point, intel, outcome=outcome)
     if not target:
         return None
 
-    outcome = getattr(bet, "outcome", "")
     designation = _designation_map(intel).get(outcome)
     price_entry = next((p for p in target.get("prices", []) if p.get("designation") == designation), None)
     if not price_entry:
@@ -670,11 +670,23 @@ async def _check_live_price(page: Page, bet, intel: dict | None) -> float | None
 # ------------------------------------------------------------------
 
 
-def _find_market(markets: list[dict], market_type: str, point: float | None, intel: dict | None) -> dict | None:
+def _find_market(
+    markets: list[dict],
+    market_type: str,
+    point: float | None,
+    intel: dict | None,
+    outcome: str = "",
+) -> dict | None:
     key_map = _market_key_map(intel)
     key_prefix = key_map.get(market_type)
     if not key_prefix:
         return None
+
+    # Pinnacle keys a spread market by the HOME-perspective LINE: one market
+    # `s;0;s;1.5` carries home@+1.5 AND away@-1.5. `bet.point` is the LEG's
+    # own perspective (home leg.point=+line, away leg.point=-line), so for
+    # an away spread leg we flip the sign to find the right market.
+    line_point = -point if (market_type == "spread" and outcome == "away" and point is not None) else point
 
     for m in markets:
         if m.get("isAlternate"):
@@ -685,9 +697,9 @@ def _find_market(markets: list[dict], market_type: str, point: float | None, int
                 return m
         elif market_type == "spread":
             if mk.startswith("s;0;s;") and not m.get("isAlternate"):
-                if point is not None:
+                if line_point is not None:
                     try:
-                        if abs(float(mk.split(";")[-1]) - point) < 0.01:
+                        if abs(float(mk.split(";")[-1]) - line_point) < 0.01:
                             return m
                     except ValueError:
                         pass

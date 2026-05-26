@@ -255,7 +255,7 @@ class PinnacleWorkflow(ProviderWorkflow):
             return PlacementResult(status="failed", bet_id=bet.bet_id, reason="markets_fetch_failed")
 
         # Step 2: Find the right market line
-        target_market = self._find_market(markets, market, point)
+        target_market = self._find_market(markets, market, point, outcome=outcome)
         if not target_market:
             return PlacementResult(status="failed", bet_id=bet.bet_id, reason=f"market_not_found:{market}")
 
@@ -562,11 +562,11 @@ class PinnacleWorkflow(ProviderWorkflow):
 
         market = getattr(bet, "market", "")
         point = getattr(bet, "point", None)
-        target = self._find_market(markets, market, point)
+        outcome = getattr(bet, "outcome", "")
+        target = self._find_market(markets, market, point, outcome=outcome)
         if not target:
             return None
 
-        outcome = getattr(bet, "outcome", "")
         designation = _DESIGNATION_MAP.get(outcome)
         price_entry = next(
             (p for p in target.get("prices", []) if p.get("designation") == designation),
@@ -589,12 +589,26 @@ class PinnacleWorkflow(ProviderWorkflow):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _find_market(self, markets: list[dict], market_type: str, point: float | None) -> dict | None:
-        """Find the matching market from the markets/straight response."""
+    def _find_market(
+        self,
+        markets: list[dict],
+        market_type: str,
+        point: float | None,
+        outcome: str = "",
+    ) -> dict | None:
+        """Find the matching market from the markets/straight response.
+
+        Pinnacle keys a spread market by the HOME-perspective LINE: one market
+        `s;0;s;1.5` carries home@+1.5 AND away@-1.5. `bet.point` is the LEG's
+        own perspective (home leg.point=+line, away leg.point=-line), so for
+        an away spread leg we flip the sign to find the right market.
+        """
         # Pinnacle market keys: s;0;m (moneyline), s;0;s;{points} (spread), s;0;ou;{points} (total)
         key_prefix = _MARKET_KEY_MAP.get(market_type)
         if not key_prefix:
             return None
+
+        line_point = -point if (market_type == "spread" and outcome == "away" and point is not None) else point
 
         for m in markets:
             if m.get("isAlternate"):
@@ -606,10 +620,10 @@ class PinnacleWorkflow(ProviderWorkflow):
             elif market_type == "spread":
                 # Match spread with correct points: s;0;s;{points}
                 if mk.startswith("s;0;s;") and not m.get("isAlternate"):
-                    if point is not None:
+                    if line_point is not None:
                         mk_points = mk.split(";")[-1]
                         try:
-                            if abs(float(mk_points) - point) < 0.01:
+                            if abs(float(mk_points) - line_point) < 0.01:
                                 return m
                         except ValueError:
                             pass

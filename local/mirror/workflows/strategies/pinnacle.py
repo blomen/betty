@@ -63,7 +63,11 @@ def _market_key_map(intel: dict | None) -> dict:
 
 def _date_range(days: int = 30) -> tuple[str, str]:
     now = datetime.now(timezone.utc)
-    start = (now - timedelta(days=days)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    start = (
+        (now - timedelta(days=days))
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
     end = now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
     return start, end
 
@@ -165,7 +169,11 @@ async def _build_headers(page: Page) -> dict:
         logger.warning(f"[pinnacle] harvest Main:User failed: {e}")
     try:
         cookies = await page.context.cookies()
-        cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies if "pinnacle" in c.get("domain", ""))
+        cookie_str = "; ".join(
+            f"{c['name']}={c['value']}"
+            for c in cookies
+            if "pinnacle" in c.get("domain", "")
+        )
         if cookie_str:
             headers["Cookie"] = cookie_str
     except Exception:
@@ -323,17 +331,27 @@ async def _scan(page: Page, intel: dict | None) -> dict:
     currency = bal_data.get("currency", "?") if bal_data else "?"
 
     # API pending bets
-    unsettled = await fetch_api(f"{api}/bets?status=unsettled&startDate={start}&endDate={end}")
-    api_pending = [_parse_api_bet(b) for b in _bets_list(unsettled) if float(b.get("price", 0)) > 0]
+    unsettled = await fetch_api(
+        f"{api}/bets?status=unsettled&startDate={start}&endDate={end}"
+    )
+    api_pending = [
+        _parse_api_bet(b) for b in _bets_list(unsettled) if float(b.get("price", 0)) > 0
+    ]
 
     # API settled bets (last 30 days)
-    settled = await fetch_api(f"{api}/bets?status=settled&startDate={start}&endDate={end}")
+    settled = await fetch_api(
+        f"{api}/bets?status=settled&startDate={start}&endDate={end}"
+    )
     api_settled = []
     for b in _bets_list(settled):
         p = _parse_api_bet(b)
         if p["outcome"] == "none":
             continue
-        payout = p["stake"] * p["odds"] if p["outcome"] == "win" else (0 if p["outcome"] == "loss" else p["stake"])
+        payout = (
+            p["stake"] * p["odds"]
+            if p["outcome"] == "win"
+            else (0 if p["outcome"] == "loss" else p["stake"])
+        )
         p["payout"] = round(payout, 2)
         p["pl"] = round(payout - p["stake"], 2)
         api_settled.append(p)
@@ -349,7 +367,11 @@ async def _scan(page: Page, intel: dict | None) -> dict:
             rows = (
                 db.query(Bet, Event)
                 .join(Event, Bet.event_id == Event.id, isouter=True)
-                .filter(Bet.profile_id == profile.id, Bet.provider_id == "pinnacle", Bet.result == "pending")
+                .filter(
+                    Bet.profile_id == profile.id,
+                    Bet.provider_id == "pinnacle",
+                    Bet.result == "pending",
+                )
                 .all()
             )
             for bet, event in rows:
@@ -373,15 +395,23 @@ async def _scan(page: Page, intel: dict | None) -> dict:
     # Unmatched: API bets not in DB
     unmatched = []
     for ap in api_pending:
-        if not any(abs(d["odds"] - ap["odds"]) < 0.01 and abs(d["stake"] - ap["stake"]) < 0.01 for d in db_pending):
+        if not any(
+            abs(d["odds"] - ap["odds"]) < 0.01 and abs(d["stake"] - ap["stake"]) < 0.01
+            for d in db_pending
+        ):
             unmatched.append(ap)
 
     # Settleable: settled API bets matching a DB pending bet
     settleable = []
     for s in api_settled:
         for d in db_pending:
-            if abs(d["odds"] - s["odds"]) < 0.01 and abs(d["stake"] - s["stake"]) < 0.01:
-                settleable.append({**s, "db_bet_id": d["bet_id"], "db_event": d["event"]})
+            if (
+                abs(d["odds"] - s["odds"]) < 0.01
+                and abs(d["stake"] - s["stake"]) < 0.01
+            ):
+                settleable.append(
+                    {**s, "db_bet_id": d["bet_id"], "db_event": d["event"]}
+                )
                 break
 
     return {
@@ -418,7 +448,9 @@ async def _settle_all(page: Page, intel: dict | None) -> dict:
         from ....repositories.profile_repo import ProfileRepo
         from ....services.bet_service import BetService
     except ImportError:
-        logger.warning("[pinnacle] DB models not available — settle_all requires backend")
+        logger.warning(
+            "[pinnacle] DB models not available — settle_all requires backend"
+        )
         return {"error": "backend DB not available"}
 
     api = _api_base(intel)
@@ -428,7 +460,9 @@ async def _settle_all(page: Page, intel: dict | None) -> dict:
         return await _evaluate_api(page, url)
 
     # Step 1: Scrape pending bets
-    unsettled = await fetch_api(f"{api}/bets?status=unsettled&startDate={start}&endDate={end}")
+    unsettled = await fetch_api(
+        f"{api}/bets?status=unsettled&startDate={start}&endDate={end}"
+    )
     recorded_new = 0
 
     db = get_session()
@@ -468,8 +502,14 @@ async def _settle_all(page: Page, intel: dict | None) -> dict:
                 event = (
                     db.query(Event)
                     .filter(
-                        or_(Event.home_team.ilike(f"%{p['home']}%"), Event.display_home.ilike(f"%{p['home']}%")),
-                        or_(Event.away_team.ilike(f"%{p['away']}%"), Event.display_away.ilike(f"%{p['away']}%")),
+                        or_(
+                            Event.home_team.ilike(f"%{p['home']}%"),
+                            Event.display_home.ilike(f"%{p['home']}%"),
+                        ),
+                        or_(
+                            Event.away_team.ilike(f"%{p['away']}%"),
+                            Event.display_away.ilike(f"%{p['away']}%"),
+                        ),
                     )
                     .first()
                 )
@@ -492,12 +532,18 @@ async def _settle_all(page: Page, intel: dict | None) -> dict:
         db.commit()
 
         # Step 2: Fetch settled bets → auto-settle
-        settled_data = await fetch_api(f"{api}/bets?status=settled&startDate={start}&endDate={end}")
+        settled_data = await fetch_api(
+            f"{api}/bets?status=settled&startDate={start}&endDate={end}"
+        )
 
         pending = (
             db.query(Bet, Event)
             .join(Event, Bet.event_id == Event.id, isouter=True)
-            .filter(Bet.profile_id == profile.id, Bet.provider_id == "pinnacle", Bet.result == "pending")
+            .filter(
+                Bet.profile_id == profile.id,
+                Bet.provider_id == "pinnacle",
+                Bet.result == "pending",
+            )
             .all()
         )
 
@@ -517,7 +563,10 @@ async def _settle_all(page: Page, intel: dict | None) -> dict:
             matched_bet = None
             matched_event = None
             for bet, event in pending:
-                if abs(bet.odds - p["odds"]) < 0.01 and abs(bet.stake - p["stake"]) < 0.01:
+                if (
+                    abs(bet.odds - p["odds"]) < 0.01
+                    and abs(bet.stake - p["stake"]) < 0.01
+                ):
                     matched_bet, matched_event = bet, event
                     break
 
@@ -546,7 +595,9 @@ async def _settle_all(page: Page, intel: dict | None) -> dict:
             )
             pending = [(b, e) for b, e in pending if b.id != matched_bet.id]
 
-            logger.info(f"[pinnacle] Settled bet #{matched_bet.id} {event_name} → {status} (payout={payout:.2f})")
+            logger.info(
+                f"[pinnacle] Settled bet #{matched_bet.id} {event_name} → {status} (payout={payout:.2f})"
+            )
 
         db.commit()
 
@@ -618,14 +669,22 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
                 status = "won"
             else:
                 continue
-            payout = 0.0 if status == "lost" else (stake * odds if status == "won" else stake)
+            payout = (
+                0.0
+                if status == "lost"
+                else (stake * odds if status == "won" else stake)
+            )
             bet_id_m = re.search(r"#(\d+)", card)
-            event_m = re.search(r"(\w[\w\s.]+?)\s+vs\s+(\w[\w\s.]+?)(?:\s+[A-Z]|\s+@|\s+Bet)", card)
+            event_m = re.search(
+                r"(\w[\w\s.]+?)\s+vs\s+(\w[\w\s.]+?)(?:\s+[A-Z]|\s+@|\s+Bet)", card
+            )
             if stake > 0 and odds > 0:
                 entries.append(
                     HistoryEntry(
                         provider_bet_id=bet_id_m.group(1) if bet_id_m else "",
-                        event_name=f"{event_m.group(1).strip()} vs {event_m.group(2).strip()}" if event_m else "",
+                        event_name=f"{event_m.group(1).strip()} vs {event_m.group(2).strip()}"
+                        if event_m
+                        else "",
                         market="",
                         outcome="",
                         odds=odds,
@@ -647,7 +706,9 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
 
         # Pending bets — emit as status="pending" so _record_unknown_open_bets
         # picks them up (it skips non-"pending" entries).
-        unsettled = await _evaluate_api(page, f"{api}/bets?status=unsettled&startDate={start}&endDate={end}")
+        unsettled = await _evaluate_api(
+            page, f"{api}/bets?status=unsettled&startDate={start}&endDate={end}"
+        )
         if isinstance(unsettled, dict) and "__error" in unsettled:
             unsettled = None
         for b in _bets_list(unsettled):
@@ -668,7 +729,9 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
             )
 
         # Settled bets — for reconcile/settlement matching.
-        data = await _evaluate_api(page, f"{api}/bets?status=settled&startDate={start}&endDate={end}")
+        data = await _evaluate_api(
+            page, f"{api}/bets?status=settled&startDate={start}&endDate={end}"
+        )
         if isinstance(data, dict) and "__error" in data:
             data = None
         for b in _bets_list(data):
@@ -702,7 +765,9 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
 # ------------------------------------------------------------------
 
 
-async def _check_live_price(page: Page, bet, intel: dict | None) -> tuple[float | None, float | None]:
+async def _check_live_price(
+    page: Page, bet, intel: dict | None
+) -> tuple[float | None, float | None]:
     """Return (live_odds, live_edge) for the bet's outcome.
 
     Convention matches polymarket / kalshi: a 2-tuple. The router's poll loop
@@ -713,7 +778,9 @@ async def _check_live_price(page: Page, bet, intel: dict | None) -> tuple[float 
     try:
         from ....analysis.value import compute_edge
     except ImportError:
-        logger.warning("[pinnacle] analysis.value not available — live price check disabled")
+        logger.warning(
+            "[pinnacle] analysis.value not available — live price check disabled"
+        )
         return None, None
 
     api = _api_base(intel)
@@ -728,19 +795,25 @@ async def _check_live_price(page: Page, bet, intel: dict | None) -> tuple[float 
 
     market = getattr(bet, "market", "")
     point = getattr(bet, "point", None)
-    target = _find_market(markets, market, point, intel)
+    outcome = getattr(bet, "outcome", "")
+    target = _find_market(markets, market, point, intel, outcome=outcome)
     if not target:
         return None, None
 
     outcome = getattr(bet, "outcome", "")
     designation = _designation_map(intel).get(outcome)
-    price_entry = next((p for p in target.get("prices", []) if p.get("designation") == designation), None)
+    price_entry = next(
+        (p for p in target.get("prices", []) if p.get("designation") == designation),
+        None,
+    )
     if not price_entry:
         return None, None
 
     decimal_odds = _american_to_decimal(price_entry["price"])
     edge = compute_edge("pinnacle", decimal_odds, fair_odds)
-    logger.info(f"[pinnacle] Live: {outcome} @ {decimal_odds:.2f} (fair {fair_odds:.2f}) edge={edge:.1f}%")
+    logger.info(
+        f"[pinnacle] Live: {outcome} @ {decimal_odds:.2f} (fair {fair_odds:.2f}) edge={edge:.1f}%"
+    )
     return decimal_odds, edge
 
 
@@ -749,11 +822,29 @@ async def _check_live_price(page: Page, bet, intel: dict | None) -> tuple[float 
 # ------------------------------------------------------------------
 
 
-def _find_market(markets: list[dict], market_type: str, point: float | None, intel: dict | None) -> dict | None:
+def _find_market(
+    markets: list[dict],
+    market_type: str,
+    point: float | None,
+    intel: dict | None,
+    outcome: str = "",
+) -> dict | None:
     key_map = _market_key_map(intel)
     key_prefix = key_map.get(market_type)
     if not key_prefix:
         return None
+
+    # Pinnacle keys a spread market by the HOME-perspective LINE: one market
+    # `s;0;s;1.5` carries home@+1.5 AND away@-1.5. `bet.point` is the LEG's
+    # own perspective (home leg.point=+line, away leg.point=-line), so for
+    # an away spread leg we flip the sign to find the right market. Without
+    # this, looking up Phillies-1.5 (leg.point=-1.5) would search Pinnacle's
+    # `s;0;s;-1.5` market and miss / pick the wrong line.
+    line_point = (
+        -point
+        if (market_type == "spread" and outcome == "away" and point is not None)
+        else point
+    )
 
     for m in markets:
         if m.get("isAlternate"):
@@ -764,9 +855,9 @@ def _find_market(markets: list[dict], market_type: str, point: float | None, int
                 return m
         elif market_type == "spread":
             if mk.startswith("s;0;s;") and not m.get("isAlternate"):
-                if point is not None:
+                if line_point is not None:
                     try:
-                        if abs(float(mk.split(";")[-1]) - point) < 0.01:
+                        if abs(float(mk.split(";")[-1]) - line_point) < 0.01:
                             return m
                     except ValueError:
                         pass
@@ -866,7 +957,13 @@ async def _resolve_canonical_url(page: Page, matchup_id: int | str) -> str | Non
                         and (x.get("league") or {}).get("id") == parent_league_id
                     ]
                     full_match = next(
-                        (c for c in candidates if any(p.get("period") == 0 for p in (c.get("periods") or []))),
+                        (
+                            c
+                            for c in candidates
+                            if any(
+                                p.get("period") == 0 for p in (c.get("periods") or [])
+                            )
+                        ),
                         None,
                     )
                     live = full_match or (candidates[0] if candidates else None)
@@ -877,7 +974,10 @@ async def _resolve_canonical_url(page: Page, matchup_id: int | str) -> str | Non
 
         sport_name = ((m.get("league") or {}).get("sport") or {}).get("name", "")
         league_name = (m.get("league") or {}).get("name", "")
-        parts = [(p if isinstance(p, str) else p.get("name", "")) for p in (m.get("participants") or [])]
+        parts = [
+            (p if isinstance(p, str) else p.get("name", ""))
+            for p in (m.get("participants") or [])
+        ]
         sport_slug = _slug(sport_name)
         league_slug = _slug(league_name)
         team_slug = "-vs-".join(_slug(p) for p in parts if p)
@@ -921,10 +1021,27 @@ async def _read_outcome_odds_dom(page: Page, bet) -> float | None:
     market_prefix = market_prefix_map.get(market)
     if not market_prefix:
         return None
-    designation_map = {"home": "home", "away": "away", "draw": "draw", "over": "over", "under": "under"}
+    designation_map = {
+        "home": "home",
+        "away": "away",
+        "draw": "draw",
+        "over": "over",
+        "under": "under",
+    }
     designation = designation_map.get(outcome)
     if not designation:
         return None
+
+    # Pinnacle keys a spread market by the HOME-perspective LINE: one market
+    # `s;0;s;1.5` carries home@+1.5 AND away@-1.5. `bet.point` is the LEG's
+    # own perspective (home leg.point=+line, away leg.point=-line), so for
+    # an away spread leg we flip the sign to find the right market. Total
+    # markets share one point across over/under, so no flip is needed there.
+    line_point = (
+        -point
+        if (market == "spread" and outcome == "away" and point is not None)
+        else point
+    )
 
     try:
         american = await page.evaluate(
@@ -959,7 +1076,9 @@ async def _read_outcome_odds_dom(page: Page, bet) -> float | None:
                         if (!m.key.startsWith({market_prefix!r})) continue;
                         // Filter on point for spread / total. Pinnacle's market keys
                         // for these are 4-segment: "s;0;s;<point>" or "s;0;ou;<point>".
-                        const expectedPoint = {("null" if point is None else float(point))};
+                        // For spread, expectedPoint is the home-perspective LINE
+                        // (line_point above flips the sign for away legs).
+                        const expectedPoint = {("null" if line_point is None else float(line_point))};
                         if (expectedPoint !== null) {{
                             const parts = m.key.split(';');
                             const lastPart = parseFloat(parts[parts.length - 1]);
@@ -1032,7 +1151,9 @@ async def _navigate_to_event(page: Page, bet, intel: dict | None) -> bool:
             pass
         await _asyncio.sleep(0.5)
 
-    logger.warning(f"[pinnacle] matchup {matchup_id} canonical URL loaded but no content rendered")
+    logger.warning(
+        f"[pinnacle] matchup {matchup_id} canonical URL loaded but no content rendered"
+    )
     return False
 
 
@@ -1085,7 +1206,9 @@ def parse_placement_status(body: dict) -> dict:
     """
     if body.get("wagerNumber") or body.get("betId"):
         return {"success": True, "error": None, "max_stake": None}
-    max_stake = body.get("maxStake") or body.get("max_stake") or body.get("maximumStake")
+    max_stake = (
+        body.get("maxStake") or body.get("max_stake") or body.get("maximumStake")
+    )
     if max_stake is None:
         for limit in body.get("limits") or []:
             if limit.get("type") == "maxRiskStake":
@@ -1179,17 +1302,23 @@ async def _click_market_btn(page: Page, market: str, outcome: str) -> bool:
     """
     try:
         canon_market = _MARKET_LABEL_MAP.get(market, market)
-        position_map = _OUTCOME_POSITION.get(canon_market) or _OUTCOME_POSITION.get("moneyline", {})
+        position_map = _OUTCOME_POSITION.get(canon_market) or _OUTCOME_POSITION.get(
+            "moneyline", {}
+        )
         target_pos = position_map.get(outcome)
         if target_pos is None:
-            logger.warning(f"[pinnacle] _click_market_btn: unknown outcome {outcome!r} for market {canon_market!r}")
+            logger.warning(
+                f"[pinnacle] _click_market_btn: unknown outcome {outcome!r} for market {canon_market!r}"
+            )
             return False
 
         # Wait for the markets section to mount — Pinnacle's matchup page lazy-renders
         # button.market-btn ~1-3s after domcontentloaded. Without this, the JS lookup
         # races the React mount and returns -1 (allBtns empty).
         try:
-            await page.wait_for_selector("button.market-btn", timeout=10000, state="attached")
+            await page.wait_for_selector(
+                "button.market-btn", timeout=10000, state="attached"
+            )
         except Exception as e:
             logger.warning(
                 f"[pinnacle] _click_market_btn: market-btn never appeared ({e}) — login wall or class rename?"
@@ -1257,7 +1386,9 @@ async def _click_market_btn(page: Page, market: str, outcome: str) -> bool:
             )
             return False
 
-        await page.evaluate(f"() => document.querySelectorAll('button.market-btn')[{idx}].click()")
+        await page.evaluate(
+            f"() => document.querySelectorAll('button.market-btn')[{idx}].click()"
+        )
         logger.info(f"[pinnacle] Clicked market-btn[{idx}] for {market}/{outcome}")
         return True
     except Exception as e:
@@ -1265,7 +1396,9 @@ async def _click_market_btn(page: Page, market: str, outcome: str) -> bool:
         return False
 
 
-async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None) -> PlacementResult:
+async def _prep_betslip(
+    page: Page, bet, stake: float, intel: dict | None
+) -> PlacementResult:
     """Click the correct outcome → wait for slip → write stake.
 
     Steps:
@@ -1289,8 +1422,12 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None) -> Pl
 
     clicked = await _click_market_btn(page, market, outcome)
     if not clicked:
-        logger.warning(f"[pinnacle] prep_betslip: outcome click failed market={market!r} outcome={outcome!r}")
-        return PlacementResult(status="failed", bet_id=bet_id, reason="outcome_btn_not_found")
+        logger.warning(
+            f"[pinnacle] prep_betslip: outcome click failed market={market!r} outcome={outcome!r}"
+        )
+        return PlacementResult(
+            status="failed", bet_id=bet_id, reason="outcome_btn_not_found"
+        )
 
     slip_populated = False
     for _ in range(20):
@@ -1314,7 +1451,9 @@ async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None) -> Pl
 
     if not slip_populated:
         logger.warning("[pinnacle] prep_betslip: slip not populated within 5s")
-        return PlacementResult(status="failed", bet_id=bet_id, reason="slip_not_populated")
+        return PlacementResult(
+            status="failed", bet_id=bet_id, reason="slip_not_populated"
+        )
 
     await _update_slip_stake(page, stake, intel)
     return PlacementResult(status="prepped", bet_id=bet_id)
