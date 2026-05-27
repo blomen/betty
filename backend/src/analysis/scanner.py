@@ -1760,14 +1760,20 @@ class OpportunityScanner:
         self,
         odds_by_outcome: dict[str, list[dict]],
     ) -> dict[str, list[dict]]:
-        """Drop soft-book entries whose updated_at is older than the per-
-        provider consensus cutoff. Pinnacle and signal-only providers are
-        kept untouched — the gate is specifically for soft books being read
-        as the market's current view in scan_reverse_value.
+        """Drop non-Pinnacle entries whose updated_at is older than the
+        per-provider consensus cutoff. Only Pinnacle is exempt — it's the
+        BET provider in reverse_value, not a consensus input, and its
+        freshness is gated by group_odds upstream.
 
-        Entries without an updated_at timestamp are kept (test fixtures and
-        pre-migration rows); the broader placement-staleness gate already
-        ran in group_odds.
+        Signal-only providers (marathon, stake, smarkets) ARE consensus
+        inputs and must be gated like soft books. A 70-min-old marathon
+        line is not "where the market is now," just a memory of where
+        the book sat. The earlier bypass of signal-only providers was a
+        bug — sharp-like pricing doesn't make a stale row current.
+
+        Entries without an updated_at timestamp are kept (test fixtures
+        and pre-migration rows); the broader placement-staleness gate
+        already ran in group_odds.
         """
         now = datetime.now(UTC)
         filtered: dict[str, list[dict]] = {}
@@ -1775,7 +1781,7 @@ class OpportunityScanner:
             kept = []
             for entry in entries:
                 pid = entry.get("provider", "")
-                if pid in SHARP_PROVIDERS or pid in SIGNAL_ONLY_PROVIDERS:
+                if pid in SHARP_PROVIDERS:
                     kept.append(entry)
                     continue
                 updated = entry.get("updated_at")

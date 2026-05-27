@@ -222,3 +222,27 @@ def test_pinnacle_keeps_full_window_in_consensus_filter():
     providers = {e["provider"] for e in filtered.get("home", [])}
     assert "pinnacle" in providers, "Pinnacle must always pass the consensus filter"
     assert "betinia" not in providers, "stale soft provider must be dropped (90 min > 15 min floor)"
+
+
+def test_signal_only_providers_gated_by_consensus_freshness():
+    """Signal-only providers (marathon, stake, smarkets) are consensus
+    inputs and must be filtered by freshness like soft books. Earlier
+    version bypassed them — a 70-min-old marathon line was contributing
+    to consensus drift even though marathon's cadence (5 min) means a
+    70-min gap is ~14 missed cycles."""
+    scanner = OpportunityScanner(session=None)
+    odds_dict = {
+        "away": [
+            # Pinnacle — bet provider, kept regardless of age
+            {"provider": "pinnacle", "odds": 2.00, "updated_at": datetime.now(UTC) - timedelta(minutes=90)},
+            # Marathon fresh — kept (1 min within 15 min floor)
+            {"provider": "marathon", "odds": 1.91, "updated_at": datetime.now(UTC) - timedelta(minutes=1)},
+            # Stake stale — dropped (70 min > 15 min floor)
+            {"provider": "stake", "odds": 2.10, "updated_at": datetime.now(UTC) - timedelta(minutes=70)},
+        ],
+    }
+    filtered = scanner._filter_to_consensus_fresh(odds_dict)
+    providers = {e["provider"] for e in filtered.get("away", [])}
+    assert "pinnacle" in providers, "Pinnacle is always exempt"
+    assert "marathon" in providers, "fresh signal-only must be kept"
+    assert "stake" not in providers, "stale signal-only must be dropped — no bypass"
