@@ -90,10 +90,11 @@ def _implausible_arb_profit(*profit_pcts: float | None) -> bool:
 SET_SPREAD_SPORTS = frozenset({"tennis"})
 
 # Legacy global staleness cap. Retained for the few callers that still log
-# it as a reference, but the live freshness gate in group_odds is now
-# per-provider via constants.staleness_minutes_for() — tied to each
-# provider's extraction cadence. A 2-h-global cap left dropped-event rows
-# pairing against fresh Pinnacle as ghost arbs for the full 2 h window.
+# it as a reference. The live freshness gate in group_odds is per-provider
+# via constants.staleness_minutes_for() and applies to SHARP providers only;
+# soft books are placement targets the user verifies in the browser before
+# placing, so stale soft rows surface in the scan output. Reverse-value's
+# consensus calc has its own tighter consensus_staleness_minutes_for gate.
 MAX_ODDS_AGE_HOURS = 2
 
 # Reverse value: minimum independent platforms for consensus
@@ -1225,9 +1226,12 @@ class OpportunityScanner:
         Args:
             event: The event to group odds for
             exclude_providers: Set of provider IDs to exclude (default: empty set)
-            check_staleness: Skip odds older than the provider's per-cadence
-                staleness window — see constants.staleness_minutes_for()
-                (default: True)
+            check_staleness: Skip stale SHARP-provider odds (pinnacle) older
+                than the per-cadence window in constants.staleness_minutes_for().
+                Soft providers are NOT filtered here — the user verifies live
+                odds in the browser before placing. Reverse-value's consensus
+                calc still applies its own tighter consensus_staleness_minutes_for
+                gate downstream. (default: True)
             scope: Which scope to filter odds to. When None (default), uses
                 canonical_scope_for(event.sport) — preserves prior behaviour.
                 Callers that want to scan period markets (e.g. baseball F5)
@@ -1259,12 +1263,12 @@ class OpportunityScanner:
             )
             return {}
 
-        # Per-provider staleness cutoffs — tied to each provider's extraction
-        # cadence. A betinia row 30+ min stale almost certainly means the
-        # bookmaker pulled the listing (10 missed 3-min cycles); a comeon row
-        # 30 min stale is normal (25-min cadence). The old global 2-h gate
-        # let dropped-event rows pair against fresh Pinnacle for up to two
-        # hours as ghost arbs. See constants.staleness_minutes_for().
+        # Staleness only applies to SHARP providers (pinnacle). Pinnacle is
+        # the fair-odds reference — a stale sharp row corrupts every devig.
+        # Soft books are placement targets; the user verifies live odds in
+        # the browser before placing, so stale soft rows can stay in the
+        # scan output. Reverse-value's consensus calc has its own tighter
+        # gate (consensus_staleness_minutes_for) that runs downstream.
         now = datetime.now(UTC)
 
         target_scope = scope if scope is not None else canonical_scope_for(getattr(event, "sport", None))
@@ -1290,16 +1294,18 @@ class OpportunityScanner:
             if odds.provider_id in exclude_providers:
                 continue
 
-            # Skip stale odds — threshold is per-provider, based on extraction cadence.
-            if check_staleness and odds.updated_at:
-                # Handle naive datetime (assume UTC)
+            # Skip stale SHARP odds only — soft books are placement targets the
+            # user verifies live before betting, so stale soft rows surface in
+            # the scan output. Sharp (pinnacle) is the fair-odds reference: a
+            # stale pinnacle row would corrupt every devig downstream.
+            if check_staleness and odds.provider_id in SHARP_PROVIDERS and odds.updated_at:
                 updated = odds.updated_at
                 if updated.tzinfo is None:
                     updated = updated.replace(tzinfo=UTC)
                 cutoff = now - timedelta(minutes=staleness_minutes_for(odds.provider_id))
                 if updated < cutoff:
                     logger.debug(
-                        f"Skipping stale odds for {event.id}/{odds.provider_id}: "
+                        f"Skipping stale sharp odds for {event.id}/{odds.provider_id}: "
                         f"updated {updated.isoformat()} (cutoff {cutoff.isoformat()})"
                     )
                     continue

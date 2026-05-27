@@ -1,12 +1,17 @@
 """Regression test for per-provider staleness gating.
 
-The old global 2 h gate let a soft provider that DROPPED an event keep its
-stale row in the DB for up to two hours, where the scanner happily paired
-it against fresh Pinnacle and surfaced a ghost arb. The fix is per-provider
-staleness windows tied to each provider's extraction cadence
-(``constants.staleness_minutes_for``).
+``constants.staleness_minutes_for`` produces a per-provider freshness window
+tied to extraction cadence. It feeds two callers:
 
-These tests pin the contract:
+1. ``scanner.group_odds`` — applied to SHARP providers only (pinnacle), so a
+   stale pinnacle row cannot corrupt the fair-odds reference used for devig.
+   Soft books are NOT filtered here; the user verifies live odds in the
+   browser before placing.
+2. ``constants.consensus_staleness_minutes_for`` (3x cadence, not 6x) — used
+   by the reverse-value consensus calc to decide which soft rows count as
+   "the market's current view." That is a separate, tighter window.
+
+These tests pin the function's contract:
 - canonical providers map to their declared cadence
 - non-canonical cluster members resolve via PROVIDER_CANONICAL
 - unknown providers fall back to the legacy 120 min cap
@@ -25,12 +30,11 @@ def test_sharp_provider_floor():
     assert staleness_minutes_for("pinnacle") == 15
 
 
-def test_api_soft_catches_dropped_event():
-    # The user's reported bug: Lodur (Altenar cluster) dropped a tennis event
-    # ~1.5 h before its scheduled start; the betinia row stayed in the DB and
-    # got paired against fresh Pinnacle as a phantom +2.75 % arb. With a
-    # 3-min cadence × 6 cycles = 18 min staleness, a 1.5 h row is now dropped
-    # well before it can ghost-arb.
+def test_api_soft_cadence_resolves_to_3min():
+    # Altenar cluster runs every 3 min; cadence × 6 cycles = 18 min. The
+    # placement path no longer applies this gate to soft books (user verifies
+    # manually), but the consensus calc (consensus_staleness_minutes_for,
+    # 3x not 6x) still derives from the same cadence.
     assert staleness_minutes_for("betinia") == 18
     # lodur fans out from betinia's extraction, so it shares the cadence.
     assert staleness_minutes_for("lodur") == 18
