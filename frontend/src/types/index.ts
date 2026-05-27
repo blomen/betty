@@ -246,6 +246,87 @@ export interface Bet {
   boost_title?: string | null;
   predicted_result?: string | null;
   bet_type?: string | null;  // "value", "arb", "reverse", "polymarket", "boost"
+  arb_group_id?: string | null;  // Set by arb_runner / correlate_arbs to link anchor + counter legs
+}
+
+// Bonus-Arb Tracker
+export interface BonusArbLeg {
+  id: number;
+  provider_id: string;
+  market: string | null;
+  outcome: string | null;
+  point: number | null;
+  odds: number;
+  stake_sek: number;
+  stake_native: number;
+  currency: string;
+  payout_sek: number | null;
+  profit_sek: number | null;
+  result: 'won' | 'lost' | 'void' | 'pending';
+  is_bonus: boolean;
+  fair_odds_at_placement: number | null;
+  clv_pct: number | null;
+  provider_clv_pct: number | null;
+}
+
+export interface BonusArbGroupEvent {
+  id: string;
+  home_team: string | null;
+  away_team: string | null;
+  display_home: string | null;
+  display_away: string | null;
+  sport: string | null;
+  league: string | null;
+  start_time: string | null;
+}
+
+export interface BonusArbGroup {
+  arb_group_id: string | null;
+  status: 'settled' | 'pending' | 'partial';
+  placed_at: string;
+  event: BonusArbGroupEvent | null;
+  boost_event: string | null;
+  anchor: BonusArbLeg;
+  counter: BonusArbLeg | null;
+  total_stake_sek: number;
+  displayed_yield_pct: number | null;
+  realized_yield_pct: number | null;
+  pnl_sek: number | null;
+}
+
+export interface BonusArbSummary {
+  arbs: number;
+  settled: number;
+  stake_sek: number;
+  pnl_sek: number;
+  avg_displayed_pct: number | null;
+  avg_realized_pct: number | null;
+  anchor_clv_avg: number | null;
+  counter_clv_avg: number | null;
+  counter_provider_clv_avg: number | null;
+}
+
+export interface BonusArbDaily {
+  date: string;
+  arbs: number;
+  settled: number;
+  stake_sek: number;
+  pnl_sek: number;
+  avg_displayed_pct: number | null;
+  avg_realized_pct: number | null;
+}
+
+export interface BonusArbResponse {
+  window: 'today' | 'week' | '30d';
+  since: string | null;
+  until: string | null;
+  summary: {
+    today: BonusArbSummary;
+    week: BonusArbSummary;
+    thirty: BonusArbSummary;
+  };
+  daily: BonusArbDaily[];
+  groups: BonusArbGroup[];
 }
 
 // Profile
@@ -443,8 +524,8 @@ export interface PolymarketRewardsResponse {
   count: number;
 }
 
-// Bonus Arbitrage Types (True Arb with Hedges)
-export interface BonusArbLeg {
+// Bonus Arbitrage Types (True Arb with Hedges) — OLD workflow types, kept for backwards compat
+export interface LegacyBonusArbLeg {
   outcome: string;
   provider: string;
   odds: number;
@@ -465,12 +546,12 @@ export interface BonusArbOpportunity {
   sport: string | null;
   start_time: string | null;
   anchor_outcome: string;
-  legs: BonusArbLeg[];
+  legs: LegacyBonusArbLeg[];
   // Quality classification: "verified" (normal) or "suspect" (needs validation)
   quality?: 'verified' | 'suspect';
 }
 
-export interface BonusArbResponse {
+export interface LegacyBonusArbResponse {
   opportunities: BonusArbOpportunity[];
   count: number;
   anchor_provider: string;

@@ -313,6 +313,7 @@ def list_bets(
                 "provider_site_url": site_urls.get(b.provider_id),
                 "boost_title": b.boost_title or ((sp.llm_title or sp.title) if sp else None),
                 "bet_type": b.bet_type,
+                "arb_group_id": b.arb_group_id,
             }
         )
 

@@ -7,6 +7,7 @@ import { displayTeamName } from '@/utils/formatters';
 import { resolveOutcome as resolveOutcomeBase, fmtAmount, fmtProfit } from '@/utils/betting';
 import { ProviderName } from '@/components/ProviderName';
 import { TabIcon, TAB_COLORS } from '@/components/TabBar';
+import { BonusArbTracker } from '@/components/BonusArbTracker';
 import type { Bet } from '@/types';
 
 // ── Helpers (outside component to avoid re-creation) ─────────────────
@@ -677,6 +678,9 @@ export function BetsPage() {
           </div>
         )}
       </div>
+
+      {/* Bonus-Arb Tracker — paired anchor+counter view for lodur/betinia/swiper */}
+      <BonusArbTracker />
 
       {/* Realized-ROI Analytics — per-sport + per-edge-bucket breakdown */}
       <div>
