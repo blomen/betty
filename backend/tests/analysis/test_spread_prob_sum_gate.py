@@ -89,6 +89,54 @@ def test_spread_drops_provider_with_anomalous_high_prob_sum():
     assert not soft_values, f"betinia prob_sum=1.27 is collision-grade, must be dropped: {soft_values}"
 
 
+def test_total_drops_provider_with_anomalous_prob_sum():
+    """Same gate applies to totals: unibet stored `total 2.5 over=2.30,
+    under=2.10` (Flamengo 2026-05-27) — sum 0.911 is an internal arb that
+    cannot exist. Drop the provider from this total market_key."""
+    scanner = OpportunityScanner(session=None)
+    ev = _event(
+        [
+            # Pinnacle total 2.5: over=1.76, under=2.08 → sum 1.05 (5% vig)
+            _odds("pinnacle", "total", "over", 1.76, 2.5),
+            _odds("pinnacle", "total", "under", 2.08, 2.5),
+            # Unibet bogus: over=2.30, under=2.10 → sum 0.911 (under 0.93)
+            _odds("unibet", "total", "over", 2.30, 2.5),
+            _odds("unibet", "total", "under", 2.10, 2.5),
+        ],
+        sport="football",
+    )
+    values = scanner.scan_value(events=[ev])
+    soft_values = [v for v in values if v.provider == "unibet" and v.market.startswith("total")]
+    assert not soft_values, (
+        f"unibet total prob_sum=0.91 means at least one leg is bogus — must be dropped: {soft_values}"
+    )
+
+
+def test_total_keeps_provider_with_normal_prob_sum():
+    """Control: a normal vig (sum ~1.05) total stays."""
+    scanner = OpportunityScanner(session=None)
+    ev = _event(
+        [
+            _odds("pinnacle", "total", "over", 1.91, 2.5),
+            _odds("pinnacle", "total", "under", 1.94, 2.5),
+            # Normal vig: 1/2.00 + 1/1.85 = 0.500 + 0.541 = 1.041
+            _odds("unibet", "total", "over", 2.00, 2.5),
+            _odds("unibet", "total", "under", 1.85, 2.5),
+        ],
+        sport="football",
+    )
+    grouped = scanner.group_odds(ev)
+    # Unibet should survive in odds_by_outcome
+    found_unibet = False
+    for k, by_outcome in grouped.items():
+        if not k.startswith("total"):
+            continue
+        for outcome_entries in by_outcome.values():
+            if any(e["provider"] == "unibet" for e in outcome_entries):
+                found_unibet = True
+    assert found_unibet, "normal-vig unibet total should not be dropped"
+
+
 def test_spread_keeps_provider_with_normal_prob_sum():
     """Control: a normal vig (sum 1.05) provider on the same line stays."""
     scanner = OpportunityScanner(session=None)

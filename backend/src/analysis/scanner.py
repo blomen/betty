@@ -1403,27 +1403,37 @@ class OpportunityScanner:
         market: str,
         odds_by_outcome: dict[str, list[dict]],
     ) -> None:
-        """Drop soft providers whose home+away implied prob sum on this spread
+        """Drop soft providers whose paired-outcome implied prob sum on this
         market_key falls outside [SPREAD_PROB_SUM_MIN, SPREAD_PROB_SUM_MAX].
 
-        Catches sign-convention residuals where two opposite physical bets
-        land in one key (sum << 1.0) or two same-side bets duplicate
-        (sum >> 1.0) — bugs the per-outcome 30pp gate can miss when both
-        normalized halves stay within tolerance. Per-provider, both legs must
-        be present (single-leg providers skip this check; pinnacle never
-        dropped).
-        """
-        if not market.startswith("spread"):
-            return
+        Catches:
+        - Spread sign-convention residuals where two opposite physical bets
+          land in one key (sum << 1.0) or two same-side bets duplicate
+          (sum >> 1.0) — bugs the per-outcome 30pp gate can miss when both
+          normalized halves stay within tolerance.
+        - Total markets where the extractor stored bogus paired odds — e.g.
+          unibet `total 2.5 over=2.30, under=2.10` sums to 0.91 (Flamengo
+          2026-05-27), an internal arb that cannot exist in a real book.
 
-        # Index entries by provider so we can compute home+away sums per provider.
+        Per-provider, both pair legs must be present (single-leg providers
+        skip this check; pinnacle and signal-only providers are never
+        dropped). Spread pair = (home, away); total pair = (over, under).
+        Non-spread / non-total markets are no-ops.
+        """
+        is_spread = market.startswith("spread")
+        is_total = market.startswith("total")
+        if not (is_spread or is_total):
+            return
+        pair = ("home", "away") if is_spread else ("over", "under")
+
+        # Index entries by provider so we can compute paired sums per provider.
         per_provider: dict[str, dict[str, float]] = defaultdict(dict)
         for outcome, providers in odds_by_outcome.items():
             for po in providers:
                 pid = po["provider"]
                 if pid == "pinnacle" or pid in SIGNAL_ONLY_PROVIDERS:
                     continue
-                if outcome not in ("home", "away"):
+                if outcome not in pair:
                     continue
                 odds = po.get("odds", 0)
                 if odds and odds > 1:
@@ -1431,13 +1441,13 @@ class OpportunityScanner:
 
         dropped: set[str] = set()
         for pid, sides in per_provider.items():
-            if "home" not in sides or "away" not in sides:
+            if pair[0] not in sides or pair[1] not in sides:
                 continue
-            prob_sum = sides["home"] + sides["away"]
+            prob_sum = sides[pair[0]] + sides[pair[1]]
             if prob_sum < SPREAD_PROB_SUM_MIN or prob_sum > SPREAD_PROB_SUM_MAX:
                 dropped.add(pid)
                 logger.debug(
-                    "spread_prob_sum: drop %s from %s (sum=%.3f outside [%.2f, %.2f])",
+                    "prob_sum: drop %s from %s (sum=%.3f outside [%.2f, %.2f])",
                     pid,
                     market,
                     prob_sum,
