@@ -60,9 +60,8 @@ def test_browser_providers_get_generous_windows():
     # browser_slow (60-min) — demoted providers.
     assert staleness_minutes_for("10bet") == 360
     assert staleness_minutes_for("coolbet") == 360
-    # browser_antibot (25-min) — comeon + rainbet.
+    # browser_antibot (25-min) — comeon.
     assert staleness_minutes_for("comeon") == 150
-    assert staleness_minutes_for("rainbet") == 150
 
 
 def test_unknown_provider_falls_back_to_legacy_cap():

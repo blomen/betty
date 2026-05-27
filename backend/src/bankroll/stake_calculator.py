@@ -103,7 +103,6 @@ class ProviderStakeProfile:
 #             on thin totals/spreads sit inside that quantisation noise — they
 #             evaporate the moment the live price is re-read on click.
 # Cloudbet:   no commission, 20 kr click overhead → 20 kr min.
-# Rainbet:    signal-only, no playable path — included for completeness.
 PROVIDER_STAKE_PROFILES: dict[str, ProviderStakeProfile] = {
     "pinnacle": ProviderStakeProfile(fee_rate=0.0, min_stake_native=20.0, currency="SEK", min_edge_pct=1.0),
     # Polymarket: ~$0.07 Polygon gas per trade (placement + amortized redeem).
@@ -113,7 +112,6 @@ PROVIDER_STAKE_PROFILES: dict[str, ProviderStakeProfile] = {
     "polymarket": ProviderStakeProfile(fee_rate=0.0, min_stake_native=1.0, currency="USDC", min_edge_pct=5.0),
     "kalshi": ProviderStakeProfile(fee_rate=0.0, min_stake_native=1.0, currency="USD", min_edge_pct=3.0),
     "cloudbet": ProviderStakeProfile(fee_rate=0.0, min_stake_native=20.0, currency="SEK", min_edge_pct=1.0),
-    "rainbet": ProviderStakeProfile(fee_rate=0.0, min_stake_native=20.0, currency="SEK", min_edge_pct=1.0),
 }
 
 
@@ -129,7 +127,7 @@ def provider_min_stake_sek(provider_id: str, exchange_rate: float, fallback: flo
         return fallback
     # min_stake_native is denominated in profile.currency, NOT the wallet's
     # currency. For SEK-denominated minima ("20 kr click overhead" — pinnacle,
-    # cloudbet, rainbet) the value is already SEK; multiplying by the wallet's
+    # cloudbet) the value is already SEK; multiplying by the wallet's
     # exchange_rate would scale a real cost in click-overhead by a wallet FX,
     # which is meaningless. Crucially this matters when wallet currency ≠
     # profile currency: cloudbet's profile says 20 SEK but its wallet is USDC

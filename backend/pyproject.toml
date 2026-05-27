@@ -166,8 +166,8 @@ scrape = [
     # patchright: undetected Playwright fork. Regular Playwright
     # gets fingerprinted by Cloudflare/Imperva on soft book sites.
     # Patchright patches the browser to look like a real user.
-    # Used for both data extraction (ComeOn, Rainbet) and bet
-    # placement on browser-only providers.
+    # Used for both data extraction (ComeOn) and bet placement on
+    # browser-only providers.
     "patchright>=1.48.0",
     # playwright: kept as a fallback for the few code paths that
     # explicitly import from `playwright.*` (patchright re-exports

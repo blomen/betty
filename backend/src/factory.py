@@ -18,7 +18,6 @@ from .providers.kambi import KambiRetriever
 from .providers.marathon import MarathonRetriever
 from .providers.pinnacle import PinnacleRetriever
 from .providers.polymarket import PolymarketRetriever
-from .providers.rainbet import RainbetRetriever
 from .providers.smarkets import SmarketsRetriever
 from .providers.spectate import SpectateRetriever
 from .providers.stake import StakeRetriever
@@ -209,16 +208,6 @@ class ExtractorFactory:
                 circuit_breaker=self._circuit_breaker,
                 rate_limit_config=rate_limit_config,
             )
-        elif retriever_type == "rainbet":
-            # Rainbet — Betby-backed sportsbook with CF + Turnstile bypass.
-            # Uses BrowserTransport (patchright Chromium) + Bahnhof Sweden proxy
-            # (rainbet geo-blocks Germany). Turnstile is cleared by clicking
-            # at the validated coord (210, 290) on the 1280x720 viewport.
-            # See docs/superpowers/specs/2026-05-10-rainbet-provider-design.md.
-            from .core import BrowserTransport
-
-            transport = BrowserTransport(headless=True, circuit_breaker=self._circuit_breaker, use_proxy=True)
-            retriever = RainbetRetriever(config, transport=transport)
         elif retriever_type == "marathon":
             retriever = MarathonRetriever(
                 config,

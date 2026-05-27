@@ -21,10 +21,6 @@ class TestProviderMinStakeSek:
         # Kelly stake floored to full balance. Must stay 20.
         assert provider_min_stake_sek("cloudbet", exchange_rate=10.5, fallback=5.0) == 20.0
 
-    def test_sek_profile_rainbet(self):
-        # rainbet profile is SEK 20 (signal-only, included for completeness).
-        assert provider_min_stake_sek("rainbet", exchange_rate=10.5, fallback=5.0) == 20.0
-
     def test_usdc_profile_polymarket_multiplies_by_rate(self):
         # Polymarket: profile USDC 1.0 → 1.0 × 10.5 = 10.5 SEK.
         assert provider_min_stake_sek("polymarket", exchange_rate=10.5, fallback=5.0) == 10.5

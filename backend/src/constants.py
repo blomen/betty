@@ -298,7 +298,6 @@ PROVIDER_EXTRACTION_INTERVAL_MINUTES: dict[str, int] = {
     "coolbet": 60,
     # browser_antibot tier (25 min)
     "comeon": 25,
-    "rainbet": 25,
     # cloudbet — own tier (5 min)
     "cloudbet": 5,
     # signal_international tier (5 min)

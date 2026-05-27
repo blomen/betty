@@ -5,7 +5,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from .base import HistoryEntry, PlacementResult, PositionEntry, ProviderWorkflow, WorkflowMode
+from .base import (
+    HistoryEntry,
+    PlacementResult,
+    PositionEntry,
+    ProviderWorkflow,
+    WorkflowMode,
+)
 
 if TYPE_CHECKING:
     pass
@@ -114,7 +120,6 @@ _FALLBACK_DOMAINS: dict[str, str] = {
     "snabbare": "snabbare.com",
     "kalshi": "kalshi.com",
     "cloudbet": "cloudbet.com",
-    "rainbet": "rainbet.com",
 }
 
 
@@ -140,9 +145,13 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
     _explicit_platform = _PROVIDER_TO_PLATFORM.get(provider_id)
     if _explicit_platform and _explicit_platform in _PLATFORM_MAP:
         domain = _FALLBACK_DOMAINS.get(provider_id, "")
-        instance = _PLATFORM_MAP[_explicit_platform](provider_id=provider_id, domain=domain)
+        instance = _PLATFORM_MAP[_explicit_platform](
+            provider_id=provider_id, domain=domain
+        )
         _WORKFLOW_CACHE[provider_id] = instance
-        logger.info(f"[workflows] {provider_id} → {type(instance).__name__} (explicit platform map)")
+        logger.info(
+            f"[workflows] {provider_id} → {type(instance).__name__} (explicit platform map)"
+        )
         return instance
 
     if load_intel(provider_id) is not None:
@@ -168,13 +177,17 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
         cfg = load_config()
         provider = cfg.get_provider(provider_id)
     except ImportError:
-        logger.warning("[workflows] config.loader not available — using platform map only")
+        logger.warning(
+            "[workflows] config.loader not available — using platform map only"
+        )
 
     if provider is None:
         domain = _FALLBACK_DOMAINS.get(provider_id, "")
         # Check platform map directly (platform names like "altenar", "kambi")
         if provider_id in _PLATFORM_MAP:
-            instance = _PLATFORM_MAP[provider_id](provider_id=provider_id, domain=domain)
+            instance = _PLATFORM_MAP[provider_id](
+                provider_id=provider_id, domain=domain
+            )
             _WORKFLOW_CACHE[provider_id] = instance
             return instance
         # Resolve provider → platform (e.g. "betinia" → "altenar")
@@ -189,7 +202,9 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
         _WORKFLOW_CACHE[provider_id] = instance
         return instance
 
-    platform = _RETRIEVER_TO_PLATFORM.get(provider.retriever_type, provider.retriever_type)
+    platform = _RETRIEVER_TO_PLATFORM.get(
+        provider.retriever_type, provider.retriever_type
+    )
     cls = _PLATFORM_MAP.get(platform)
     if cls is None:
         from .generic import GenericWorkflow

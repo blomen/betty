@@ -578,12 +578,6 @@ def create_mirror_router(
         pid = body.get("provider_id", "")
         if not pid:
             raise HTTPException(400, "provider_id required")
-        # Rainbet is signal-only — no playable mirror workflow. Reject opens.
-        if pid == "rainbet":
-            raise HTTPException(
-                400,
-                "rainbet is signal-only (data consensus) — not playable in the mirror",
-            )
         if not browser.running:
             await browser.start()
         from ._urls import hostname_matches
@@ -1441,11 +1435,10 @@ def create_mirror_router(
     async def start_browser():
         """Launch the mirror browser. Idempotent — safe to call when already running.
 
-        Eagerly opens tabs for the 5 unlimited counter providers (pinnacle, polymarket,
-        cloudbet, kalshi, rainbet) so the user can log into each in one pass. They stay
-        open for the session and serve as on-demand counter legs for arb opps (rainbet
-        is signal-only — tab is informational, no place button). Idempotent — re-calling
-        /start is safe; existing tabs are reused.
+        Eagerly opens tabs for the 4 unlimited counter providers (pinnacle, polymarket,
+        cloudbet, kalshi) so the user can log into each in one pass. They stay open for
+        the session and serve as on-demand counter legs for arb opps. Idempotent —
+        re-calling /start is safe; existing tabs are reused.
 
         Also performs a defensive sweep: any tab whose URL doesn't match an allowed
         domain (the 5 unlimited + tradingview + about:blank) gets closed. Catches
@@ -1489,9 +1482,6 @@ def create_mirror_router(
                     print(f"[mirror/start] Closed stray tab: {url[:80]}", flush=True)
                 except Exception:
                     pass
-        # Rainbet is signal-only (data consensus on the server-side extraction
-        # pipeline). Don't open it in the local mirror — Cloudflare Turnstile
-        # rejects plain Chromium and there's no playable workflow.
         for pid in ("pinnacle", "polymarket", "cloudbet", "kalshi"):
             try:
                 workflow = get_workflow(pid)

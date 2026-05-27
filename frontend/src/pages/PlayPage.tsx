@@ -5,10 +5,6 @@ import { useMirrorState } from '../hooks/useMirrorState'
 import { migratedLocalStorageGet } from '../utils/localStorageMigration'
 
 // Unlimited providers — value-bet flow (Section B) + arb counter pool. All other providers route through arbitrage (Section A).
-// `rainbet` is intentionally excluded: KYC blocks Swedish residents (Sumsub
-// flow doesn't list Sweden as an issuing country), so it's not playable.
-// Server-side extraction still runs and its odds participate in fair-odds
-// consensus for the scanner — but the local UI doesn't show it as a target.
 const UNLIMITED_PROVIDERS = new Set(['pinnacle', 'polymarket', 'cloudbet', 'kalshi'])
 
 // Provider is "drained" when balance falls below this threshold (SEK).
@@ -3830,7 +3826,7 @@ export default function PlayPage() {
           )
         })()}
         {clusterIds.length === 0 && batch.length > 0 && (
-          <div className="p-4 text-zinc-500 text-xs">No positive-edge value bets (Pinnacle / Polymarket / Cloudbet / Kalshi / Rainbet).</div>
+          <div className="p-4 text-zinc-500 text-xs">No positive-edge value bets (Pinnacle / Polymarket / Cloudbet / Kalshi).</div>
         )}
 
         {clusterIds.map(clusterId => {
