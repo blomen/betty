@@ -1,4 +1,4 @@
-import type { Bet } from '@/types';
+import type { Bet, BonusArbResponse } from '@/types';
 import { fetchJson, fetchWithRetry } from './client';
 
 export const betsApi = {
@@ -103,6 +103,14 @@ export const betsApi = {
     if (providerId) params.set('provider_id', providerId);
     params.set('days', String(days));
     return fetchJson(`/bets/analytics?${params}`);
+  },
+
+  async getBonusArbs(
+    window: 'today' | 'week' | '30d' = 'week'
+  ): Promise<BonusArbResponse> {
+    const params = new URLSearchParams();
+    params.set('window', window);
+    return fetchJson(`/bets/bonus-arbs?${params}`);
   },
 };
 
