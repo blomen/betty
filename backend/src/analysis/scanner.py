@@ -46,8 +46,11 @@ MIN_VALID_PROB_SUM = 0.90
 # Real odds rarely differ more than 35% across providers for same event
 MAX_ODDS_RATIO = 1.35
 # Spread/total markets have wider natural variance between books (different
-# handicap conventions, vig structures). Relaxed from 1.35 to 1.55.
-MAX_ODDS_RATIO_SPREAD = 1.55
+# handicap conventions, vig structures). Tightened from 1.55 to 1.40 on
+# 2026-05-27 after seeing Kambi alt-line upsert collisions sneak past the
+# 1.55 limit (Bahia ratio 1.92/1.25 = 1.536). Real soft-vs-Pinnacle spread
+# disagreements >40% on raw odds are almost always extraction bugs.
+MAX_ODDS_RATIO_SPREAD = 1.40
 
 # Hard safety net — edges above this are almost certainly data quality issues
 # (wrong event match, stale odds, prediction market divergence).
@@ -58,6 +61,15 @@ MAX_EDGE_PCT = 50.0
 # Refuse value bets for soft providers in such buckets — they're pricing a
 # different bet than Pinnacle, not offering value.
 SPREAD_DISAGREEMENT_MAX_PP = 0.30
+
+# 2026-05-27: defense-in-depth against provider point-sign convention bugs.
+# A real 2-way Asian handicap with normal vig sums to ~1.04-1.08; sums far
+# outside this range mean two opposite-side bets got filed under one key
+# (extractor stored book-line convention without normalizing) or the same
+# bet got duplicated. The per-outcome disagreement gate has a blind spot
+# when both mis-keyed legs survive normalization within the 30pp window.
+SPREAD_PROB_SUM_MIN = 0.93
+SPREAD_PROB_SUM_MAX = 1.12
 
 # Arb sanity ceiling — a *guaranteed* profit above this never reflects a real
 # cross-book arbitrage; it means a leg is mispriced (e.g. a Polymarket outcome
@@ -792,6 +804,9 @@ class OpportunityScanner:
         if len(pinnacle_market) > sharp_outcome_count:
             sharp_outcome_count = len(pinnacle_market)
 
+        # 2026-05-27: prob-sum gate runs FIRST — catches sign-convention
+        # residuals where the per-outcome disagreement gate has a blind spot.
+        self._drop_spread_prob_sum_anomalies(market, odds_by_outcome)
         # 2026-05-26: spread disagreement gate — drop soft providers whose
         # devigged probability diverges from Pinnacle by >30pp on the same
         # outcome (catches quarter-handicap convention mismatches by symptom).
@@ -1362,18 +1377,80 @@ class OpportunityScanner:
 
         This mutates the grouped dict in-place.
         """
-        # Remove 3-way European handicap providers.
-        for market_key in [k for k in grouped if k.startswith("spread_")]:
-            odds_by_outcome = grouped[market_key]
-            if "draw" in odds_by_outcome:
-                european_providers = {e["provider"] for e in odds_by_outcome["draw"]}
+        # Remove 3-way European handicap providers — EVENT-WIDE. The away leg
+        # of a 3-way handicap (sign-flipped to a different market_key under
+        # the scanner's keying) leaks past per-key drops. Collect every
+        # provider that emits `draw` in ANY spread_* key, then strip them
+        # from ALL spread keys on this event.
+        spread_keys = [k for k in grouped if k.startswith("spread_")]
+        european_providers: set[str] = set()
+        for market_key in spread_keys:
+            draw_entries = grouped[market_key].get("draw") or []
+            european_providers.update(e["provider"] for e in draw_entries)
+        if european_providers:
+            for market_key in spread_keys:
+                odds_by_outcome = grouped[market_key]
                 for outcome_type in list(odds_by_outcome.keys()):
                     odds_by_outcome[outcome_type] = [
                         e for e in odds_by_outcome[outcome_type] if e["provider"] not in european_providers
                     ]
                     if not odds_by_outcome[outcome_type]:
                         del odds_by_outcome[outcome_type]
-                logger.debug(f"Removed 3-way European handicap providers {european_providers} from {market_key}")
+            logger.debug(f"Removed 3-way European handicap providers {european_providers} from all spread_* keys")
+
+    def _drop_spread_prob_sum_anomalies(
+        self,
+        market: str,
+        odds_by_outcome: dict[str, list[dict]],
+    ) -> None:
+        """Drop soft providers whose home+away implied prob sum on this spread
+        market_key falls outside [SPREAD_PROB_SUM_MIN, SPREAD_PROB_SUM_MAX].
+
+        Catches sign-convention residuals where two opposite physical bets
+        land in one key (sum << 1.0) or two same-side bets duplicate
+        (sum >> 1.0) — bugs the per-outcome 30pp gate can miss when both
+        normalized halves stay within tolerance. Per-provider, both legs must
+        be present (single-leg providers skip this check; pinnacle never
+        dropped).
+        """
+        if not market.startswith("spread"):
+            return
+
+        # Index entries by provider so we can compute home+away sums per provider.
+        per_provider: dict[str, dict[str, float]] = defaultdict(dict)
+        for outcome, providers in odds_by_outcome.items():
+            for po in providers:
+                pid = po["provider"]
+                if pid == "pinnacle" or pid in SIGNAL_ONLY_PROVIDERS:
+                    continue
+                if outcome not in ("home", "away"):
+                    continue
+                odds = po.get("odds", 0)
+                if odds and odds > 1:
+                    per_provider[pid][outcome] = 1.0 / odds
+
+        dropped: set[str] = set()
+        for pid, sides in per_provider.items():
+            if "home" not in sides or "away" not in sides:
+                continue
+            prob_sum = sides["home"] + sides["away"]
+            if prob_sum < SPREAD_PROB_SUM_MIN or prob_sum > SPREAD_PROB_SUM_MAX:
+                dropped.add(pid)
+                logger.debug(
+                    "spread_prob_sum: drop %s from %s (sum=%.3f outside [%.2f, %.2f])",
+                    pid,
+                    market,
+                    prob_sum,
+                    SPREAD_PROB_SUM_MIN,
+                    SPREAD_PROB_SUM_MAX,
+                )
+
+        if not dropped:
+            return
+        for outcome in list(odds_by_outcome.keys()):
+            odds_by_outcome[outcome] = [po for po in odds_by_outcome[outcome] if po["provider"] not in dropped]
+            if not odds_by_outcome[outcome]:
+                del odds_by_outcome[outcome]
 
     def _drop_spread_disagreement_providers(
         self,
@@ -1480,6 +1557,9 @@ class OpportunityScanner:
         if len(pinnacle_market) > sharp_outcome_count:
             sharp_outcome_count = len(pinnacle_market)
 
+        # 2026-05-27: prob-sum gate runs FIRST — catches sign-convention
+        # residuals where the per-outcome disagreement gate has a blind spot.
+        self._drop_spread_prob_sum_anomalies(market, odds_by_outcome)
         # 2026-05-26: spread disagreement gate — drop soft providers whose
         # devigged probability diverges from Pinnacle by >30pp on the same
         # outcome (catches quarter-handicap convention mismatches by symptom).

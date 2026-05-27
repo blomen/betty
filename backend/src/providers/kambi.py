@@ -560,21 +560,15 @@ class KambiRetriever(Retriever):
                     has_draw = any(o["name"] == "draw" for o in outcomes)
                     market_type = "1x2" if has_draw else "moneyline"
             elif bet_offer_type_id in (1, 7):
-                # 1 = Handicap (Puck Line, Point Spread), 7 = Asian Handicap
+                # 1 = Handicap (Puck Line, Point Spread), 7 = Asian Handicap.
+                # Both expose per-outcome `line` fields in Pinnacle convention
+                # (home@-X / away@+X for the line where home is favored by X).
+                # A prior abs() "normalization" for type=7 collapsed the +X and
+                # -X home rows to the same (outcome, point) key, causing
+                # upsert collisions where one true line silently overwrote
+                # another and surfaced as phantom 40%+ value edges (Bahia v
+                # Botafogo, 2026-05-26). Leave per-outcome signs alone.
                 market_type = "spread"
-
-                # betOfferType 7 (Asian Handicap): Kambi returns per-outcome line
-                # values with OPPOSITE signs (home@+X, away@-X) — inverted vs
-                # Pinnacle convention (home@-X, away@+X). This creates entries at
-                # the wrong market_key, causing the scanner to compare completely
-                # different bets (e.g., "Rangers -1.5" vs "Phillies -1.5").
-                # Fix: normalize to Asian convention (both outcomes at abs(point)).
-                # The scanner's _fix_asian_spread_grouping handles matching by
-                # odds proximity against Pinnacle.
-                if bet_offer_type_id == 7:
-                    for o in outcomes:
-                        if o["point"] is not None:
-                            o["point"] = abs(o["point"])
             else:
                 # betOfferType 2: determine from outcome structure
                 has_draw = any(o["name"] == "draw" for o in outcomes)

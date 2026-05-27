@@ -547,6 +547,14 @@ class TipwinRetriever(BrowserRetriever):
                 # 2-way winner markets (tennis, basketball, esports) → moneyline
                 if market_type == "1x2" and not any(o["name"] == "draw" for o in outcomes):
                     market_type = "moneyline"
+                # Tipwin emits 3-way European handicap (home/draw/away at the same
+                # integer line). Pinnacle prices 2-way Asian handicap. Comparing
+                # them produces phantom edges on the home and away legs because the
+                # outcome probabilities mean different things (3-way splits the
+                # "exactly cover" probability into the draw bucket). Drop any
+                # spread emitted with a draw outcome.
+                if market_type == "spread" and any(o["name"] == "draw" for o in outcomes):
+                    continue
                 markets.append({"type": market_type, "outcomes": outcomes})
                 seen_types.add(market_type)
 

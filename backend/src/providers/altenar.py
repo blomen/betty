@@ -449,7 +449,17 @@ class AltenarRetriever(Retriever):
                             },
                         }
                         if market_point is not None:
-                            outcome_dict["point"] = market_point
+                            # Altenar exposes BOTH home and away spread outcomes at the
+                            # SAME `market.sv` point (book-line convention — point IDs
+                            # the line). The scanner's keying expects per-outcome
+                            # convention (home@P, away@-P share a line). Negate point
+                            # for away spread outcomes so both legs land in the same
+                            # market_key. Totals (over/under) legitimately share a
+                            # point on both sides — only spread needs the flip.
+                            if market_type == "spread" and standardized_outcome == "away":
+                                outcome_dict["point"] = -market_point
+                            else:
+                                outcome_dict["point"] = market_point
                         outcomes.append(outcome_dict)
 
                 if outcomes:
