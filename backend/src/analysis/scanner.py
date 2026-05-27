@@ -1620,11 +1620,18 @@ class OpportunityScanner:
                 #    for each outcome are still valid from the full 3-way market.
                 soft_count = provider_outcome_counts.get(po["provider"], 0)
                 if soft_count > 0 and sharp_outcome_count > 0:
-                    is_spread_asymmetry = (
-                        market.startswith("spread") and sharp_outcome_count in (1, 2) and soft_count in (1, 2)
-                    )
+                    # Under the spread line-keying refactor, Pinnacle co-locates
+                    # home@P and away@-P under the same `spread_L` key — so
+                    # Pinnacle should have 2 outcomes per spread market_key. A
+                    # soft provider with only 1 outcome here means a DOM scrape
+                    # missed a side (comeon Cerro 2026-05-27), a stale orphan
+                    # from a prior main-line shift (unibet Orgryte/Bahia), or a
+                    # 3-way handicap that lost its complement. Devigging full
+                    # Pinnacle against a single leg produces phantom 30%+
+                    # edges; require matching counts. Polymarket binary
+                    # markets keep their own exemption.
                     is_polymarket_mismatch = po["provider"] == "polymarket" and soft_count <= sharp_outcome_count
-                    if soft_count != sharp_outcome_count and not is_spread_asymmetry and not is_polymarket_mismatch:
+                    if soft_count != sharp_outcome_count and not is_polymarket_mismatch:
                         continue  # Don't compare 3-way vs 2-way markets
 
                 # Validate soft provider's market completeness (pre-computed)
