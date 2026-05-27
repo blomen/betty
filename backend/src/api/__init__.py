@@ -34,6 +34,7 @@ from ..db.models import init_db
 from .routes import (
     bankroll_router,
     bets_router,
+    bonus_arbs_router,
     chat_router,
     events_router,
     extraction_router,
@@ -595,6 +596,7 @@ app.include_router(bankroll_router)
 app.include_router(events_router)
 app.include_router(opportunities_router)
 app.include_router(bets_router)
+app.include_router(bonus_arbs_router)
 app.include_router(profiles_router)
 app.include_router(extraction_router)
 app.include_router(metrics_router)

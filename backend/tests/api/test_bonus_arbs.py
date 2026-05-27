@@ -14,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from src.api import app
 from src.api.deps import get_db
@@ -24,7 +25,11 @@ STK = ZoneInfo("Europe/Stockholm")
 
 @pytest.fixture
 def db_session():
-    engine = create_engine("sqlite:///:memory:")
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     s = Session()
@@ -61,7 +66,7 @@ def _bet(s, **kw):
         currency="SEK",
         result="pending",
         is_bonus=False,
-        placed_at=datetime(2026, 5, 27, 11, 42, tzinfo=UTC).replace(tzinfo=None),
+        placed_at=datetime(2026, 5, 26, 11, 42, tzinfo=UTC).replace(tzinfo=None),
     )
     base.update(kw)
     b = Bet(**base)
@@ -128,8 +133,8 @@ def test_settled_arb_pair_realized_yield(client, db_session):
     assert g["total_stake_sek"] == pytest.approx(1012.0)
     # Realized yield = 38/1012 * 100 ≈ 3.755%
     assert g["realized_yield_pct"] == pytest.approx(3.755, abs=0.01)
-    # Displayed = (1 / (1/2.10 + 1/2.05) - 1) * 100 ≈ 1.32%
-    assert g["displayed_yield_pct"] == pytest.approx(1.325, abs=0.01)
+    # Displayed = (1 / (1/2.10 + 1/2.05) - 1) * 100 ≈ 3.74%
+    assert g["displayed_yield_pct"] == pytest.approx(3.735, abs=0.01)
 
 
 def test_mixed_currency_sek_conversion(client, db_session):

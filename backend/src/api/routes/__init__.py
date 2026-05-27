@@ -2,6 +2,7 @@
 
 from .bankroll import router as bankroll_router
 from .bets import router as bets_router
+from .bonus_arbs import router as bonus_arbs_router
 from .chat import router as chat_router
 from .events import router as events_router
 from .extraction import router as extraction_router
@@ -27,6 +28,7 @@ __all__ = [
     "events_router",
     "opportunities_router",
     "bets_router",
+    "bonus_arbs_router",
     "profiles_router",
     "extraction_router",
     "metrics_router",
