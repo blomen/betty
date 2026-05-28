@@ -17,9 +17,16 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal
 
+from local.mirror.arb_math import brackets_key_number, middle_size
 from sqlalchemy.orm import Session
 
-from src.db.models import Bet, Event
+from src.analysis.key_numbers import (
+    NFL_SPREAD_KEY_NUMBERS,
+    NFL_TOTAL_KEY_NUMBERS,
+    is_nfl,
+)
+from src.config.loader import get_exchange_rate
+from src.db.models import Bet, Event, Odds
 
 RehedgeCase = Literal["post_placement_middle", "clv_inversion_salvage"]
 
@@ -50,6 +57,11 @@ class RehedgeCandidate:
 
 _SPREAD_MARKETS = {"spread", "handicap", "runline", "puckline"}
 _TOTAL_MARKETS = {"total", "totals", "over_under", "ou"}
+
+# Tuning knobs — see survey §3b "What kills it"
+MAX_WING_LOSS_PCT = 0.025  # 2.5% of total stake — anything bigger means
+# the middle bet costs more than its expected value.
+TARGET_WING_LOSS_PCT = 0.01  # 1% — what we aim for when sizing
 
 
 def _query_open_bets(db: Session) -> list[Bet]:
@@ -109,10 +121,112 @@ def _opposite_point(market: str | None, point: float | None) -> float | None:
     return None
 
 
+def _bet_stake_sek(bet: Bet) -> float:
+    """Convert a bet's native-currency stake to SEK via the provider's rate.
+
+    Currency conversion is the #1 hidden source of off-by-5×-10× sizing
+    bugs in Betty (CLAUDE.md "first hypothesis when sizing looks off").
+    `get_exchange_rate(provider_id)` returns 1.0 for SEK-denominated
+    providers (Swedish softs + this user's Pinnacle account) and the
+    correct multiplier (≈10) for USD/USDC providers.
+    """
+    rate = get_exchange_rate(bet.provider_id)
+    return bet.stake * rate
+
+
+def _keys_for_market(market: str) -> tuple[int, ...]:
+    m = market.lower()
+    if m in _SPREAD_MARKETS:
+        return NFL_SPREAD_KEY_NUMBERS
+    if m in _TOTAL_MARKETS:
+        return NFL_TOTAL_KEY_NUMBERS
+    return ()
+
+
+def _classify_case1(db: Session, bet: Bet) -> RehedgeCandidate | None:
+    """Case 1: post-placement middle on NFL spreads/totals.
+
+    Skip if: bet's event isn't NFL, bet isn't spread/total, bet has no
+    point. Otherwise look across providers for an opposite-side quote at
+    a point that brackets a key number. Emit the best (lowest wing-loss)
+    candidate.
+    """
+    if not is_nfl(bet.event.sport):
+        return None
+    keys = _keys_for_market(bet.market or "")
+    if not keys or bet.point is None:
+        return None
+
+    opp_outcome = _opposite_outcome(bet.market, bet.outcome)
+    if opp_outcome is None:
+        return None
+
+    # Query all opposite-side quotes on this event/market/scope.
+    candidates_q = (
+        db.query(Odds)
+        .filter(
+            Odds.event_id == bet.event_id,
+            Odds.market == bet.market,
+            Odds.outcome == opp_outcome,
+            Odds.scope == "ft",
+            Odds.provider_id != bet.provider_id,  # never hedge at the same book
+        )
+        .all()
+    )
+
+    best: RehedgeCandidate | None = None
+    best_wing: float = float("inf")
+    bet_stake_sek = _bet_stake_sek(bet)
+
+    for opp in candidates_q:
+        key = brackets_key_number(bet.point, _opposite_point(bet.market, opp.point), keys)
+        if key is None:
+            continue
+
+        # Size at our target wing-loss; verify the achieved wing-loss
+        # is within the absolute cap.
+        stake_b = middle_size(bet_stake_sek, bet.odds, opp.odds, TARGET_WING_LOSS_PCT)
+        if stake_b <= 0:
+            continue
+        total = bet_stake_sek + stake_b
+        wing_loss = total - min(bet_stake_sek * bet.odds, stake_b * opp.odds)
+        wing_pct = wing_loss / total if total > 0 else float("inf")
+        if wing_pct > MAX_WING_LOSS_PCT:
+            continue
+
+        if wing_pct < best_wing:
+            best_wing = wing_pct
+            best = RehedgeCandidate(
+                bet_id=bet.id,
+                case="post_placement_middle",
+                hedge_provider=opp.provider_id,
+                hedge_market=bet.market,
+                hedge_outcome=opp_outcome,
+                hedge_point=opp.point,
+                hedge_odds=opp.odds,
+                recommended_stake_base=round(stake_b, 2),
+                base_currency="SEK",
+                metadata={
+                    "key_number": key,
+                    "wing_loss_pct": round(wing_pct, 4),
+                    "original_bet_provider": bet.provider_id,
+                    "original_bet_odds": bet.odds,
+                    "original_bet_point": bet.point,
+                    "original_bet_stake_sek": round(bet_stake_sek, 2),
+                },
+            )
+    return best
+
+
 def scan_open_positions(db: Session) -> list[RehedgeCandidate]:
     """Scan all open pending bets, return emit-able rehedge candidates.
 
     Stateless — caller owns the session and is responsible for upserting
-    the results into `opportunities`.
+    the results into `opportunities` (see persist_rehedge_candidates).
     """
-    return []  # implemented in later tasks
+    out: list[RehedgeCandidate] = []
+    for bet in _query_open_bets(db):
+        c = _classify_case1(db, bet)
+        if c is not None:
+            out.append(c)
+    return out

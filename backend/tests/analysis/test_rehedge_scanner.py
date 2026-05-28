@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from src.analysis.rehedge_scanner import RehedgeCandidate
-from src.db.models import Bet, Event, Provider
+from src.db.models import Bet, Event, Odds, Provider
 
 
 @pytest.fixture
@@ -198,3 +198,101 @@ class TestPointForOppositeSide:
         from src.analysis.rehedge_scanner import _opposite_point
 
         assert _opposite_point("spread", point=None) is None
+
+
+class TestCase1PostPlacementMiddle:
+    """We bet home -2.5; a different provider now offers away +3.5 at
+    a price that gives a wing loss ≤ MAX_WING_LOSS_PCT. Emit candidate."""
+
+    def _add_bet(self, db_session, event, **overrides):
+        kwargs = dict(
+            id=1,
+            event_id=event.id,
+            provider_id="unibet",
+            market="spread",
+            outcome="home",
+            point=-2.5,
+            odds=1.91,
+            stake=100.0,
+            currency="SEK",
+            result="pending",
+            bet_type="value",
+            start_time=event.start_time,
+        )
+        kwargs.update(overrides)
+        db_session.add(Bet(**kwargs))
+
+    def _add_odds(self, db_session, event, **overrides):
+        kwargs = dict(
+            event_id=event.id,
+            provider_id="betsson",
+            market="spread",
+            outcome="away",
+            point=3.5,
+            odds=2.00,  # fair-value odds — low enough vig to pass MAX_WING_LOSS_PCT
+            scope="ft",
+        )
+        kwargs.update(overrides)
+        db_session.add(Odds(**kwargs))
+
+    def test_emits_middle_when_line_crossed_key(self, db_session, future_event):
+        # Bet home -2.5, opposite provider now offers away +3.5 → brackets 3.
+        self._add_bet(db_session, future_event)
+        self._add_odds(db_session, future_event)
+        db_session.flush()
+
+        from src.analysis.rehedge_scanner import scan_open_positions
+
+        candidates = scan_open_positions(db_session)
+        assert len(candidates) == 1
+        c = candidates[0]
+        assert c.bet_id == 1
+        assert c.case == "post_placement_middle"
+        assert c.hedge_provider == "betsson"
+        assert c.hedge_outcome == "away"
+        assert c.hedge_point == 3.5
+        assert c.metadata["key_number"] == 3
+
+    def test_no_emit_when_no_bracket(self, db_session, future_event):
+        # Bet home -2.5; opposite offers away +2.5 — same line, no bracket.
+        self._add_bet(db_session, future_event)
+        self._add_odds(db_session, future_event, point=2.5)
+        db_session.flush()
+
+        from src.analysis.rehedge_scanner import scan_open_positions
+
+        assert scan_open_positions(db_session) == []
+
+    def test_no_emit_when_non_nfl(self, db_session, future_event):
+        future_event.sport = "soccer_epl"
+        self._add_bet(db_session, future_event)
+        self._add_odds(db_session, future_event)
+        db_session.flush()
+
+        from src.analysis.rehedge_scanner import scan_open_positions
+
+        assert scan_open_positions(db_session) == []
+
+    def test_no_emit_when_wing_loss_too_high(self, db_session, future_event):
+        # Heavily juiced opposite side → wing loss > MAX_WING_LOSS_PCT (2.5%).
+        self._add_bet(db_session, future_event)
+        self._add_odds(db_session, future_event, odds=1.20)  # bad price
+        db_session.flush()
+
+        from src.analysis.rehedge_scanner import scan_open_positions
+
+        assert scan_open_positions(db_session) == []
+
+    def test_no_emit_for_moneyline_bet(self, db_session, future_event):
+        self._add_bet(
+            db_session,
+            future_event,
+            market="moneyline",
+            point=None,
+        )
+        self._add_odds(db_session, future_event)
+        db_session.flush()
+
+        from src.analysis.rehedge_scanner import scan_open_positions
+
+        assert scan_open_positions(db_session) == []
