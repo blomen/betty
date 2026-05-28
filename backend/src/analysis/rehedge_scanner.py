@@ -287,11 +287,11 @@ def persist_rehedge_candidates(db: Session, candidates: list[RehedgeCandidate]) 
         )
 
         annotations = {
+            **c.metadata,
             "case": c.case,
             "bet_id": c.bet_id,
             "base_currency": c.base_currency,
             "recommended_stake_base": c.recommended_stake_base,
-            **c.metadata,
         }
 
         if existing_row is None:
