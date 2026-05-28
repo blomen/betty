@@ -48,6 +48,10 @@ class RehedgeCandidate:
     metadata: dict = field(default_factory=dict)
 
 
+_SPREAD_MARKETS = {"spread", "handicap", "runline", "puckline"}
+_TOTAL_MARKETS = {"total", "totals", "over_under", "ou"}
+
+
 def _query_open_bets(db: Session) -> list[Bet]:
     """Return pending bets on future events that are scannable for rehedge.
 
@@ -68,6 +72,41 @@ def _query_open_bets(db: Session) -> list[Bet]:
         )
         .all()
     )
+
+
+def _opposite_outcome(market: str | None, outcome: str | None) -> str | None:
+    """Return the symmetric opposite outcome for spread/total markets.
+
+    Returns None for markets where no symmetric opposite exists
+    (1x2 has a draw, moneyline has no point). The scanner Case 1
+    requires a point, so those markets are dropped here.
+    """
+    if not market or not outcome:
+        return None
+    m = market.lower()
+    o = outcome.lower()
+    if m in _SPREAD_MARKETS:
+        return {"home": "away", "away": "home"}.get(o)
+    if m in _TOTAL_MARKETS:
+        return {"over": "under", "under": "over"}.get(o)
+    return None
+
+
+def _opposite_point(market: str | None, point: float | None) -> float | None:
+    """Return the point value used to query the opposite side.
+
+    For spreads, the opposite side has the negated point (home -2.5
+    corresponds to away +2.5; Betty stores both as separate Odds rows
+    with opposite-signed points). For totals, the same point line
+    applies to both over and under.
+    """
+    if point is None or not market:
+        return None
+    if market.lower() in _SPREAD_MARKETS:
+        return -point
+    if market.lower() in _TOTAL_MARKETS:
+        return point
+    return None
 
 
 def scan_open_positions(db: Session) -> list[RehedgeCandidate]:

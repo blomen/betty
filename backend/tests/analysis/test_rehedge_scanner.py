@@ -146,3 +146,55 @@ class TestQueryOpenBets:
         )
         db_session.flush()
         assert _query_open_bets(db_session) == []
+
+
+class TestOppositeOutcome:
+    """For spreads: opposite of 'home' is 'away' (and point flips sign).
+    For totals: opposite of 'over' is 'under' (point stays the same)."""
+
+    def test_spread_home_to_away(self):
+        from src.analysis.rehedge_scanner import _opposite_outcome
+
+        assert _opposite_outcome("spread", "home") == "away"
+        assert _opposite_outcome("spread", "away") == "home"
+
+    def test_total_over_to_under(self):
+        from src.analysis.rehedge_scanner import _opposite_outcome
+
+        assert _opposite_outcome("total", "over") == "under"
+        assert _opposite_outcome("total", "under") == "over"
+
+    def test_runline_handicap_aliases(self):
+        # MLB runline and NHL puckline use home/away too.
+        from src.analysis.rehedge_scanner import _opposite_outcome
+
+        assert _opposite_outcome("runline", "home") == "away"
+        assert _opposite_outcome("handicap", "away") == "home"
+
+    def test_unknown_market_returns_none(self):
+        from src.analysis.rehedge_scanner import _opposite_outcome
+
+        assert _opposite_outcome("1x2", "home") is None  # 3-way, no clean opposite
+        assert _opposite_outcome("moneyline", "home") is None  # no point/no middle
+
+
+class TestPointForOppositeSide:
+    def test_spread_point_flips_sign(self):
+        from src.analysis.rehedge_scanner import _opposite_point
+
+        # home -2.5 → away side prices at +2.5 in our normalised storage
+        # (Betty stores both rows with the same magnitude; the outcome
+        # column carries the side, NOT the sign. So opposite "point" equals
+        # the original.)
+        assert _opposite_point("spread", point=-2.5) == 2.5
+        assert _opposite_point("spread", point=2.5) == -2.5
+
+    def test_total_point_unchanged(self):
+        from src.analysis.rehedge_scanner import _opposite_point
+
+        assert _opposite_point("total", point=43.5) == 43.5
+
+    def test_no_point_returns_none(self):
+        from src.analysis.rehedge_scanner import _opposite_point
+
+        assert _opposite_point("spread", point=None) is None
