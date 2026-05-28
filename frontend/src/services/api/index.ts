@@ -12,6 +12,7 @@ import { specialsApi } from './specials';
 import { profilesApi } from './profiles';
 import { tradingApi } from './trading';
 import { settingsApi } from './settings';
+import { rehedgeApi } from './rehedge';
 
 // Compose the unified api object (preserves existing api.xxx() usage)
 export const api = {
@@ -24,6 +25,7 @@ export const api = {
   ...profilesApi,
   ...tradingApi,
   ...settingsApi,
+  ...rehedgeApi,
 };
 
 export { fireWindowApi } from './fireWindow';

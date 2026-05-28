@@ -110,6 +110,83 @@ def cluster_summary(
     return service.get_cluster_summary(cluster)
 
 
+@router.get("/rehedge")
+def list_rehedge_opportunities(db: Session = Depends(get_db)) -> dict:
+    """List active rehedge candidates emitted by the open-position scanner.
+
+    See backend/src/analysis/rehedge_scanner.py for the source.
+    """
+    from src.db.models import Bet, Event, Opportunity
+
+    opps = (
+        db.query(Opportunity)
+        .filter(Opportunity.type == "rehedge", Opportunity.is_active.is_(True))
+        .all()
+    )
+    bet_ids = [
+        (o.annotations or {}).get("bet_id")
+        for o in opps
+        if (o.annotations or {}).get("bet_id")
+    ]
+    bets_by_id = (
+        {b.id: b for b in db.query(Bet).filter(Bet.id.in_(bet_ids)).all()}
+        if bet_ids
+        else {}
+    )
+    events_by_id = {
+        e.id: e
+        for e in db.query(Event)
+        .filter(Event.id.in_([o.event_id for o in opps]))
+        .all()
+    }
+
+    out = []
+    for o in opps:
+        a = o.annotations or {}
+        bid = a.get("bet_id")
+        bet = bets_by_id.get(bid) if bid else None
+        event = events_by_id.get(o.event_id)
+        out.append(
+            {
+                "opportunity_id": o.id,
+                "case": a.get("case"),
+                "original_bet_id": bid,
+                "original_bet": (
+                    {
+                        "provider": bet.provider_id if bet else None,
+                        "market": bet.market if bet else None,
+                        "outcome": bet.outcome if bet else None,
+                        "point": bet.point if bet else None,
+                        "odds": bet.odds if bet else None,
+                        "stake": bet.stake if bet else None,
+                        "currency": bet.currency if bet else None,
+                    }
+                    if bet
+                    else None
+                ),
+                "hedge_provider": o.provider1_id,
+                "hedge_market": o.market,
+                "hedge_outcome": o.outcome1,
+                "hedge_point": o.point,
+                "hedge_odds": o.odds1,
+                "recommended_stake_sek": a.get("recommended_stake_base"),
+                "key_number": a.get("key_number"),
+                "wing_loss_pct": a.get("wing_loss_pct"),
+                "event": {
+                    "id": event.id if event else o.event_id,
+                    "home_team": event.home_team if event else None,
+                    "away_team": event.away_team if event else None,
+                    "start_time": (
+                        event.start_time.isoformat() if event and event.start_time else None
+                    ),
+                    "sport": event.sport if event else None,
+                },
+                "detected_at": o.detected_at.isoformat() if o.detected_at else None,
+            }
+        )
+    return {"opportunities": out}
+
+
 @router.post("/bonus/match")
 def match_bonus_bet(
     data: BonusMatchRequest,

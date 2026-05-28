@@ -17,7 +17,9 @@ def recalc_profit_pct(anchor_odds: float, counter_odds: list[float]) -> float | 
     return (1.0 / inv_sum - 1.0) * 100.0
 
 
-def recalc_counter_stakes(anchor_stake: float, anchor_odds: float, counter_odds: list[float]) -> list[float]:
+def recalc_counter_stakes(
+    anchor_stake: float, anchor_odds: float, counter_odds: list[float]
+) -> list[float]:
     """Per-counter stakes for equal-payout: counter_stake = total_payout / counter_odds.
 
     Total payout = anchor_stake × anchor_odds. Each counter sized so it pays the same.

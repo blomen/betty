@@ -108,6 +108,7 @@ class ExtractionScheduler:
         self._boosts_task: asyncio.Task | None = None
         self._cleanup_task: asyncio.Task | None = None
         self._settlement_task: asyncio.Task | None = None
+        self._rehedge_task: asyncio.Task | None = None
         self._watchdog_task: asyncio.Task | None = None
         # Per-provider locks prevent the same provider from overlapping with itself.
         self._provider_locks: dict[str, asyncio.Lock] = {}
@@ -547,6 +548,9 @@ class ExtractionScheduler:
         # CLV snapshot tier — snapshot closing odds every 2 min
         await self.start_settlement_tier()
 
+        # Open-position rehedge scanner — 5 min interval
+        await self.start_rehedge_tier()
+
         # Provider health watchdog — logs CRITICAL when any schedule stops running
         self._start_watchdog()
 
@@ -741,6 +745,10 @@ class ExtractionScheduler:
         if self._watchdog_task and not self._watchdog_task.done():
             self._watchdog_task.cancel()
             self._watchdog_task = None
+        # Also stop rehedge task
+        if self._rehedge_task and not self._rehedge_task.done():
+            self._rehedge_task.cancel()
+            self._rehedge_task = None
 
     # ── Boosts tier (standalone, no pipeline) ─────────────────────────
 
@@ -1120,6 +1128,71 @@ class ExtractionScheduler:
                 )
 
             return clv_stats
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    async def start_rehedge_tier(self, interval_seconds: int = 300):
+        """Start periodic open-position rehedge scans (default 5 min).
+
+        Scans all `bets WHERE result='pending' AND start_time > now`, looks
+        for post-placement middles, upserts candidates into the
+        opportunities table with type='rehedge'.
+
+        Phase 1: emit-only. No auto-placement. See
+        docs/superpowers/plans/2026-05-28-open-position-rehedge-scanner.md.
+        """
+        if getattr(self, "_rehedge_task", None) and not self._rehedge_task.done():
+            logger.warning("[Scheduler] Rehedge tier already running")
+            return
+
+        logger.info(f"[Scheduler] Starting rehedge tier: interval={interval_seconds}s")
+        self._rehedge_task = asyncio.create_task(self._rehedge_loop(interval_seconds))
+
+    async def _rehedge_loop(self, interval_seconds: int):
+        """Recurring loop for rehedge scans."""
+        try:
+            await asyncio.sleep(180)  # 3 min initial delay — let extraction warm up
+        except asyncio.CancelledError:
+            return
+
+        while True:
+            try:
+                self._run_rehedge_scan()
+            except asyncio.CancelledError:
+                logger.info("[Scheduler:rehedge] Loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"[Scheduler:rehedge] Error: {e}", exc_info=True)
+
+            try:
+                await asyncio.sleep(interval_seconds)
+            except asyncio.CancelledError:
+                break
+
+    def _run_rehedge_scan(self) -> dict:
+        """One scan iteration — query, classify, upsert."""
+        from src.analysis.rehedge_scanner import (
+            persist_rehedge_candidates,
+            scan_open_positions,
+        )
+        from src.db.models import get_session
+
+        session = get_session()
+        try:
+            candidates = scan_open_positions(session)
+            stats = persist_rehedge_candidates(session, candidates)
+            session.commit()
+
+            total_changed = stats["inserted"] + stats["updated"] + stats["deactivated"]
+            if total_changed > 0:
+                logger.info(
+                    f"[Scheduler:rehedge] +{stats['inserted']} inserted, "
+                    f"{stats['updated']} updated, {stats['deactivated']} deactivated"
+                )
+            return stats
         except Exception:
             session.rollback()
             raise
