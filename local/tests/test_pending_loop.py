@@ -167,3 +167,75 @@ def test_dom_driven_strategy_is_not_passive():
         "altenar _sync_history uses page.goto / DOM clicks; flagging it passive "
         "would let PendingLoop clobber open betslips"
     )
+
+
+# ---------------------------------------------------------------------------
+# test_sync_provider_skips_event_page_for_dom_driven
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sync_provider_skips_event_page_for_dom_driven(monkeypatch):
+    """A non-passive workflow whose tab is on /event/ must NOT have sync_history called."""
+    from unittest.mock import AsyncMock
+    import local.mirror.workflows as wfmod
+
+    page = MagicMock()
+    page.url = "https://altenar.example.com/event/123"
+
+    workflow = MagicMock()
+    workflow.sync_history_is_passive = False
+    workflow.find_tab = AsyncMock(return_value=page)
+    workflow.check_login = AsyncMock(return_value=True)
+    workflow.sync_history = AsyncMock(return_value=[])
+
+    monkeypatch.setattr(wfmod, "get_workflow", lambda pid: workflow)
+
+    loop = PendingLoop(
+        browser=_make_browser(running=True),
+        broadcaster=_make_broadcaster(),
+        proxy_url="http://localhost:8000",
+    )
+    await loop._sync_provider("altenar", [])
+
+    workflow.sync_history.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# test_sync_provider_proceeds_on_event_page_for_passive
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sync_provider_proceeds_on_event_page_for_passive(monkeypatch):
+    """A passive workflow whose tab is on /event/ DOES get sync_history called."""
+    from unittest.mock import AsyncMock
+    import local.mirror.workflows as wfmod
+    import local.mirror.pending_loop as pl
+
+    page = MagicMock()
+    page.url = "https://pinnacle.se/sports/123/event/456"
+
+    workflow = MagicMock()
+    workflow.sync_history_is_passive = True
+    workflow.find_tab = AsyncMock(return_value=page)
+    workflow.check_login = AsyncMock(return_value=True)
+    workflow.sync_history = AsyncMock(return_value=[])
+
+    monkeypatch.setattr(wfmod, "get_workflow", lambda pid: workflow)
+    # reconcile_and_publish reaches into the tunnel client — stub it.
+    monkeypatch.setattr(
+        pl, "reconcile_and_publish", AsyncMock(return_value=0), raising=False
+    )
+
+    loop = PendingLoop(
+        browser=_make_browser(running=True),
+        broadcaster=_make_broadcaster(),
+        proxy_url="http://localhost:8000",
+    )
+    # _record_unknown_open_bets posts to the tunnel; stub it so we don't need real HTTP.
+    loop._record_unknown_open_bets = AsyncMock(return_value=None)
+
+    await loop._sync_provider("pinnacle", [])
+
+    workflow.sync_history.assert_called_once()

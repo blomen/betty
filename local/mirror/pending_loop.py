@@ -377,7 +377,7 @@ class PendingLoop:
         # If we're not mid-bet, the page can be navigated freely.
         current_url = (page.url or "").lower()
         has_event = "/event/" in current_url or "#/event/" in current_url
-        if has_event:
+        if has_event and not getattr(workflow, "sync_history_is_passive", False):
             logger.debug(
                 f"[PendingLoop] {pid} tab is on an event page ({current_url[:60]}); "
                 f"skipping sync to avoid clobbering an active betslip"
