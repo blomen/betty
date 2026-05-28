@@ -4,6 +4,7 @@ cross-currency arbs (cloudbet USDC vs pinnacle SEK) can be placed correctly."""
 from __future__ import annotations
 
 from dataclasses import fields
+from datetime import UTC
 
 from src.services.batch_builder import BatchBet
 
@@ -17,7 +18,7 @@ def test_batchbet_has_currency_fields():
 
 def test_arb_leg_has_currency_field():
     """Each leg dict in ArbOpportunity.legs must include 'currency'."""
-    from datetime import datetime, timezone
+    from datetime import datetime
     from types import SimpleNamespace
 
     from src.analysis.scanner import OpportunityScanner
@@ -30,9 +31,10 @@ def test_arb_leg_has_currency_field():
         odds=2.56,
         point=None,
         scope="ft",
-        updated_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(UTC),
         bid=None,
         ask=None,
+        max_stake=None,
     )
     odds_pinnacle_away = SimpleNamespace(
         provider_id="pinnacle",
@@ -41,9 +43,10 @@ def test_arb_leg_has_currency_field():
         odds=1.60,
         point=None,
         scope="ft",
-        updated_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(UTC),
         bid=None,
         ask=None,
+        max_stake=None,
     )
     # cloudbet quotes both outcomes so outcome-count matches pinnacle (2 vs 2),
     # avoiding the market-type-mismatch filter. Odds beat pinnacle devigged fair
@@ -55,9 +58,10 @@ def test_arb_leg_has_currency_field():
         odds=2.65,
         point=None,
         scope="ft",
-        updated_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(UTC),
         bid=None,
         ask=None,
+        max_stake=None,
     )
     odds_cloudbet_away = SimpleNamespace(
         provider_id="cloudbet",
@@ -66,9 +70,10 @@ def test_arb_leg_has_currency_field():
         odds=1.71,
         point=None,
         scope="ft",
-        updated_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(UTC),
         bid=None,
         ask=None,
+        max_stake=None,
     )
     event = SimpleNamespace(
         id="evt:test",

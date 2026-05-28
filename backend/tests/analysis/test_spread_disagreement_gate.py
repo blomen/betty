@@ -3,7 +3,7 @@ devigged probabilities disagree by >30pp on the same outcome."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from src.analysis.scanner import OpportunityScanner
@@ -17,9 +17,10 @@ def _odds(provider, market, outcome, value, point=None, scope="ft"):
         odds=value,
         point=point,
         scope=scope,
-        updated_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(UTC),
         bid=None,
         ask=None,
+        max_stake=None,
     )
 
 

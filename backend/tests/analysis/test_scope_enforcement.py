@@ -19,6 +19,7 @@ def _odds(provider, market, outcome, value, point=None, scope="ft"):
         updated_at=datetime.now(UTC),
         bid=None,
         ask=None,
+        max_stake=None,
     )
 
 

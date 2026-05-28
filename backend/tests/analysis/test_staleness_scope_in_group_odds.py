@@ -3,16 +3,19 @@
 Sharp providers (pinnacle) are always gated — a stale pinnacle row
 corrupts every devig downstream.
 
-Soft books at 1x2/moneyline are NOT gated — the user verifies live odds
-in the browser before betting, and these markets have exactly one row per
-(provider, event, market, outcome) so they can't accumulate phantom keys.
+Soft books are also gated at every market. Originally moneyline/1x2 was
+exempt on the theory that "the user verifies live odds in the browser
+before betting"; cloudbet 2026-05-28 disproved that: cloudbet's affiliate
+API marked the FT moneyline SELECTION_DISABLED in the hours before
+kickoff while the consumer site kept live prices. The 07:59 row stayed
+in the DB for 13.5 h and kept pairing against fresh Pinnacle as a fake
++7% arb until the user opened the bet and noticed the mismatch.
 
-Soft books at spread/total markets ARE gated — when a soft book's mainline
-drifts (e.g. total 10.5 → 11.5), upsert_odds doesn't DELETE the old point,
-so the orphan row keeps the scanner pairing the dead line against
-Pinnacle's full alt-line ladder as phantom arbs. The user can't catch this
-in the browser because the dropped point no longer appears at the
-bookmaker at all.
+Spread/total alt-line ladders have a second failure mode — when the
+mainline drifts (e.g. total 10.5 → 11.5), upsert_odds doesn't DELETE
+the old point, so the orphan row keeps pairing against Pinnacle's
+permanent alt-line ladder as a phantom arb the user can't place
+(the dropped point no longer appears at the bookmaker at all).
 
 Reverse-value's consensus calc has its own tighter gate
 (consensus_staleness_minutes_for) that runs downstream of group_odds.
@@ -37,6 +40,7 @@ def _odds(provider, market, outcome, value, *, updated_at, point=None, scope="ft
         updated_at=updated_at,
         bid=None,
         ask=None,
+        max_stake=None,
     )
 
 
@@ -44,10 +48,12 @@ def _event(odds_list, sport="football"):
     return SimpleNamespace(id="evt:s1", sport=sport, odds=odds_list, home_away_validated=True)
 
 
-def test_stale_soft_row_kept_in_group_odds():
-    # 2 h is well beyond betinia's 18-min cadence-based window, but the
-    # placement path no longer enforces that for soft books — the user
-    # validates manually in the browser before placing.
+def test_stale_soft_moneyline_row_dropped_in_group_odds():
+    # 2 h is well beyond betinia's 18-min cadence-based window. Regression
+    # for cloudbet 2026-05-28: affiliate API marked FT moneyline
+    # SELECTION_DISABLED for hours before kickoff while consumer site kept
+    # live prices, so the old row stayed in DB and surfaced a phantom +7%
+    # arb until the user opened the bet.
     now = datetime.now(UTC)
     stale = now - timedelta(hours=2)
     fresh = now - timedelta(seconds=30)
@@ -63,7 +69,7 @@ def test_stale_soft_row_kept_in_group_odds():
     grouped = scanner.group_odds(ev, check_staleness=True)
     home = grouped.get("moneyline", {}).get("home", [])
     providers = {entry["provider"] for entry in home}
-    assert "betinia" in providers, "stale soft row was filtered — placement gate should ignore soft staleness"
+    assert "betinia" not in providers, "stale soft moneyline leaked — surfaces phantom arbs against fresh Pinnacle"
     assert "pinnacle" in providers
 
 

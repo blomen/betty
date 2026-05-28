@@ -1328,20 +1328,19 @@ class OpportunityScanner:
             if odds.provider_id in exclude_providers:
                 continue
 
-            # Skip stale SHARP odds at any market — Pinnacle is the fair-odds
-            # reference, a stale row corrupts every devig downstream.
+            # Skip stale odds at any market — sharp OR soft. Sharp rows
+            # corrupt every devig downstream. Soft rows surface phantom arbs
+            # when the bookmaker's API stops returning the market (cloudbet
+            # affiliate API marks FT submarkets SELECTION_DISABLED in the
+            # hours before kickoff while the consumer site keeps live prices —
+            # the old row keeps pairing against fresh Pinnacle as a fake +EV
+            # leg until staleness catches it).
             #
-            # Skip stale SOFT spread/total odds — soft books accumulate phantom
-            # alt-line rows when their mainline drifts (e.g. total 10.5 → 11.5):
-            # upsert_odds doesn't DELETE points the API no longer returns, so
-            # the old point keeps the scanner pairing the dead line against
-            # Pinnacle's permanent alt-line ladder as a phantom arb the user
-            # can't place (the bookmaker no longer offers that point).
-            # 1x2/moneyline soft rows stay unfiltered — they have one outcome
-            # per market key so orphans can't accumulate, and the user-in-
-            # browser check still catches stale odds.
-            soft_handicap_stale = odds.provider_id not in SHARP_PROVIDERS and odds.market in ("spread", "total")
-            if check_staleness and odds.updated_at and (odds.provider_id in SHARP_PROVIDERS or soft_handicap_stale):
+            # Spread/total also accumulate phantom alt-line rows when their
+            # mainline drifts (e.g. total 10.5 → 11.5); upsert doesn't DELETE
+            # points the API stopped returning, so the gate is doubly important
+            # for ladders.
+            if check_staleness and odds.updated_at:
                 updated = odds.updated_at
                 if updated.tzinfo is None:
                     updated = updated.replace(tzinfo=UTC)

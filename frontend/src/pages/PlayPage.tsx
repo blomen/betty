@@ -174,7 +174,97 @@ function computeArbStakes(
   return { anchorSek: anchorStake, counterSekByLeg, payout: totalPayout }
 }
 
-function BalanceCell({ pid, balances }: { pid: string; balances: Record<string, ProviderBalanceLike> }) {
+// Inline manual controls for a pending bet — won/lost/void settle, edit
+// odds+stake, delete. Used by both pending render sites (soft cluster + unlimited)
+// so the action set stays consistent. All actions hit existing backend endpoints
+// directly; on success they call onChanged() so the parent can reload.
+function PendingRowActions({ bet, onChanged }: { bet: any; onChanged: () => void }) {
+  const betId: number | undefined = bet?.bet_id ?? bet?.id
+  const [busy, setBusy] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [editStake, setEditStake] = useState('')
+  const [editOdds, setEditOdds] = useState('')
+
+  if (!betId) return null
+
+  const stake = Number(bet?.stake ?? 0)
+  const odds = Number(bet?.odds ?? 0)
+
+  const wrap = async (fn: () => Promise<unknown>) => {
+    if (busy) return
+    setBusy(true)
+    try { await fn(); onChanged() } catch (e) { console.warn('[pending-action] failed', e) }
+    finally { setBusy(false) }
+  }
+  // Won pays stake × odds; void returns stake; lost zero. settleBet
+  // endpoint expects an explicit payout — backend doesn't recompute.
+  const settle = (result: 'won' | 'lost' | 'void') => {
+    const payout = result === 'won' ? stake * odds : result === 'void' ? stake : 0
+    return wrap(() => api.settleBet(betId, result, payout))
+  }
+  const commitEdit = async () => {
+    const s = editStake === '' ? undefined : parseFloat(editStake)
+    const o = editOdds === '' ? undefined : parseFloat(editOdds)
+    const body: { stake?: number; odds?: number } = {}
+    if (s != null && isFinite(s) && s >= 0) body.stake = s
+    if (o != null && isFinite(o) && o >= 1) body.odds = o
+    if (Object.keys(body).length === 0) { setEditing(false); return }
+    await wrap(() => api.editBet(betId, body))
+    setEditing(false)
+  }
+  const del = () => {
+    if (!window.confirm(`Delete pending bet #${betId}? This cannot be undone.`)) return
+    return wrap(() => api.deleteBet(betId))
+  }
+
+  if (editing) {
+    return (
+      <span className="inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+        <input
+          autoFocus type="number" step="0.01" min="0" placeholder={stake.toFixed(2)}
+          value={editStake} onChange={(e) => setEditStake(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(); if (e.key === 'Escape') setEditing(false) }}
+          className="w-14 px-1 text-[10px] bg-zinc-900 text-amber-200 border border-amber-700/60 rounded font-mono"
+          title="stake"
+        />
+        <span className="text-zinc-600 text-[9px]">@</span>
+        <input
+          type="number" step="0.01" min="1.01" placeholder={odds.toFixed(2)}
+          value={editOdds} onChange={(e) => setEditOdds(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(); if (e.key === 'Escape') setEditing(false) }}
+          className="w-14 px-1 text-[10px] bg-zinc-900 text-amber-200 border border-amber-700/60 rounded font-mono"
+          title="odds"
+        />
+        <button onClick={commitEdit} disabled={busy}
+          className="px-1 text-[10px] text-emerald-400 hover:text-emerald-200">✓</button>
+        <button onClick={() => setEditing(false)}
+          className="px-1 text-[10px] text-zinc-500 hover:text-zinc-300">✕</button>
+      </span>
+    )
+  }
+
+  return (
+    <span className="inline-flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
+      <button onClick={() => settle('won')} disabled={busy}
+        title={`Settle WON · payout ${(stake * odds).toFixed(2)}`}
+        className="px-1 text-[10px] font-bold text-emerald-400 hover:bg-emerald-900/40 rounded">W</button>
+      <button onClick={() => settle('lost')} disabled={busy}
+        title="Settle LOST"
+        className="px-1 text-[10px] font-bold text-red-400 hover:bg-red-900/40 rounded">L</button>
+      <button onClick={() => settle('void')} disabled={busy}
+        title={`Settle VOID · refund ${stake.toFixed(2)}`}
+        className="px-1 text-[10px] font-bold text-zinc-400 hover:bg-zinc-700/40 rounded">V</button>
+      <button onClick={() => { setEditStake(stake.toFixed(2)); setEditOdds(odds.toFixed(2)); setEditing(true) }} disabled={busy}
+        title="Edit stake / odds"
+        className="px-1 text-[10px] text-zinc-500 hover:text-zinc-200">✎</button>
+      <button onClick={del} disabled={busy}
+        title="Delete pending bet"
+        className="px-1 text-[10px] text-zinc-600 hover:text-red-400">🗑</button>
+    </span>
+  )
+}
+
+function BalanceCell({ pid, balances, onSaved }: { pid: string; balances: Record<string, ProviderBalanceLike>; onSaved?: () => void }) {
   const balance = getBalance(balances[pid])
   const trigger = getTrigger(balances[pid])
   // USD-denominated providers (polymarket, kalshi, cloudbet) display the
@@ -186,9 +276,62 @@ function BalanceCell({ pid, balances }: { pid: string; balances: Record<string, 
     ? raw.balance_native
     : balance
   const isUsd = USD_PROVIDERS.has(pid)
+  const [editing, setEditing] = useState(false)
+  const [editValue, setEditValue] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const commit = async () => {
+    const parsed = parseFloat(editValue)
+    if (!isFinite(parsed) || parsed < 0) { setEditing(false); return }
+    setSaving(true)
+    try {
+      await api.setBalance(pid, parsed)
+      onSaved?.()
+    } catch (err) {
+      console.warn(`[balance-edit] ${pid} failed`, err)
+    } finally {
+      setSaving(false)
+      setEditing(false)
+    }
+  }
+
+  if (editing) {
+    return (
+      <span onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1">
+        <input
+          autoFocus
+          type="number"
+          step="0.01"
+          min="0"
+          value={editValue}
+          onChange={(e) => setEditValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit()
+            if (e.key === 'Escape') setEditing(false)
+          }}
+          onBlur={commit}
+          disabled={saving}
+          className="w-20 px-1 text-[11px] bg-zinc-900 text-green-300 border border-emerald-700/60 rounded font-mono"
+        />
+        <span className="text-zinc-500 text-[9px]">{isUsd ? '$' : 'kr'}</span>
+      </span>
+    )
+  }
+
   return (
     <span>
       <span>{isUsd ? '$' : ''}{balDisplay.toFixed(2)}{!isUsd ? ' kr' : ''}</span>
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          setEditValue(balDisplay.toFixed(2))
+          setEditing(true)
+        }}
+        className="ml-1 text-zinc-500 hover:text-zinc-200 text-[10px] cursor-pointer"
+        title="Adjust balance"
+      >
+        ✎
+      </button>
       {trigger && balance < 1 && (
         <span
           className="ml-2 text-xs text-orange-400/80"
@@ -407,6 +550,23 @@ export default function PlayPage() {
     }
     setPayoutOverride(eid, newStake * legOdds)
   }
+  // Per-leg odds overrides for the calc widget. Keyed by `${eid}:${legKey}`.
+  // User can click an odds value in the calc and edit it — useful when the
+  // scanner odds are stale and the user's already seen the live number on
+  // the bookmaker tab. The override is what gets recorded when "Place bet"
+  // is clicked (NOT the original scanner value).
+  const [oddsOverridesByLeg, setOddsOverridesByLeg] = useState<Record<string, number>>({})
+  const setOddsOverride = (key: string, odds: number | null) => {
+    setOddsOverridesByLeg(prev => {
+      const next = { ...prev }
+      if (odds == null || !isFinite(odds) || odds < 1.01) delete next[key]
+      else next[key] = odds
+      return next
+    })
+  }
+  // Tracks which event_ids are currently being placed (Place-bet button
+  // disabled + label "placing…" while in flight). Keyed by event_id.
+  const [placingArbs, setPlacingArbs] = useState<Set<string>>(new Set())
   // (event_id) → set of leg-keys (same shape as pickingLegs) for legs that
   // have been synced (nav ok + not closed + odds streaming). When ALL legs
   // of an opp are in this set, the row is "all green" and ready to place.
@@ -1448,10 +1608,19 @@ export default function PlayPage() {
     }
   }, [mirrorState.lastFetched, activeProviders])
 
-  // SSE event handler
+  // SSE event handler — drains the queue from useMirrorStream so that two
+  // events arriving in the same React batch (e.g. bet_recorded +
+  // balance_intercepted, or arb_alignment + arb_leg_odds) both run their
+  // dispatch instead of the latter silently overwriting the former.
   useEffect(() => {
-    if (!mirror.lastEvent) return
-    const { type, data } = mirror.lastEvent
+    if (mirror.pendingEvents.length === 0) return
+    // Snapshot + clear immediately so events arriving WHILE we dispatch end
+    // up in a fresh queue (functional updater in useMirrorStream preserves
+    // them) and re-trigger this effect on the next tick.
+    const batch = mirror.pendingEvents
+    mirror.clearEvents()
+    for (const evt of batch) {
+    const { type, data } = evt
     if (type === 'login_waiting') {
       setProviderStatusFor(
         data.provider_id,
@@ -1768,25 +1937,28 @@ export default function PlayPage() {
         return true
       }
       const ts = Date.now()
-      setOppsByCluster(prev => {
-        // First pass: persist the override against the exact picked leg.
-        if (pickedOutcome != null) {
-          const k = legOddsKey(eid, pid, pickedOutcome, pickedPoint)
-          setLiveLegOdds(om => om[k]?.odds === live ? om : { ...om, [k]: { odds: live, ts } })
-        } else {
-          // No picked-leg meta (shouldn't happen post-navigate, but guard
-          // anyway) — best-effort key against the first matching leg.
-          for (const opps of Object.values(prev)) {
-            const o = opps.find((x: any) => x.event_id === eid)
-            if (!o) continue
-            const matchedLeg = (o.legs ?? []).find((l: any) => (l.provider ?? l.provider_id) === pid)
-            if (matchedLeg) {
-              const k = legOddsKey(eid, pid, matchedLeg.outcome, matchedLeg.point)
-              setLiveLegOdds(om => om[k]?.odds === live ? om : { ...om, [k]: { odds: live, ts } })
-            }
-            break
+      // Persist the override OUTSIDE the setOppsByCluster updater — updater
+      // functions must be pure (React 19 concurrent batching / StrictMode runs
+      // them twice). Use closure `oppsByCluster` for the fallback leg lookup.
+      let liveOverrideKey: string | null = null
+      if (pickedOutcome != null) {
+        liveOverrideKey = legOddsKey(eid, pid, pickedOutcome, pickedPoint)
+      } else {
+        for (const opps of Object.values(oppsByCluster)) {
+          const o = opps.find((x: any) => x.event_id === eid)
+          if (!o) continue
+          const matchedLeg = (o.legs ?? []).find((l: any) => (l.provider ?? l.provider_id) === pid)
+          if (matchedLeg) {
+            liveOverrideKey = legOddsKey(eid, pid, matchedLeg.outcome, matchedLeg.point)
           }
+          break
         }
+      }
+      if (liveOverrideKey) {
+        const k = liveOverrideKey
+        setLiveLegOdds(om => om[k]?.odds === live ? om : { ...om, [k]: { odds: live, ts } })
+      }
+      setOppsByCluster(prev => {
         const next: Record<string, any[]> = {}
         let totalMatches = 0
         for (const [cluster, opps] of Object.entries(prev)) {
@@ -1837,6 +2009,40 @@ export default function PlayPage() {
       if (!pid || !updates || Object.keys(updates).length === 0) return
       const cluster = resolveSoftCluster(pid)
       const ts = Date.now()
+      // Pre-collect liveLegOdds overrides OUTSIDE the setOppsByCluster updater
+      // — updater functions must be pure. Walk current opps with the same
+      // filter + drift guard the updater uses; emit a single setLiveLegOdds
+      // batched write before setOppsByCluster.
+      const liveOverrideUpdates: Record<string, number> = {}
+      for (const [c, opps] of Object.entries(oppsByCluster)) {
+        if (c !== cluster) continue
+        for (const o of opps) {
+          for (const l of (o.legs ?? [])) {
+            const lpid = (l.provider ?? l.provider_id ?? '') as string
+            if (resolveSoftCluster(lpid) !== cluster) continue
+            const oid = (l.provider_meta || {}).outcome_id
+            if (!oid) continue
+            const newOdds = updates[String(oid)]
+            if (newOdds == null || newOdds <= 0 || newOdds === l.odds) continue
+            const currentOdds = Number(l.odds ?? 0)
+            if (currentOdds > 0 && Math.abs(newOdds - currentOdds) / currentOdds > 0.35) continue
+            const k = legOddsKey(o.event_id, lpid, l.outcome, l.point)
+            liveOverrideUpdates[k] = newOdds
+          }
+        }
+      }
+      if (Object.keys(liveOverrideUpdates).length > 0) {
+        setLiveLegOdds(om => {
+          let changed = false
+          const next: typeof om = { ...om }
+          for (const [k, v] of Object.entries(liveOverrideUpdates)) {
+            if (om[k]?.odds === v) continue
+            next[k] = { odds: v, ts }
+            changed = true
+          }
+          return changed ? next : om
+        })
+      }
       setOppsByCluster(prev => {
         const next: Record<string, any[]> = {}
         let totalMatches = 0
@@ -1875,10 +2081,6 @@ export default function PlayPage() {
                 }
               }
               legMutated = true
-              // Persist override so loadArbOpps reapplies it after the next
-              // 5-min server re-scan (server odds may briefly snap back).
-              const k = legOddsKey(o.event_id, lpid, l.outcome, l.point)
-              setLiveLegOdds(om => om[k]?.odds === newOdds ? om : { ...om, [k]: { odds: newOdds, ts } })
               return { ...l, odds: newOdds }
             })
             if (!legMutated) return o
@@ -2049,7 +2251,8 @@ export default function PlayPage() {
         }))
       }
     }
-  }, [mirror.lastEvent])
+    }  // end of for (const evt of batch)
+  }, [mirror.pendingEvents])
 
   const handleToastConfirm = (toast: SettleToast) => {
     setConfirmedSettlements(prev => [...prev, { bet_id: toast.bet_id, result: toast.result, payout: toast.payout }])
@@ -2286,7 +2489,7 @@ export default function PlayPage() {
   const isCentsMarket = (provider_id: string | undefined | null): boolean =>
     provider_id === 'polymarket' || provider_id === 'kalshi'
   const fmtStake = (b: BatchBet) => isCentsMarket(b.provider_id) ? `$${b.stake.toFixed(2)}` : `${Math.round(b.stake)} kr`
-  const fmtEv = (b: BatchBet) => isCentsMarket(b.provider_id) ? `+$${b.expected_profit.toFixed(2)}` : `+${b.expected_profit.toFixed(0)} kr`
+  const fmtEv = (b: BatchBet) => isCentsMarket(b.provider_id) ? `+$${b.expected_profit.toFixed(2)}` : `+${b.expected_profit.toFixed(2)} kr`
 
   // Compact diagnostic badges for a value-bet row. Reads `annotations`
   // populated by the backend analyzer; renders nothing when null/empty.
@@ -2797,7 +3000,7 @@ export default function PlayPage() {
                               return (
                                 <div key={pid} className="flex items-center gap-1.5">
                                   <span className="text-zinc-400 uppercase text-[10px] tracking-wider">{pid}</span>
-                                  <BalanceCell pid={pid} balances={providerBalances} />
+                                  <BalanceCell pid={pid} balances={providerBalances} onSaved={load} />
                                   {onlyBonus && (
                                     <button
                                       onClick={async (e) => {
@@ -2929,7 +3132,13 @@ export default function PlayPage() {
                         {funded.map(pid => {
                           const bal = getBalance(providerBalances[pid])
                           const pending = pendingByProvider[pid]?.length ?? 0
-                          const cardState = deriveCardState(tabOpenProviders.has(pid), loggedInProviders.has(pid))
+                          // Soft books: render as a plain link to the site — no login-state
+                          // badges, no red/green highlight. Only unlimited providers (the
+                          // auto-hedge pool) keep the tab/login indicator.
+                          const isUnlimited = UNLIMITED_PROVIDERS.has(pid)
+                          const cardState: CardState = isUnlimited
+                            ? deriveCardState(tabOpenProviders.has(pid), loggedInProviders.has(pid))
+                            : 'no_tab'
                           return (
                             <div key={pid} className="border-b border-zinc-800/30 last:border-b-0">
                               {/* Provider header — activate button + state */}
@@ -2944,18 +3153,18 @@ export default function PlayPage() {
                                   }
                                 >
                                   <span className="uppercase font-semibold">{pid}</span>
-                                  {cardState === 'tab_open_not_in' && (
+                                  {isUnlimited && cardState === 'tab_open_not_in' && (
                                     <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-red-400/25 text-red-100 font-semibold">
                                       Log in to continue
                                     </span>
                                   )}
-                                  {cardState === 'tab_open_logged' && (
+                                  {isUnlimited && cardState === 'tab_open_logged' && (
                                     <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-emerald-500/25 text-emerald-100 font-semibold">
                                       Logged in
                                     </span>
                                   )}
                                   <span className="ml-1 text-green-400 font-mono">
-                                    <BalanceCell pid={pid} balances={providerBalances} />
+                                    <BalanceCell pid={pid} balances={providerBalances} onSaved={load} />
                                   </span>
                                 </button>
                                 {pending > 0 && <span className="text-[10px] text-amber-400">{pending}p pending</span>}
@@ -3078,15 +3287,30 @@ export default function PlayPage() {
                                   const lpid = (l.provider ?? l.provider_id ?? '') as string
                                   return lpid === pid || resolveSoftCluster(lpid) === pickedClusterForStakes
                                 }
-                                const anchorOddsPicked = Number(
-                                  (pickedLegs.find(isAnchorLeg) ?? {}).odds ?? 0,
-                                )
+                                // Effective odds for a given leg — applies any user
+                                // edit on top of the scanner value. Same helper used by
+                                // computeArbStakes below AND the per-leg input below,
+                                // so editing odds rebalances stakes immediately.
+                                const effLegOdds = (rawLegPid: string, leg: any): number => {
+                                  const lk = legKey(rawLegPid, leg.outcome, leg.point)
+                                  const ovr = oddsOverridesByLeg[`${pickedEid}:${lk}`]
+                                  return ovr != null && isFinite(ovr) && ovr >= 1.01 ? ovr : Number(leg.odds ?? 0)
+                                }
+                                const anchorLegRaw = pickedLegs.find(isAnchorLeg) ?? {}
+                                const anchorRawPidPicked = (anchorLegRaw.provider ?? anchorLegRaw.provider_id ?? pid) as string
+                                const anchorOddsPicked = effLegOdds(anchorRawPidPicked, anchorLegRaw)
                                 const pickedCounters = pickedLegs.filter((l: any) => !isAnchorLeg(l))
+                                // Project effective odds onto each counter so computeArbStakes
+                                // sees the user-edited values (it reads leg.odds directly).
+                                const pickedCountersEff = pickedCounters.map((l: any) => {
+                                  const rawPid = (l.provider ?? l.provider_id ?? '') as string
+                                  return { ...l, odds: effLegOdds(rawPid, l) }
+                                })
                                 const payoutOverride = payoutOverridesByEid[pickedEid]
                                 const pickedStakes = computeArbStakes(
                                   pid,
                                   anchorOddsPicked,
-                                  pickedCounters,
+                                  pickedCountersEff,
                                   providerBalances,
                                   stakeCaps,
                                   payoutOverride,
@@ -3155,6 +3379,169 @@ export default function PlayPage() {
                                       }`}>
                                         {allGreen ? 'ALL GREEN — place each tab' : picking.size > 0 ? 'CHECKING' : 'WAITING'}
                                       </span>
+                                      {/* Place bet — record ALL legs (anchor + counters) to DB
+                                          as pending with shared arb_group_id, so the arb is link-
+                                          grouped at insert time and the Bonus-Arb tracker /
+                                          Stats can match them up without correlate_arbs. Uses
+                                          the user-edited odds + stakes (not scanner values).
+                                          external_placement=true skips the balance check since
+                                          the user already placed on the bookmaker site. */}
+                                      {(() => {
+                                        const isPlacing = placingArbs.has(pickedEid)
+                                        const canPlace = !isPlacing && totalStakeSek > 0
+                                        const placeAll = async () => {
+                                          if (!canPlace) return
+                                          // Build per-leg payloads from the live calc state.
+                                          const legPayloads: Array<Record<string, unknown>> = []
+                                          for (let i = 0; i < pickedLegs.length; i++) {
+                                            const leg = pickedLegs[i]
+                                            const rawLegPidLoop = (leg.provider ?? leg.provider_id ?? '') as string
+                                            const isSibling =
+                                              rawLegPidLoop !== pid &&
+                                              clusterMemberSet.has(rawLegPidLoop)
+                                            const recordPid = isSibling ? pid : rawLegPidLoop
+                                            const isAnchorLoop = recordPid === pid
+                                            const counterIdxLoop = pickedCounters.indexOf(leg)
+                                            const stakeSekLoop = isAnchorLoop
+                                              ? pickedStakes.anchorSek
+                                              : (counterIdxLoop >= 0 ? pickedStakes.counterSekByLeg[counterIdxLoop] : 0)
+                                            if (!(stakeSekLoop > 0)) continue
+                                            // USD providers want stake in USD/USDC, not SEK.
+                                            const isUsdLoop = USD_PROVIDERS.has(recordPid)
+                                            const stakeNative = isUsdLoop
+                                              ? Math.round((stakeSekLoop / SEK_PER_USD) * 100) / 100
+                                              : Math.round(stakeSekLoop * 100) / 100
+                                            // Spread point polarity: scanner ships opp.point as the
+                                            // home value (e.g. home +1.5). The away leg sometimes
+                                            // arrives without leg.point set; if so it's the negation
+                                            // of opp.point (away -1.5). Without this fix, an arb on
+                                            // a spread line records the away leg with point=null,
+                                            // which falls into Pinnacle's mainline bucket and breaks
+                                            // de-vig / CLV lookup.
+                                            const oppMarket = (pickedOpp.market ?? '') as string
+                                            let pointForLeg = leg.point
+                                            if (pointForLeg == null && pickedOpp.point != null) {
+                                              if (oppMarket === 'spread') {
+                                                pointForLeg = leg.outcome === 'away' ? -pickedOpp.point : pickedOpp.point
+                                              } else {
+                                                pointForLeg = pickedOpp.point
+                                              }
+                                            }
+                                            const fairOddsForLeg = leg.fair_odds ?? null
+                                            const selectionProb = (fairOddsForLeg && fairOddsForLeg > 1)
+                                              ? 1 / fairOddsForLeg
+                                              : null
+                                            legPayloads.push({
+                                              event_id: pickedOpp.event_id,
+                                              provider_id: recordPid,
+                                              market: leg.market ?? oppMarket,
+                                              outcome: leg.outcome,
+                                              point: pointForLeg,
+                                              odds: effLegOdds(rawLegPidLoop, leg),
+                                              stake: stakeNative,
+                                              bet_type: isAnchorLoop ? 'arb_anchor' : 'arb_counter',
+                                              // Pass fair_odds even though backend can re-derive from
+                                              // Pinnacle — gives a consistent placement-time snapshot
+                                              // for CLV, since the scanner already de-vigged with
+                                              // identical math.
+                                              fair_odds_at_placement: fairOddsForLeg,
+                                              selection_probability: selectionProb,
+                                              external_placement: true,
+                                              start_time: pickedOpp.starts_at ?? null,
+                                            })
+                                          }
+                                          if (legPayloads.length === 0) {
+                                            window.alert('No legs with stake > 0 to place')
+                                            return
+                                          }
+                                          // Shared arb_group_id so the legs are linked at insert.
+                                          // crypto.randomUUID is in all evergreen browsers + node18+.
+                                          const arbGroupId = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
+                                            ? (crypto as Crypto).randomUUID()
+                                            : `arb_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+                                          setPlacingArbs(prev => new Set(prev).add(pickedEid))
+                                          try {
+                                            const r = await fetch('/api/bets/batch', {
+                                              method: 'POST',
+                                              headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify({ legs: legPayloads, arb_group_id: arbGroupId }),
+                                            })
+                                            if (!r.ok) throw new Error(`status ${r.status}`)
+                                            const body = await r.json()
+                                            const failed = (body.results || []).filter((x: any) => !x.success)
+                                            if (failed.length > 0) {
+                                              window.alert(`Placed ${body.placed_count}/${body.total_legs}. Failed:\n${failed.map((f: any) => `${f.provider_id}: ${f.error}`).join('\n')}`)
+                                            }
+                                            // Suppress the mirror's bet interceptor for these legs.
+                                            // The user will click Place on each bookmaker tab (e.g.
+                                            // Pinnacle) and the bets/straight POST would trigger
+                                            // _record_manual_bet → /api/bets, inserting a duplicate
+                                            // alongside the row we just recorded via batch. Marking
+                                            // each placed leg as externally-placed in the mirror
+                                            // makes _record_manual_bet drop the next intercept for
+                                            // that (provider, event_id, market, outcome).
+                                            const successfulLegs = (body.results || [])
+                                              .filter((x: any) => x.success)
+                                              .map((x: any) => {
+                                                const idx = x.leg_index
+                                                const original = legPayloads[idx] as Record<string, unknown> | undefined
+                                                if (!original) return null
+                                                return {
+                                                  provider_id: String(original.provider_id || ''),
+                                                  event_id: String(original.event_id || ''),
+                                                  market: String(original.market || ''),
+                                                  outcome: String(original.outcome || ''),
+                                                }
+                                              })
+                                              .filter((leg: any): leg is { provider_id: string; event_id: string; market: string; outcome: string } => leg !== null && !!leg.provider_id)
+                                            if (successfulLegs.length > 0) {
+                                              try {
+                                                await api.markExternalPlaced(successfulLegs)
+                                              } catch (markErr) {
+                                                // Non-fatal: the backend dup check on (event_id,
+                                                // market, outcome, point) is still in place, so a
+                                                // failure here only weakens the second line of defense.
+                                                console.warn('[place-arb] markExternalPlaced failed', markErr)
+                                              }
+                                            }
+                                            // Clear local calc state for this event and refresh.
+                                            setPayoutOverride(pickedEid, null)
+                                            setOddsOverridesByLeg(prev => {
+                                              const next = { ...prev }
+                                              for (const k of Object.keys(next)) if (k.startsWith(`${pickedEid}:`)) delete next[k]
+                                              return next
+                                            })
+                                            setPickedEventByProvider(prev => {
+                                              const { [pid]: _drop, ...rest } = prev
+                                              return rest
+                                            })
+                                            await load()
+                                          } catch (err) {
+                                            console.warn('[place-arb] failed', err)
+                                            window.alert(`Place failed: ${err instanceof Error ? err.message : String(err)}`)
+                                          } finally {
+                                            setPlacingArbs(prev => {
+                                              const next = new Set(prev); next.delete(pickedEid); return next
+                                            })
+                                          }
+                                        }
+                                        return (
+                                          <button
+                                            onClick={placeAll}
+                                            disabled={!canPlace}
+                                            title={canPlace
+                                              ? `Record ${pickedLegs.length} legs to DB as pending (external — bookmaker already accepted). Will adjust stats / bonus-arb tracker.`
+                                              : isPlacing ? 'Placing…' : 'No stake set'}
+                                            className={`px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider rounded transition-colors ${
+                                              !canPlace
+                                                ? 'bg-zinc-900 text-zinc-700 border border-zinc-800 cursor-not-allowed'
+                                                : 'bg-emerald-700/50 text-emerald-200 border border-emerald-500/50 hover:bg-emerald-600/60 cursor-pointer'
+                                            }`}
+                                          >
+                                            {isPlacing ? 'placing…' : 'place bet'}
+                                          </button>
+                                        )
+                                      })()}
                                       {providerStatus[pid] && (
                                         <span className="ml-auto text-[10px] text-amber-300 font-mono truncate max-w-[260px]" title={providerStatus[pid] || ''}>
                                           {providerStatus[pid]}
@@ -3183,7 +3570,9 @@ export default function PlayPage() {
                                         const stakeSek = isAnchor
                                           ? pickedStakes.anchorSek
                                           : (counterIdx >= 0 ? pickedStakes.counterSekByLeg[counterIdx] : 0)
-                                        const oddsForLeg = Number(leg.odds ?? 0)
+                                        const oddsForLeg = effLegOdds(rawLegPid, leg)
+                                        const oddsOverrideKey = `${pickedEid}:${lk}`
+                                        const hasOddsOverride = oddsOverridesByLeg[oddsOverrideKey] != null
                                         const ifWinPayout = guaranteedPayoutSek > 0 ? guaranteedPayoutSek : (stakeSek * oddsForLeg)
                                         // USD providers (Polymarket / Kalshi) display in $ but their
                                         // balance is normalised to SEK in providerBalances. Show the
@@ -3195,7 +3584,34 @@ export default function PlayPage() {
                                               isSynced ? 'bg-green-400' : isPicking ? 'bg-amber-400 animate-pulse' : 'bg-zinc-600'
                                             }`} />
                                             <span className="text-zinc-400 uppercase w-20">{displayPid}</span>
-                                            <span className="font-mono text-zinc-300 w-24">{formatOddsDisplay(displayPid, oddsForLeg)}</span>
+                                            {/* Editable odds input — same recompute pattern as the stake
+                                                input below: type a new value, all stake math (payout,
+                                                per-leg stakes, profit) re-runs. Empty/cleared input
+                                                drops the override and reverts to the scanner value. */}
+                                            <span className="inline-flex items-center gap-1 w-24">
+                                              <span className="text-[9px] text-zinc-600">@</span>
+                                              <input
+                                                type="number"
+                                                step="0.01"
+                                                min="1.01"
+                                                value={oddsForLeg ? oddsForLeg.toFixed(2) : ''}
+                                                onChange={(e) => {
+                                                  const raw = e.target.value
+                                                  if (raw === '') { setOddsOverride(oddsOverrideKey, null); return }
+                                                  const n = Number(raw)
+                                                  if (isFinite(n)) setOddsOverride(oddsOverrideKey, n)
+                                                }}
+                                                title={`Odds for ${displayPid.toUpperCase()}${hasOddsOverride ? ' (edited — overrides scanner value)' : ''}`}
+                                                className={`w-14 px-1 py-0 bg-zinc-900 border rounded font-mono text-[10px] text-right focus:outline-none focus:border-purple-500 ${
+                                                  hasOddsOverride
+                                                    ? 'border-amber-500/50 text-amber-200'
+                                                    : 'border-zinc-700 text-zinc-300'
+                                                }`}
+                                              />
+                                              {CENT_PRICE_PROVIDERS.has(displayPid) && oddsForLeg > 1 && (
+                                                <span className="text-[9px] text-zinc-600">{Math.round(100 / oddsForLeg)}¢</span>
+                                              )}
+                                            </span>
                                             {/* Outcome → team-name. Bookmaker tabs show team names,
                                                 not "home"/"away" — matching the user's mental model
                                                 ("I'm betting on Lilli Tagger") is faster than asking
@@ -3374,6 +3790,7 @@ export default function PlayPage() {
                                                 className="text-zinc-600 hover:text-zinc-400 text-[10px]">✕</button>
                                             </>
                                           )}
+                                          <PendingRowActions bet={p} onChanged={load} />
                                         </div>
                                       )
                                     })}
@@ -3391,6 +3808,14 @@ export default function PlayPage() {
                                   <tbody>
                                     {opps.filter((opp: any) => {
                                       if (drainedEventIds.has(opp.event_id)) return false
+                                      // Hide arbs whose (event, market) is already in the user's
+                                      // pending bets — same blacklist the value tab uses, with
+                                      // 1x2 ↔ moneyline normalisation + display-name fuzzy fallback.
+                                      // Without this, a placed arb keeps re-appearing as clickable
+                                      // until the event drains (mirror-invariant in CLAUDE.md).
+                                      const mk = opp.market === '1x2' ? 'moneyline' : opp.market
+                                      if (opp.event_id && mk && valueBetBlacklist.exactKeys.has(`${opp.event_id}|${mk}`)) return false
+                                      if (valueBetBlacklist.matchesByName(opp as unknown as BatchBet)) return false
                                       // Suppress clearly-bogus profit%. Real soft-vs-sharp arbs
                                       // are typically 0-5%; >30% is a stale-extraction artifact
                                       // (DB has BETINIA Italy @41.00 vs live @1.78 etc.). The
@@ -4006,9 +4431,13 @@ export default function PlayPage() {
                     const balRaw = providerBalances[pid]
                     const balDisplay = (typeof balRaw === 'object' && balRaw?.balance_native != null) ? balRaw.balance_native : bal
                     const pending = pendingByProvider[pid]?.length ?? 0
-                    const uncapped = ['pinnacle', 'polymarket', 'cloudbet', 'kalshi'].includes(pid)
-                    const disabled = bal <= 0 && pending === 0 && !uncapped
-                    const cardState = deriveCardState(tabOpenProviders.has(pid), loggedInProviders.has(pid))
+                    const isUnlimited = UNLIMITED_PROVIDERS.has(pid)
+                    const disabled = bal <= 0 && pending === 0 && !isUnlimited
+                    // Soft books: render as a plain link — no login badge, no red/green
+                    // highlight. Only unlimited providers keep the tab/login indicator.
+                    const cardState: CardState = isUnlimited
+                      ? deriveCardState(tabOpenProviders.has(pid), loggedInProviders.has(pid))
+                      : 'no_tab'
                     return (
                       <button key={pid}
                         onClick={() => !disabled && handleCardClick(pid)}
@@ -4025,12 +4454,12 @@ export default function PlayPage() {
                         }
                       >
                         <span className="uppercase font-semibold">{pid}</span>
-                        {cardState === 'tab_open_not_in' && (
+                        {isUnlimited && cardState === 'tab_open_not_in' && (
                           <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-red-400/25 text-red-100 font-semibold">
                             Log in to continue
                           </span>
                         )}
-                        {cardState === 'tab_open_logged' && (
+                        {isUnlimited && cardState === 'tab_open_logged' && (
                           <span className="ml-2 inline-block px-1.5 py-0.5 text-[9px] rounded bg-emerald-500/25 text-emerald-100 font-semibold">
                             Logged in
                           </span>
@@ -4221,6 +4650,7 @@ export default function PlayPage() {
                                 className="text-zinc-600 hover:text-zinc-400 text-[10px]">✕</button>
                             </>
                           )}
+                          <PendingRowActions bet={p} onChanged={load} />
                         </div>
                       )
                     })}

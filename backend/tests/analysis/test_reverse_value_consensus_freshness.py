@@ -25,6 +25,7 @@ def _odds(provider, market, outcome, value, *, age_minutes=0, point=None, scope=
         updated_at=datetime.now(UTC) - timedelta(minutes=age_minutes),
         bid=None,
         ask=None,
+        max_stake=None,
     )
 
 
