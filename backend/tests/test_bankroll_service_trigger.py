@@ -68,3 +68,33 @@ def test_trigger_null_when_bonus_not_available(db):
     out = BankrollService(db).get_bankroll()
     by_id = {p["id"]: p for p in out["providers"]}
     assert by_id["unibet"]["bonus_trigger_amount"] is None
+
+
+def test_trigger_odds_populated_when_configured_in_yaml(db, monkeypatch):
+    # Override the fixture's yaml stub to include trigger_odds for leovegas
+    monkeypatch.setattr(
+        "src.api.routes.providers.load_provider_bonuses",
+        lambda: {
+            "unibet": {"type": "freebet", "amount": 1000},  # no trigger_odds
+            "leovegas": {"type": "bonusdeposit", "amount": 600, "trigger_odds": 1.80},
+        },
+    )
+    out = BankrollService(db).get_bankroll()
+    by_id = {p["id"]: p for p in out["providers"]}
+    assert by_id["leovegas"]["bonus_trigger_odds"] == 1.80
+    assert by_id["unibet"]["bonus_trigger_odds"] is None
+
+
+def test_trigger_odds_null_when_bonus_already_claimed(db, monkeypatch):
+    from src.db.models import ProfileProviderBonus
+
+    monkeypatch.setattr(
+        "src.api.routes.providers.load_provider_bonuses",
+        lambda: {"leovegas": {"type": "bonusdeposit", "amount": 600, "trigger_odds": 1.80}},
+    )
+    # Mark the bonus as claimed → trigger_actionable becomes False
+    db.query(ProfileProviderBonus).filter_by(provider_id="leovegas").update({"bonus_status": "claimed"})
+    db.commit()
+    out = BankrollService(db).get_bankroll()
+    by_id = {p["id"]: p for p in out["providers"]}
+    assert by_id["leovegas"]["bonus_trigger_odds"] is None

@@ -76,6 +76,7 @@ class BankrollService:
                     "balance_sek": round(balance * rate, 2),
                     "bonus_trigger_amount": amount if trigger_actionable else None,
                     "bonus_currency": currency if trigger_actionable else None,
+                    "bonus_trigger_odds": cfg.get("trigger_odds") if trigger_actionable else None,
                 }
             )
 
