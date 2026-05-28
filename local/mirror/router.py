@@ -240,14 +240,17 @@ def create_mirror_router(
     router = APIRouter(prefix="/mirror", tags=["mirror"])
 
     play_loop = PlayLoop(browser, broadcaster, proxy_url)
-    # PendingLoop is intentionally NOT started. Per the auto-nav invariant
-    # the mirror is hands-off on everything except arb event-clicks — the
-    # user manually navigates to provider history pages and the browser
-    # interceptor catches the response. The interceptor → history_synced
-    # SSE → reactive_sync helper below records any unknown pending bets +
-    # reconciles settlements. Kept the instance so we can still reuse its
-    # helpers (_record_unknown_open_bets / reconcile) from the reactive path.
+    # PendingLoop runs in the background. Each per-provider tick is gated on
+    # workflow.sync_history_is_passive — DOM-driven providers (Altenar/Gecko/
+    # Kambi) still skip while the tab is on an event page so their
+    # sync_history's page.goto / DOM clicks can't clobber an open betslip
+    # (this is the auto-nav invariant). API-passive providers (Pinnacle/
+    # Kalshi/Polymarket/Cloudbet) settle every 60s regardless of where the
+    # tab is parked — their _sync_history is pure page.evaluate(fetch(...))
+    # and cannot disturb a betslip. Reactive sync via history_intercepted
+    # still works on top of the poll for DOM-driven providers.
     pending_loop = PendingLoop(browser, broadcaster, proxy_url)
+    pending_loop.start()
 
     # Wire browser bet interception → play loop auto-record
     # Chain with existing callback (broadcaster.publish set in server.py)
