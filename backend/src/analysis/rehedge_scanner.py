@@ -244,7 +244,7 @@ def persist_rehedge_candidates(db: Session, candidates: list[RehedgeCandidate]) 
     Returns {"inserted": int, "updated": int, "deactivated": int}.
     """
     # Build a lookup of current emit set keyed by the persistent natural key.
-    current_keys = {(c.hedge_provider, c.hedge_market, c.hedge_outcome, c.bet_id): c for c in candidates}
+    current_keys = {(c.hedge_provider, c.hedge_market, c.hedge_outcome, c.hedge_point, c.bet_id): c for c in candidates}
 
     # Deactivate any existing active rehedge rows that are no longer
     # in the current emit set. Match on (bet_id stored in annotations,
@@ -260,7 +260,7 @@ def persist_rehedge_candidates(db: Session, candidates: list[RehedgeCandidate]) 
     )
     for opp in existing:
         bid = (opp.annotations or {}).get("bet_id")
-        key = (opp.provider1_id, opp.market, opp.outcome1, bid)
+        key = (opp.provider1_id, opp.market, opp.outcome1, opp.point, bid)
         if key not in current_keys:
             opp.is_active = False
             deactivated += 1
@@ -282,6 +282,7 @@ def persist_rehedge_candidates(db: Session, candidates: list[RehedgeCandidate]) 
                 Opportunity.market == c.hedge_market,
                 Opportunity.outcome1 == c.hedge_outcome,
                 Opportunity.provider1_id == c.hedge_provider,
+                Opportunity.point == c.hedge_point,
                 Opportunity.scope == "ft",
             )
             .first()
