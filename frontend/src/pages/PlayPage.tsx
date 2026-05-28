@@ -3,6 +3,7 @@ import { api } from '../hooks/useApi'
 import { useMirrorStream } from '../hooks/useMirrorStream'
 import { useMirrorState } from '../hooks/useMirrorState'
 import { migratedLocalStorageGet } from '../utils/localStorageMigration'
+import { RehedgeSection } from './play/RehedgeSection'
 
 // Unlimited providers — value-bet flow (Section B) + arb counter pool. All other providers route through arbitrage (Section A).
 const UNLIMITED_PROVIDERS = new Set(['pinnacle', 'polymarket', 'cloudbet', 'kalshi'])
@@ -2564,6 +2565,9 @@ export default function PlayPage() {
 
       {/* Main content */}
       <div className="flex-1 overflow-y-auto">
+        {/* Re-hedge scanner — open positions that can be hedged at a new price */}
+        {subTab === 'arb' && <RehedgeSection />}
+
         {/* SECTION A — Per-cluster Arb Opportunities (soft books, arb-only) */}
         {subTab === 'arb' && (() => {
           // Build the soft-cluster universe: canonical siblings + standalones +
