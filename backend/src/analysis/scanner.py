@@ -1294,19 +1294,29 @@ class OpportunityScanner:
             if odds.provider_id in exclude_providers:
                 continue
 
-            # Skip stale SHARP odds only — soft books are placement targets the
-            # user verifies live before betting, so stale soft rows surface in
-            # the scan output. Sharp (pinnacle) is the fair-odds reference: a
-            # stale pinnacle row would corrupt every devig downstream.
-            if check_staleness and odds.provider_id in SHARP_PROVIDERS and odds.updated_at:
+            # Skip stale SHARP odds at any market — Pinnacle is the fair-odds
+            # reference, a stale row corrupts every devig downstream.
+            #
+            # Skip stale SOFT spread/total odds — soft books accumulate phantom
+            # alt-line rows when their mainline drifts (e.g. total 10.5 → 11.5):
+            # upsert_odds doesn't DELETE points the API no longer returns, so
+            # the old point keeps the scanner pairing the dead line against
+            # Pinnacle's permanent alt-line ladder as a phantom arb the user
+            # can't place (the bookmaker no longer offers that point).
+            # 1x2/moneyline soft rows stay unfiltered — they have one outcome
+            # per market key so orphans can't accumulate, and the user-in-
+            # browser check still catches stale odds.
+            soft_handicap_stale = odds.provider_id not in SHARP_PROVIDERS and odds.market in ("spread", "total")
+            if check_staleness and odds.updated_at and (odds.provider_id in SHARP_PROVIDERS or soft_handicap_stale):
                 updated = odds.updated_at
                 if updated.tzinfo is None:
                     updated = updated.replace(tzinfo=UTC)
                 cutoff = now - timedelta(minutes=staleness_minutes_for(odds.provider_id))
                 if updated < cutoff:
                     logger.debug(
-                        f"Skipping stale sharp odds for {event.id}/{odds.provider_id}: "
-                        f"updated {updated.isoformat()} (cutoff {cutoff.isoformat()})"
+                        f"Skipping stale odds for {event.id}/{odds.provider_id} "
+                        f"{odds.market}@{odds.point}: updated {updated.isoformat()} "
+                        f"(cutoff {cutoff.isoformat()})"
                     )
                     continue
 
