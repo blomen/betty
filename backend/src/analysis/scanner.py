@@ -1408,7 +1408,99 @@ class OpportunityScanner:
         # outcome to the complement point where it belongs.
         self._fix_asian_spread_grouping(grouped)
 
+        # Defensive gate: drop sharp spread rows whose point sign disagrees with
+        # the sharp moneyline favorite. Catches events where the upstream source
+        # is internally inconsistent (Pinnacle's API for some matchups labels
+        # moneyline favorite as home but spread favorite as away, or vice versa
+        # — observed 2026-05-28 Oradea/Cluj where Pinnacle UI showed Cluj at
+        # -6.5 @ 1.621 favorite but our extracted moneyline labelled Oradea as
+        # favorite at 1.247). Without this gate, the scanner pairs soft-book
+        # bets against ghost sharp prices for the wrong team — producing phantom
+        # "arbs" that aren't hedges at all.
+        self._drop_sharp_inconsistent_spread(grouped)
+
         return dict(grouped)
+
+    @staticmethod
+    def _sharp_moneyline_favorite(grouped: dict[str, dict[str, list[dict]]]) -> str | None:
+        """Return 'home' or 'away' if a sharp moneyline/1x2 row identifies a
+        favorite, else None. Used to validate sharp spread point signs."""
+        for ml_key in ("moneyline", "1x2"):
+            ml_outcomes = grouped.get(ml_key)
+            if not ml_outcomes:
+                continue
+            sharp_home = next(
+                (r for r in ml_outcomes.get("home", []) if r["provider"] in SHARP_PROVIDERS),
+                None,
+            )
+            sharp_away = next(
+                (r for r in ml_outcomes.get("away", []) if r["provider"] in SHARP_PROVIDERS),
+                None,
+            )
+            if sharp_home and sharp_away and sharp_home["odds"] != sharp_away["odds"]:
+                return "home" if sharp_home["odds"] < sharp_away["odds"] else "away"
+        return None
+
+    def _drop_sharp_inconsistent_spread(self, grouped: dict[str, dict[str, list[dict]]]) -> None:
+        """Drop sharp spread rows whose (outcome, point sign) disagrees with the
+        sharp moneyline favorite.
+
+        For a clean source: the moneyline favorite team's spread rows have
+        point ≤ 0 (favorite gives points), the underdog's have point ≥ 0
+        (underdog gets points). When this invariant is violated for a sharp
+        provider, the sharp data is internally inconsistent and ANY arb pairing
+        a soft book against that sharp row is a ghost. We strip the sharp rows
+        from the affected `spread_{line}` keys so the scanner can't surface the
+        ghost.
+
+        Soft rows in the same key stay — they may still be valid for value
+        comparison against a different sharp source, and the user-in-browser
+        check catches placement errors.
+        """
+        fav_outcome = self._sharp_moneyline_favorite(grouped)
+        if fav_outcome is None:
+            return
+
+        underdog_outcome = "away" if fav_outcome == "home" else "home"
+
+        for market_key, outcomes_dict in grouped.items():
+            if not market_key.startswith("spread_"):
+                continue
+            sharp_rows_by_outcome = {
+                "home": [r for r in outcomes_dict.get("home", []) if r["provider"] in SHARP_PROVIDERS],
+                "away": [r for r in outcomes_dict.get("away", []) if r["provider"] in SHARP_PROVIDERS],
+            }
+            if not sharp_rows_by_outcome["home"] and not sharp_rows_by_outcome["away"]:
+                continue
+            violation = False
+            for outcome, rows in sharp_rows_by_outcome.items():
+                for row in rows:
+                    point = row.get("point")
+                    if point is None or point == 0:
+                        continue
+                    if outcome == fav_outcome and point > 0:
+                        violation = True
+                        break
+                    if outcome == underdog_outcome and point < 0:
+                        violation = True
+                        break
+                if violation:
+                    break
+            if not violation:
+                continue
+            # Drop ALL sharp rows from this line (both home & away) — once the
+            # invariant is broken anywhere on the line, the whole line's sharp
+            # pricing is suspect.
+            for outcome in ("home", "away"):
+                outcomes_dict[outcome] = [
+                    r for r in outcomes_dict.get(outcome, []) if r["provider"] not in SHARP_PROVIDERS
+                ]
+            logger.info(
+                "sharp_spread_inconsistent: dropped sharp rows for %s "
+                "(moneyline favorite=%s, sharp spread sign disagrees)",
+                market_key,
+                fav_outcome,
+            )
 
     def _fix_asian_spread_grouping(self, grouped: dict[str, dict[str, list[dict]]]) -> None:
         """

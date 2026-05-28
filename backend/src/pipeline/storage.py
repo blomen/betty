@@ -273,22 +273,29 @@ def detect_and_fix_inversion(
 
 
 def swap_home_away_outcomes(outcomes: list[dict]) -> list[dict]:
-    """Swap home and away outcome labels in a list of outcomes."""
+    """Swap home and away outcome labels in a list of outcomes.
+
+    Label-only swap — the point sign is preserved.
+
+    The point sign is from the OUTCOME team's perspective ("home is at -6.5" =
+    home is favored by 6.5). When the matcher detects the provider's home/away
+    order differs from Betty's canonical order, we relabel the row to point at
+    the right team — but the spread itself doesn't change for that team, so the
+    sign stays. Negating the sign here breaks internal consistency: the moneyline
+    swap (no point) flips correctly, but the spread row ends up with point sign
+    and odds disagreeing about who's favored (observed on 2026-05-28 Oradea/Cluj
+    where moneyline said home was 1.247 favorite but spread put home at +6.5
+    @ 1.621 — favorite price on the underdog spread side).
+    """
     swapped = []
     for o in outcomes:
         name = o.get("name", "").lower()
         new_outcome = dict(o)
 
-        # Swap home <-> away
         if name in ["home", "hemma", "1"]:
             new_outcome["name"] = "away"
-            # Negate spread points when swapping
-            if new_outcome.get("point") is not None:
-                new_outcome["point"] = -new_outcome["point"]
         elif name in ["away", "borta", "2"]:
             new_outcome["name"] = "home"
-            if new_outcome.get("point") is not None:
-                new_outcome["point"] = -new_outcome["point"]
 
         swapped.append(new_outcome)
     return swapped
