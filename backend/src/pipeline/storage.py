@@ -1440,6 +1440,14 @@ class OddsBatchProcessor:
         self._market_counts: dict[str, int] = {}  # market_type -> count
         self.changed_event_ids: set[str] = set()
         self._changed_records: list[dict] = []
+        # Reconciliation tracker — accumulated across flushes (NOT cleared on flush).
+        # Shape: provider_id → event_id → (market, scope) → {(outcome, point), ...}.
+        # When __exit__ runs, any SHARP_PROVIDERS slot we touched is treated as the
+        # source of truth: DB rows in that slot whose (outcome, point) wasn't seen
+        # this pass get deleted (Pinnacle drops mainline handicaps when their estimate
+        # shifts; upsert_odds doesn't delete the old row, so ghosts survive until
+        # the staleness gate catches them ~15 min later).
+        self._extracted_keys: dict[str, dict[str, dict[tuple[str, str], set[tuple[str, float | None]]]]] = {}
 
     def add(
         self,
@@ -1479,6 +1487,13 @@ class OddsBatchProcessor:
             "scope": scope,
         }
         self._market_counts[market] = self._market_counts.get(market, 0) + 1
+
+        # Reconciliation tracker — accumulated across flushes. Keyed by provider
+        # and (market, scope) so __exit__ can purge stale sharp-provider rows
+        # whose (outcome, point) wasn't shipped this pass.
+        self._extracted_keys.setdefault(provider, {}).setdefault(event_id, {}).setdefault((market, scope), set()).add(
+            (outcome, point)
+        )
 
         if len(self._pending) >= self.batch_size:
             self.flush()
@@ -1698,12 +1713,71 @@ class OddsBatchProcessor:
         """Return records where odds changed (updates with delta >= 0.01, plus all inserts)."""
         return self._changed_records
 
+    def reconcile_sharp_deletions(self) -> int:
+        """Delete sharp-provider Odds rows whose (outcome, point) wasn't seen this pass.
+
+        For every (event_id, sharp_provider, market, scope) slot we wrote to
+        during this batch, the just-extracted (outcome, point) set is treated as
+        the source of truth. Rows in the same slot whose (outcome, point) wasn't
+        shipped are purged.
+
+        Fixes the ghost-line bug: Pinnacle drops mainline handicaps when their
+        estimate shifts (e.g. total 2.5 → 2.75); upsert_odds doesn't delete the
+        old row, so the stale 1.40/2.78 sits in the DB until the staleness gate
+        (15 min for pinnacle) evicts it — long enough for the scanner to surface
+        a phantom +EV arb against fresh soft-book odds.
+
+        Scope guards:
+            - SHARP_PROVIDERS only. Soft books still rely on the user-in-browser
+              live odds check before placing.
+            - Only slots actually touched this pass. A market/scope this run
+              didn't extract (extractor errored, market gone entirely) keeps its
+              old rows and falls back to the staleness gate.
+        """
+        if not self._extracted_keys:
+            return 0
+        deleted = 0
+        for provider_id, event_map in self._extracted_keys.items():
+            if provider_id not in SHARP_PROVIDERS:
+                continue
+            for event_id, slot_map in event_map.items():
+                for (market, scope), seen in slot_map.items():
+                    if not seen:
+                        continue
+                    keep_conds = []
+                    for outcome, point in seen:
+                        if point is None:
+                            keep_conds.append(and_(Odds.outcome == outcome, Odds.point.is_(None)))
+                        else:
+                            keep_conds.append(and_(Odds.outcome == outcome, Odds.point == point))
+                    n = (
+                        self.session.query(Odds)
+                        .filter(
+                            Odds.event_id == event_id,
+                            Odds.provider_id == provider_id,
+                            Odds.market == market,
+                            Odds.scope == scope,
+                            ~or_(*keep_conds),
+                        )
+                        .delete(synchronize_session=False)
+                    )
+                    if n:
+                        logger.info(
+                            f"Reconciliation: purged {n} stale {provider_id} rows for {event_id}/{market}@{scope}"
+                        )
+                        deleted += n
+                        self.changed_event_ids.add(event_id)
+        self._extracted_keys.clear()
+        return deleted
+
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:
             self.flush()
+            if exc_type is None:
+                self.reconcile_sharp_deletions()
         except Exception:
             if exc_type is None:
                 raise
