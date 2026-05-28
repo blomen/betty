@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from .currency import from_sek, to_sek
+
 
 def recalc_profit_pct(anchor_odds: float, counter_odds: list[float]) -> float | None:
     """Guaranteed-profit % for an equal-payout arb.
 
     profit% = (1 / (1/anchor_odds + Σ 1/counter_odds) - 1) × 100
-    Returns None if any odds are zero/negative.
+
+    Currency-independent — odds are unitless multipliers; per-leg stakes
+    cancel out of the profit ratio. Returns None if any odds are zero/negative.
     """
     if anchor_odds <= 0 or any(o <= 0 for o in counter_odds):
         return None
@@ -18,15 +22,36 @@ def recalc_profit_pct(anchor_odds: float, counter_odds: list[float]) -> float | 
 
 
 def recalc_counter_stakes(
-    anchor_stake: float, anchor_odds: float, counter_odds: list[float]
+    anchor_stake: float,
+    anchor_odds: float,
+    anchor_currency: str,
+    counter_legs: list[dict],
 ) -> list[float]:
-    """Per-counter stakes for equal-payout: counter_stake = total_payout / counter_odds.
+    """Per-counter stakes IN EACH COUNTER'S NATIVE CURRENCY for equal-payout.
 
-    Total payout = anchor_stake × anchor_odds. Each counter sized so it pays the same.
-    Returns stakes rounded to 2 decimals (currency cents).
+    Each counter leg must carry its own `odds` and `currency`. The anchor's
+    `total_payout = anchor_stake × anchor_odds` is in anchor's currency; the
+    counter must pay the SAME real-money amount from a stake in ITS currency,
+    so we route the payout through SEK before dividing by each counter's odds.
+
+    Without this conversion a SEK anchor paired with a USDC counter sizes the
+    counter ~10× too large (USD/SEK ≈ 0.095). See CLAUDE.md "Currencies"
+    section — this is the first hypothesis when a sizing/hedge number looks
+    off by 5-10×.
+
+    Returns stakes rounded to 2 decimals (cents in each native currency).
     """
-    total_payout = anchor_stake * anchor_odds
-    return [round(total_payout / o, 2) for o in counter_odds]
+    total_payout_sek = to_sek(anchor_stake * anchor_odds, anchor_currency)
+    out: list[float] = []
+    for leg in counter_legs:
+        odds = float(leg.get("odds") or 0)
+        currency = leg.get("currency") or "SEK"
+        if odds <= 0:
+            out.append(0.0)
+            continue
+        stake_sek = total_payout_sek / odds
+        out.append(round(from_sek(stake_sek, currency), 2))
+    return out
 
 
 def is_valid_arb_shape(legs: list[dict], unlimited: set[str]) -> bool:

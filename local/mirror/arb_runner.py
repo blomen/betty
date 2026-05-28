@@ -21,6 +21,7 @@ from .arb_math import (
     recalc_profit_pct,
     should_update_stake,
 )
+from .currency import provider_currency
 from .play_loop import (
     _AUTH_HEADER,
     _AUTH_VALUE,
@@ -536,8 +537,19 @@ class ArbRunner:
             return False
 
         anchor_odds = anchor_leg.get("odds", 0)
-        counter_odds = [l.get("odds", 0) for l in counter_legs]
-        counter_stakes = recalc_counter_stakes(anchor_stake, anchor_odds, counter_odds)
+        anchor_currency = provider_currency(self.provider_id)
+        counter_stakes = recalc_counter_stakes(
+            anchor_stake,
+            anchor_odds,
+            anchor_currency,
+            [
+                {
+                    "odds": l.get("odds", 0),
+                    "currency": provider_currency(l.get("provider", "")),
+                }
+                for l in counter_legs
+            ],
+        )
 
         self._anchor_stake = anchor_stake
         self._counter_legs = counter_legs
@@ -680,7 +692,13 @@ class ArbRunner:
 
         # Update counter slip stakes if drift exceeds threshold
         new_stakes = recalc_counter_stakes(
-            self._anchor_stake, anchor_odds, counter_odds
+            self._anchor_stake,
+            anchor_odds,
+            provider_currency(self.provider_id),
+            [
+                {"odds": o, "currency": provider_currency(l["provider"])}
+                for l, o in zip(self._counter_legs, counter_odds)
+            ],
         )
         for leg, new_stake in zip(self._counter_legs, new_stakes):
             cur = leg.get("_current_stake", new_stake)
@@ -834,7 +852,13 @@ class ArbRunner:
             for l in self._counter_legs
         ]
         new_stakes = recalc_counter_stakes(
-            anchor_actual_stake, anchor_actual_odds, counter_odds
+            anchor_actual_stake,
+            anchor_actual_odds,
+            provider_currency(self.provider_id),
+            [
+                {"odds": o, "currency": provider_currency(l["provider"])}
+                for l, o in zip(self._counter_legs, counter_odds)
+            ],
         )
 
         # Update slips in parallel
