@@ -2124,6 +2124,17 @@ export default function PlayPage() {
     const diff = new Date(b.start_time).getTime() - Date.now()
     return diff > 0 ? diff / 3600000 : 0
   }
+  // Arb opps use `starts_at` (the scanner's field name), not `start_time`.
+  // Returns hours to kickoff; null when timestamp is missing/invalid; 0 for
+  // events already started (so the TTK upper bound never hides them).
+  const getArbTtkHours = (opp: { starts_at?: string | null }) => {
+    const iso = opp.starts_at
+    if (!iso) return null
+    const t = new Date(iso).getTime()
+    if (Number.isNaN(t)) return null
+    const diff = t - Date.now()
+    return diff > 0 ? diff / 3600000 : 0
+  }
   const fmtTtk = (b: BatchBet) => fmtTtkFromIso(b.start_time)
 
   // Blacklist: hide value bets where (event, market) is already placed.
@@ -2428,12 +2439,12 @@ export default function PlayPage() {
         </>}
         <span className="text-green-400 font-mono">+{totalEv.toFixed(0)} kr EV</span>
         <div className="flex items-center gap-0.5 ml-2">
-          {([12, 24, 48, 168] as const).map(h => (
+          {([12, 24, 48, 168, 336] as const).map(h => (
             <button key={h} onClick={() => setTtkFilter(h)}
               className={`px-1.5 py-0.5 text-[10px] font-mono rounded ${
                 ttkFilter === h ? 'bg-zinc-700 text-zinc-200' : 'text-zinc-500 hover:text-zinc-300'
               }`}>
-              {h <= 48 ? `${h}h` : '1W'}
+              {h <= 48 ? `${h}h` : h === 168 ? '1W' : '2W'}
             </button>
           ))}
         </div>
@@ -2642,9 +2653,13 @@ export default function PlayPage() {
             const liqFiltered = liqThresholdSek > 0
               ? arr.filter((o: any) => (o.pinnacle_max_stake_sek ?? 0) >= liqThresholdSek)
               : arr
+            const ttkFiltered = liqFiltered.filter((o: any) => {
+              const h = getArbTtkHours(o)
+              return h == null || h <= ttkFilter
+            })
             const visible = showNegativeArbs
-              ? liqFiltered
-              : liqFiltered.filter((o: any) => (o.guaranteed_profit_pct ?? 0) >= 0)
+              ? ttkFiltered
+              : ttkFiltered.filter((o: any) => (o.guaranteed_profit_pct ?? 0) >= 0)
             return n + visible.length
           }, 0)
 
@@ -2739,9 +2754,13 @@ export default function PlayPage() {
                     // cards, no Place/Skip — user must deposit first).
                     if (funded.length === 0) {
                       const qualifyingOpps = opps.filter(
-                        (o: any) =>
-                          (o.guaranteed_profit_pct ?? 0) >= DEPOSIT_HINT_MIN_PROFIT_PCT &&
-                          (liqThresholdSek === 0 || (o.pinnacle_max_stake_sek ?? 0) >= liqThresholdSek),
+                        (o: any) => {
+                          if ((o.guaranteed_profit_pct ?? 0) < DEPOSIT_HINT_MIN_PROFIT_PCT) return false
+                          if (liqThresholdSek > 0 && (o.pinnacle_max_stake_sek ?? 0) < liqThresholdSek) return false
+                          const h = getArbTtkHours(o)
+                          if (h != null && h > ttkFilter) return false
+                          return true
+                        },
                       ).slice(0, 10)
                       return (
                         <div key={cluster} className="border-b border-zinc-800/50 last:border-b-0">
@@ -3378,6 +3397,8 @@ export default function PlayPage() {
                                       if (p > 30) return false
                                       if (p < 0 && !showNegativeArbs) return false
                                       if (liqThresholdSek > 0 && (opp.pinnacle_max_stake_sek ?? 0) < liqThresholdSek) return false
+                                      const h = getArbTtkHours(opp)
+                                      if (h != null && h > ttkFilter) return false
                                       return true
                                     }).map((opp: any, i: number) => {
                                       const counterLegs = opp.counter_plan ?? opp.counter_legs ?? opp.legs ?? []
@@ -3791,7 +3812,7 @@ export default function PlayPage() {
                                             {fmtTtkFromIso(opp.starts_at)}
                                           </td>
                                           <td className="px-1 py-1 text-[9px] w-[50px] text-right">
-                                            {opp.pinnacle_max_stake_sek != null && (
+                                            {liqThresholdSek > 0 && opp.pinnacle_max_stake_sek != null && (
                                               <span
                                                 className="px-1 py-0.5 rounded bg-cyan-900/30 text-cyan-300 border border-cyan-700/30 uppercase tracking-wider font-mono"
                                                 title={`Pinnacle max stake ${Math.round(opp.pinnacle_max_stake_sek).toLocaleString()} kr — soft books typically cap stakes proportionally to this`}
