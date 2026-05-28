@@ -91,6 +91,12 @@ class GenericWorkflow(ProviderWorkflow):
         from .strategies import load_strategy
 
         self.strategy = load_strategy(provider_id)
+        # Last failure reason from navigate_to_event — set when the strategy
+        # callable returns a str instead of bool. Router reads this to enrich
+        # the 502 detail surfaced to the UI (else the user sees a generic
+        # "nav failed" instead of e.g. "no event URL stamped" / "landed on 404
+        # shell"). Cleared at the start of every navigate call.
+        self.last_nav_error: str | None = None
         # Intel JSON may declare this provider as autonomous (API-based place_bet
         # called on user confirm instead of waiting for a placement interception).
         self.autonomous_placement = bool(
@@ -351,8 +357,17 @@ class GenericWorkflow(ProviderWorkflow):
     # ------------------------------------------------------------------
 
     async def navigate_to_event(self, page: Page, bet) -> bool:
+        self.last_nav_error = None
         if self.strategy and self.strategy.navigate_to_event:
-            return await self.strategy.navigate_to_event(page, bet, self.intel)
+            # Strategies may return either bool (legacy) or str (failure reason).
+            # A str return is treated as False + stashes the reason for the
+            # router to surface in the 502 detail. This lets the user see
+            # "no event URL stamped" instead of an opaque "Bad Gateway".
+            result = await self.strategy.navigate_to_event(page, bet, self.intel)
+            if isinstance(result, str):
+                self.last_nav_error = result
+                return False
+            return bool(result)
 
         if not self.intel or not self.intel.get("navigation"):
             logger.info(

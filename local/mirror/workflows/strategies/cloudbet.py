@@ -44,20 +44,34 @@ _IAM_BALANCES_URL = _BASE + "/iam-balances"
 _POSITIONS_URL = _BASE + "/sports-betting/v4/bets/positions"
 
 
-def _common_headers() -> dict:
-    return {
-        "Accept": "application/json",
-        "Origin": _BASE,
-        "Referer": _BASE + "/en/",
-    }
-
-
 async def _api_get(page: Page, url: str) -> Any:
+    # Use page.evaluate(fetch) instead of page.context.request so the request
+    # inherits the page's full document context — cookies, browser-set headers
+    # (User-Agent, sec-ch-*, accept-language), and any cf-clearance fingerprint
+    # binding. Playwright's APIRequestContext shares cookies but strips most
+    # browser headers, which caused cloudbet's auth checks to 4xx for sessions
+    # whose cookies are valid (regression observed 2026-05-28).
     try:
-        resp = await page.context.request.get(url, headers=_common_headers())
-        if resp.status < 200 or resp.status >= 400:
-            return {"__error": resp.status}
-        return await resp.json()
+        result = await page.evaluate(
+            """async (url) => {
+                try {
+                    const r = await fetch(url, {
+                        credentials: 'include',
+                        headers: { 'Accept': 'application/json' }
+                    });
+                    const text = await r.text();
+                    if (!r.ok) return { __error: r.status, __body: text.slice(0, 300) };
+                    try { return JSON.parse(text); } catch (e) { return { __error: 'parse', __body: text.slice(0, 300) }; }
+                } catch (e) { return { __error: 'fetch', __msg: e.message || String(e) }; }
+            }""",
+            url,
+        )
+        if isinstance(result, dict) and "__error" in result:
+            logger.info(
+                f"[cloudbet] GET {url[:80]} → __error={result.get('__error')!r} "
+                f"body={result.get('__body', '')[:120]!r} msg={result.get('__msg', '')!r}"
+            )
+        return result
     except Exception as e:
         logger.warning(f"[cloudbet] GET {url} failed: {e}")
         return None
@@ -65,11 +79,31 @@ async def _api_get(page: Page, url: str) -> Any:
 
 async def _api_post(page: Page, url: str, body: dict | None = None) -> Any:
     try:
-        headers = {**_common_headers(), "Content-Type": "application/json"}
-        resp = await page.context.request.post(url, data=body or {}, headers=headers)
-        if resp.status < 200 or resp.status >= 400:
-            return {"__error": resp.status}
-        return await resp.json()
+        result = await page.evaluate(
+            """async ({url, body}) => {
+                try {
+                    const r = await fetch(url, {
+                        method: 'POST',
+                        credentials: 'include',
+                        headers: {
+                            'Accept': 'application/json',
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(body || {})
+                    });
+                    const text = await r.text();
+                    if (!r.ok) return { __error: r.status, __body: text.slice(0, 300) };
+                    try { return JSON.parse(text); } catch (e) { return { __error: 'parse', __body: text.slice(0, 300) }; }
+                } catch (e) { return { __error: 'fetch', __msg: e.message || String(e) }; }
+            }""",
+            {"url": url, "body": body or {}},
+        )
+        if isinstance(result, dict) and "__error" in result:
+            logger.info(
+                f"[cloudbet] POST {url[:80]} → __error={result.get('__error')!r} "
+                f"body={result.get('__body', '')[:120]!r} msg={result.get('__msg', '')!r}"
+            )
+        return result
     except Exception as e:
         logger.warning(f"[cloudbet] POST {url} failed: {e}")
         return None
@@ -307,12 +341,21 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
 # ---------------------------------------------------------------------------
 
 
-async def _navigate_to_event(page: Page, bet, intel: dict | None) -> bool:
+async def _navigate_to_event(page: Page, bet, intel: dict | None) -> bool | str:
     """Navigate to a cloudbet event page.
 
-    Prefers the URL stamped on the bet at extraction time
-    (CloudbetRetriever sets event.url = /en/sports/{sport}/event/{event_id}),
-    falls back to building the same template from bet attributes.
+    Reads the routing URL stamped at extraction time as
+    `provider_meta.cloudbet_event_url` — canonical shape
+    `/en/sports/{sportKey}/{competitionSlug}/{numericEventId}`
+    (e.g. `/en/sports/baseball/usa-mlb/34690236`).
+
+    Returns True on success, or a str failure reason on failure. The
+    GenericWorkflow wrapper translates a str return into False + stashes
+    the reason as `workflow.last_nav_error`, which the router includes
+    in the 502 detail surfaced to the UI. Does NOT construct a fallback
+    URL — the old `/en/sports/{sport}/event/{event_id}` template was
+    malformed on every front (no /event/ segment, slug-style event_id
+    instead of numeric web id). Better to skip than land on a 404.
     """
 
     def _g(attr: str) -> str:
@@ -328,21 +371,60 @@ async def _navigate_to_event(page: Page, bet, intel: dict | None) -> bool:
                 val = meta.get(attr)
         return str(val or "")
 
-    url = _g("url")
+    url = _g("cloudbet_event_url") or _g("url")
     if not url:
-        sport = _g("sport") or "soccer"
-        event_id = _g("event_id") or _g("provider_event_id")
-        if not event_id:
-            logger.warning(f"[cloudbet] No event_id on bet — cannot navigate ({bet!r})")
-            return False
-        url = f"{_BASE}/en/sports/{sport}/event/{event_id}"
+        meta = (
+            bet.get("provider_meta")
+            if isinstance(bet, dict)
+            else getattr(bet, "provider_meta", None)
+        ) or {}
+        logger.warning(
+            f"[cloudbet] No event URL stamped on bet — cannot navigate "
+            f"(provider_meta keys: {list(meta.keys())[:8]})"
+        )
+        return "no event URL stamped on bet"
 
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-        logger.info(f"[cloudbet] Navigated to {url}")
-        return True
     except Exception as e:
         logger.warning(f"[cloudbet] Navigate to {url} failed: {e}")
+        return f"goto failed: {type(e).__name__}"
+
+    # Cloudbet renders 404 client-side as a "WHAT ARE THE ODDS?" SPA shell —
+    # page.goto returns 200 even when the event is gone. Without this check
+    # the runner would mark the bet ready and the user could click Place on
+    # a page that has no market. See the 2026-05-28 incident: a stamped URL
+    # using the legacy slug-style event_id pointed at a removed event, the
+    # nav succeeded, but the page showed "Looks like the page you wanted
+    # doesn't exist."
+    if await _is_cloudbet_404(page):
+        logger.warning(
+            f"[cloudbet] Landed on 404 shell after goto {url} — event missing or URL stale"
+        )
+        return "landed on cloudbet 404 page (event missing or URL stale)"
+
+    logger.info(f"[cloudbet] Navigated to {url}")
+    return True
+
+
+async def _is_cloudbet_404(page: Page) -> bool:
+    """Detect cloudbet's client-rendered 404 page.
+
+    The shell is the same regardless of which path 404s — a "404" hero with
+    "Looks like the page you wanted doesn't exist." and a "Return to lobby"
+    button. Matched on the body text marker since the URL stays whatever the
+    user navigated to.
+    """
+    try:
+        return bool(
+            await page.evaluate(
+                """() => {
+                    const txt = (document.body && document.body.innerText) || '';
+                    return txt.includes("Looks like the page you wanted doesn't exist");
+                }"""
+            )
+        )
+    except Exception:
         return False
 
 

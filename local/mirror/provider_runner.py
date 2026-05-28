@@ -590,9 +590,14 @@ class ProviderRunner:
                 bet_ns = _bet_ns(bet)
                 nav_ok = await workflow.navigate_to_event(page, bet_ns)
                 if not nav_ok:
-                    logger.warning(f"[Runner:{pid}] Navigation failed — skipping bet")
+                    nav_reason = (
+                        getattr(workflow, "last_nav_error", None) or "navigation_failed"
+                    )
+                    logger.warning(
+                        f"[Runner:{pid}] Navigation failed ({nav_reason}) — skipping bet"
+                    )
                     self._broadcaster.publish(
-                        "bet_skipped", {"bet": bet, "reason": "navigation_failed"}
+                        "bet_skipped", {"bet": bet, "reason": nav_reason}
                     )
                     self.stats["skipped"] += 1
                     self._track_hard_fail(pid)
@@ -715,9 +720,13 @@ class ProviderRunner:
                         bet_ns = _bet_ns(bet)
                         nav_ok = await workflow.navigate_to_event(page, bet_ns)
                         if not nav_ok:
+                            nav_reason = (
+                                getattr(workflow, "last_nav_error", None)
+                                or "navigation_failed"
+                            )
                             self._broadcaster.publish(
                                 "bet_skipped",
-                                {"bet": bet, "reason": "navigation_failed"},
+                                {"bet": bet, "reason": nav_reason},
                             )
                             self.stats["skipped"] += 1
                             redirected = True

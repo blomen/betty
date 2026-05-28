@@ -49,9 +49,22 @@ def _load_picked_opps() -> dict[str, dict]:
     except (OSError, json.JSONDecodeError) as e:
         logger.warning(f"[picked_opps] failed to load {_PICKED_OPP_PATH}: {e}")
         return {}
+    # Guard against the file containing anything that isn't a {pid: entry} map
+    # (e.g. a stringified MagicMock from a leaked test run, an array, a null).
+    # Without this, .items() raises AttributeError and crashes /mirror/start.
+    if not isinstance(raw, dict):
+        logger.warning(
+            f"[picked_opps] {_PICKED_OPP_PATH} did not contain an object "
+            f"(got {type(raw).__name__}); discarding"
+        )
+        try:
+            _PICKED_OPP_PATH.unlink()
+        except OSError:
+            pass
+        return {}
     now = time.time()
     fresh: dict[str, dict] = {}
-    for pid, entry in (raw or {}).items():
+    for pid, entry in raw.items():
         if not isinstance(entry, dict):
             continue
         ts = entry.get("_picked_ts", 0)
@@ -842,6 +855,23 @@ def create_mirror_router(
                 "balance": None,
                 "domain": workflow.domain,
             }
+        # Soft providers are fully manual — return the tab presence info but
+        # don't run workflow.check_login / sync_balance / check_login_dom.
+        # The user manages bankroll for soft via PlayPage's inline controls
+        # (place / settle / adjust odds / adjust balance), and the displayed
+        # balance comes from /api/bankroll (manually set), not from here.
+        from .browser import _SHARP_PROVIDERS
+
+        if provider_id not in _SHARP_PROVIDERS:
+            return {
+                "found": True,
+                "provider_id": provider_id,
+                "url": tab_url,
+                "logged_in": False,
+                "balance": None,
+                "domain": workflow.domain,
+                "manual_only": True,
+            }
         # Detection order: intercepted cache → workflow.check_login (intel JSON) → DOM scrape.
         # Balance: always attempt workflow.sync_balance when logged in (strategy/intel driven).
         intercepted = browser.provider_data.get(provider_id, {})
@@ -1601,6 +1631,41 @@ def create_mirror_router(
         except Exception as e:
             raise HTTPException(500, f"record failed: {type(e).__name__}: {e}")
 
+    @router.post("/bet/external-placed")
+    async def bet_external_placed(body: dict[str, Any]):
+        """Tell the mirror that a set of legs was just recorded via
+        /api/bets/batch with external_placement=true.
+
+        Each subsequent bet_intercepted for the listed (provider_id, event_id,
+        market, outcome) tuple is dropped in play_loop._record_manual_bet for
+        the next 10 minutes — preventing the same Pinnacle / counter leg from
+        being inserted twice (once by the batch API, once by the browser
+        interceptor when the user physically clicks Place on the bookmaker tab).
+
+        Body shape: { "legs": [{provider_id, event_id?, market?, outcome?}, ...] }
+        Fields beyond provider_id are optional; missing fields fall back to a
+        provider-scoped match (see PlayLoop._is_externally_placed for the tier
+        logic).
+        """
+        legs = body.get("legs") or []
+        if not isinstance(legs, list) or not legs:
+            raise HTTPException(400, "legs (non-empty list) required")
+        marked = 0
+        for leg in legs:
+            if not isinstance(leg, dict):
+                continue
+            pid = leg.get("provider_id")
+            if not pid:
+                continue
+            play_loop.mark_external_placed(
+                provider_id=str(pid),
+                event_id=str(leg.get("event_id") or ""),
+                market=str(leg.get("market") or ""),
+                outcome=str(leg.get("outcome") or ""),
+            )
+            marked += 1
+        return {"marked": marked, "ttl_s": play_loop._externally_placed_ttl_s}
+
     @router.post("/play/run/{provider_id}")
     async def play_run(provider_id: str):
         """Release the Run gate for a provider runner: yellow → green.
@@ -1816,15 +1881,28 @@ def create_mirror_router(
                     "url": page.url,
                     "event_id": event_id_pn,
                 }
+            # Specific reason from the workflow (set via Strategy returning a
+            # str instead of bool — see GenericWorkflow.navigate_to_event).
+            # Falls back to the generic label when the strategy doesn't opt in.
+            nav_reason = getattr(wf, "last_nav_error", None) or "navigate_failed"
             broadcaster.publish(
                 "arb_leg_failed",
                 {
                     "provider_id": provider_id,
                     "stage": "navigate",
-                    "reason": "navigate_failed",
+                    "reason": nav_reason,
                 },
             )
-            raise HTTPException(status_code=502, detail="navigate_to_event failed")
+            # apiFetch surfaces FastAPI's `detail` body, so the user sees this
+            # string instead of an opaque "Bad Gateway".
+            ev_label = (
+                f"{opp.get('display_home') or opp.get('home_team') or '?'} v "
+                f"{opp.get('display_away') or opp.get('away_team') or '?'}"
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"{provider_id} nav failed for {ev_label}: {nav_reason}",
+            )
 
         # Polymarket's SPA can land on `/` after a `/event/<slug>` goto when
         # Vercel middleware throws (MIDDLEWARE_INVOCATION_FAILED) or the slug
@@ -1834,8 +1912,15 @@ def create_mirror_router(
         # page that doesn't have the market. Verify the slug actually appears
         # in the final URL.
         if provider_id == "polymarket":
+            # Read from bet_ns rather than anchor_leg — the polymarket strategy
+            # mutates bet["provider_meta"]["event_slug"] when it recovers from
+            # a stale slug via date-bump or Gamma refresh. anchor_leg keeps the
+            # original (stale) slug, so reading it here would re-flag the URL
+            # as off-event after a successful refresh.
             expected_slug = (
-                (anchor_leg.get("provider_meta") or {}).get("event_slug") or ""
+                (bet_ns.get("provider_meta") or {}).get("event_slug")
+                or (anchor_leg.get("provider_meta") or {}).get("event_slug")
+                or ""
             ).lower()
             if expected_slug and expected_slug not in (page.url or "").lower():
                 broadcaster.publish(

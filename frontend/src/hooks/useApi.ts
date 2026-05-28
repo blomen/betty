@@ -3,7 +3,21 @@ export async function apiFetch<T>(path: string, options?: RequestInit): Promise<
     ...options,
     headers: { 'Content-Type': 'application/json', ...options?.headers },
   });
-  if (!resp.ok) throw new Error(`API ${resp.status}: ${resp.statusText}`);
+  if (!resp.ok) {
+    // FastAPI puts the structured failure reason in `detail`. Without reading
+    // it, every error reaches the UI as "API 502: Bad Gateway" — opaque, and
+    // tells the user nothing about why nav/prep/placement failed. Try to read
+    // it; fall back to statusText if the body isn't JSON.
+    let detail = ''
+    try {
+      const body = await resp.clone().json()
+      if (typeof body?.detail === 'string') detail = body.detail
+      else if (body?.detail) detail = JSON.stringify(body.detail)
+    } catch {
+      try { detail = (await resp.text()).slice(0, 200) } catch { /* give up */ }
+    }
+    throw new Error(`API ${resp.status}: ${detail || resp.statusText}`);
+  }
   return resp.json();
 }
 
@@ -61,6 +75,36 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ provider_id: providerId, opp }),
     }),
+  // Tell the mirror that these legs were already recorded via /api/bets/batch
+  // (external placement). Subsequent browser intercepts for the same provider
+  // are dropped at the manual-fallback boundary so the same Pinnacle/counter
+  // leg can't be inserted twice. Call AFTER a successful /api/bets/batch.
+  markExternalPlaced: (legs: Array<{ provider_id: string; event_id?: string; market?: string; outcome?: string }>) =>
+    apiFetch<any>('/mirror/bet/external-placed', {
+      method: 'POST',
+      body: JSON.stringify({ legs }),
+    }),
   settleBatch: (batch: { bet_id: number; result: string }[]) =>
     apiFetch<any>('/api/opportunities/play/settle-batch', { method: 'POST', body: JSON.stringify(batch) }),
+  // Manual betting controls — used by PlayPage inline buttons (Phase 1 of the
+  // soft-automation strip-down). Backend endpoints already exist; these are
+  // just the missing /hooks/useApi shims.
+  setBalance: (providerId: string, balance: number) =>
+    apiFetch<any>(`/api/bankroll/set/${providerId}`, {
+      method: 'POST',
+      body: JSON.stringify({ balance }),
+    }),
+  createBet: (data: Record<string, unknown>) =>
+    apiFetch<any>('/api/bets', { method: 'POST', body: JSON.stringify(data) }),
+  editBet: (betId: number, data: { stake?: number; odds?: number; result?: string; payout?: number }) =>
+    apiFetch<any>(`/api/bets/${betId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteBet: (betId: number) =>
+    apiFetch<any>(`/api/bets/${betId}`, { method: 'DELETE' }),
+  // Single-bet manual settle. settleBatch is for the auto-detected-then-confirmed
+  // flow; this one fires immediately when the user clicks W/L/V on a pending row.
+  settleBet: (betId: number, result: 'won' | 'lost' | 'void', payout?: number) =>
+    apiFetch<any>('/api/opportunities/play/settle-bet', {
+      method: 'POST',
+      body: JSON.stringify({ bet_id: betId, result, ...(payout != null ? { payout } : {}) }),
+    }),
 };
