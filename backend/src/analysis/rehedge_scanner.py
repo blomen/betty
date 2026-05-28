@@ -26,7 +26,7 @@ from src.analysis.key_numbers import (
     is_nfl,
 )
 from src.config.loader import get_exchange_rate
-from src.db.models import Bet, Event, Odds
+from src.db.models import Bet, Event, Odds, Opportunity
 
 RehedgeCase = Literal["post_placement_middle", "clv_inversion_salvage"]
 
@@ -230,3 +230,93 @@ def scan_open_positions(db: Session) -> list[RehedgeCandidate]:
         if c is not None:
             out.append(c)
     return out
+
+
+def persist_rehedge_candidates(db: Session, candidates: list[RehedgeCandidate]) -> dict:
+    """Upsert candidates into `opportunities` with type='rehedge'.
+
+    Idempotent — keyed on (event_id, market, outcome1, provider1_id, type, scope)
+    per the existing `ix_opp_upsert_unique` index. Candidates not in the
+    current scan are marked is_active=False (deactivated), so the UI can
+    reflect a vanished hedge window in real time.
+
+    Returns {"inserted": int, "updated": int, "deactivated": int}.
+    """
+    # Build a lookup of current emit set keyed by the persistent natural key.
+    current_keys = {(c.hedge_provider, c.hedge_market, c.hedge_outcome, c.bet_id): c for c in candidates}
+
+    # Deactivate any existing active rehedge rows that are no longer
+    # in the current emit set. Match on (bet_id stored in annotations,
+    # provider1_id, market, outcome1).
+    deactivated = 0
+    existing = (
+        db.query(Opportunity)
+        .filter(
+            Opportunity.type == "rehedge",
+            Opportunity.is_active.is_(True),
+        )
+        .all()
+    )
+    for opp in existing:
+        bid = (opp.annotations or {}).get("bet_id")
+        key = (opp.provider1_id, opp.market, opp.outcome1, bid)
+        if key not in current_keys:
+            opp.is_active = False
+            deactivated += 1
+
+    inserted = 0
+    updated = 0
+    for c in candidates:
+        # Look up the bet's event_id — opportunities are stored keyed by event_id,
+        # not bet_id, but a rehedge candidate references the bet directly.
+        bet = db.get(Bet, c.bet_id)
+        if bet is None or bet.event_id is None:
+            continue
+
+        existing_row = (
+            db.query(Opportunity)
+            .filter(
+                Opportunity.type == "rehedge",
+                Opportunity.event_id == bet.event_id,
+                Opportunity.market == c.hedge_market,
+                Opportunity.outcome1 == c.hedge_outcome,
+                Opportunity.provider1_id == c.hedge_provider,
+                Opportunity.scope == "ft",
+            )
+            .first()
+        )
+
+        annotations = {
+            "case": c.case,
+            "bet_id": c.bet_id,
+            "base_currency": c.base_currency,
+            "recommended_stake_base": c.recommended_stake_base,
+            **c.metadata,
+        }
+
+        if existing_row is None:
+            db.add(
+                Opportunity(
+                    type="rehedge",
+                    event_id=bet.event_id,
+                    market=c.hedge_market,
+                    scope="ft",
+                    provider1_id=c.hedge_provider,
+                    odds1=c.hedge_odds,
+                    outcome1=c.hedge_outcome,
+                    point=c.hedge_point,
+                    total_stake=c.recommended_stake_base,
+                    is_active=True,
+                    annotations=annotations,
+                )
+            )
+            inserted += 1
+        else:
+            existing_row.odds1 = c.hedge_odds
+            existing_row.point = c.hedge_point
+            existing_row.total_stake = c.recommended_stake_base
+            existing_row.is_active = True
+            existing_row.annotations = annotations
+            updated += 1
+
+    return {"inserted": inserted, "updated": updated, "deactivated": deactivated}

@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from src.analysis.rehedge_scanner import RehedgeCandidate
+from src.analysis.rehedge_scanner import RehedgeCandidate, scan_open_positions
 from src.db.models import Bet, Event, Odds, Provider
 
 
@@ -349,3 +349,91 @@ class TestSameBetDedup:
         # (higher opp odds → smaller required stake_b → smaller wing loss).
         assert len(candidates) == 1
         assert candidates[0].hedge_provider == "betinia"
+
+
+class TestPersistence:
+    def _setup_bet_and_quote(self, db_session, future_event):
+        db_session.add(
+            Bet(
+                id=1,
+                event_id=future_event.id,
+                provider_id="unibet",
+                market="spread",
+                outcome="home",
+                point=-2.5,
+                odds=1.91,
+                stake=100.0,
+                currency="SEK",
+                result="pending",
+                bet_type="value",
+                start_time=future_event.start_time,
+            )
+        )
+        db_session.add(
+            Odds(
+                event_id=future_event.id,
+                provider_id="betsson",
+                market="spread",
+                outcome="away",
+                point=3.5,
+                odds=2.00,
+                scope="ft",
+            )
+        )
+        db_session.flush()
+
+    def test_persists_to_opportunities_table(self, db_session, future_event):
+        from src.analysis.rehedge_scanner import persist_rehedge_candidates
+        from src.db.models import Opportunity
+
+        self._setup_bet_and_quote(db_session, future_event)
+        candidates = scan_open_positions(db_session)
+        persist_rehedge_candidates(db_session, candidates)
+        db_session.commit()
+
+        rows = db_session.query(Opportunity).filter(Opportunity.type == "rehedge").all()
+        assert len(rows) == 1
+        opp = rows[0]
+        assert opp.event_id == future_event.id
+        assert opp.provider1_id == "betsson"
+        assert opp.outcome1 == "away"
+        assert opp.is_active is True
+        # Candidate-specific context goes in annotations JSON
+        assert opp.annotations["case"] == "post_placement_middle"
+        assert opp.annotations["bet_id"] == 1
+        assert opp.annotations["key_number"] == 3
+
+    def test_idempotent_upsert(self, db_session, future_event):
+        # Running the scanner twice with the same market state should
+        # not create duplicate opportunities rows.
+        from src.analysis.rehedge_scanner import persist_rehedge_candidates
+        from src.db.models import Opportunity
+
+        self._setup_bet_and_quote(db_session, future_event)
+        persist_rehedge_candidates(db_session, scan_open_positions(db_session))
+        db_session.commit()
+        persist_rehedge_candidates(db_session, scan_open_positions(db_session))
+        db_session.commit()
+
+        rows = db_session.query(Opportunity).filter(Opportunity.type == "rehedge").all()
+        assert len(rows) == 1
+
+    def test_deactivates_stale_candidates(self, db_session, future_event):
+        # If a candidate stops emitting (e.g. opposite-side odds disappeared),
+        # the existing row should be marked is_active=False.
+        from src.analysis.rehedge_scanner import persist_rehedge_candidates
+        from src.db.models import Opportunity
+
+        self._setup_bet_and_quote(db_session, future_event)
+        persist_rehedge_candidates(db_session, scan_open_positions(db_session))
+        db_session.commit()
+
+        # Delete the opposite-side odds row → no more candidate
+        db_session.query(Odds).filter(Odds.provider_id == "betsson").delete()
+        db_session.flush()
+
+        persist_rehedge_candidates(db_session, scan_open_positions(db_session))
+        db_session.commit()
+
+        row = db_session.query(Opportunity).filter(Opportunity.type == "rehedge").one()
+        assert row.is_active is False
