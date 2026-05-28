@@ -1,11 +1,27 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-type MirrorEvent = { type: string; data: any };
+export type MirrorEvent = { type: string; data: any };
 
+// SSE stream from the local mirror — exposes a QUEUE of events, not a single
+// "last event" slot. React 18+ batches state updates: two SSE events landing
+// in the same microtask both call the setter, but only the latter persists
+// if the setter writes a scalar. That dropped silent events (e.g.
+// `bet_recorded` + `balance_intercepted` in the same tick). Functional updater
+// onto an array preserves both.
+//
+// Consumers drain the queue inside an effect:
+//   useEffect(() => {
+//     if (!mirror.pendingEvents.length) return
+//     const batch = mirror.pendingEvents
+//     mirror.clearEvents()
+//     for (const evt of batch) { ... }
+//   }, [mirror.pendingEvents])
+//
+// New events arriving WHILE the consumer is processing are appended via
+// functional updater (not clobbered), so they trigger the next effect tick.
 export function useMirrorStream() {
   const [connected, setConnected] = useState(false);
-  const [lastEvent, setLastEvent] = useState<MirrorEvent | null>(null);
-  const [events, setEvents] = useState<MirrorEvent[]>([]);
+  const [pendingEvents, setPendingEvents] = useState<MirrorEvent[]>([]);
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
@@ -56,14 +72,13 @@ export function useMirrorStream() {
     for (const type of eventTypes) {
       es.addEventListener(type, (e: MessageEvent) => {
         const evt: MirrorEvent = { type, data: JSON.parse(e.data) };
-        setLastEvent(evt);
-        setEvents(prev => [...prev.slice(-99), evt]);
+        setPendingEvents(prev => [...prev, evt]);
       });
     }
 
     return () => { es.close(); esRef.current = null; setConnected(false); };
   }, []);
 
-  const clearEvents = useCallback(() => setEvents([]), []);
-  return { connected, lastEvent, events, clearEvents };
+  const clearEvents = useCallback(() => setPendingEvents([]), []);
+  return { connected, pendingEvents, clearEvents };
 }
