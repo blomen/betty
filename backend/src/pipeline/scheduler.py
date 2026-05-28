@@ -745,6 +745,10 @@ class ExtractionScheduler:
         if self._watchdog_task and not self._watchdog_task.done():
             self._watchdog_task.cancel()
             self._watchdog_task = None
+        # Also stop rehedge task
+        if self._rehedge_task and not self._rehedge_task.done():
+            self._rehedge_task.cancel()
+            self._rehedge_task = None
 
     # ── Boosts tier (standalone, no pipeline) ─────────────────────────
 
