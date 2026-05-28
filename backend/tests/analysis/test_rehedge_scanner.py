@@ -51,9 +51,9 @@ class TestRehedgeCandidateDataclass:
 
 
 class TestQueryOpenBets:
-    """The scanner must filter to bets that are actually scannable:
-    pending result, future event, has event_id (boost bets excluded),
-    has point (moneylines excluded for Case 1)."""
+    """_query_open_bets must filter to bets that are actually scannable:
+    pending result, future event, has event_id (boost bets excluded).
+    Market-type filtering (spread vs. moneyline) happens in scan_open_positions, not here."""
 
     def test_includes_open_nfl_spread(self, db_session, future_event):
         from src.analysis.rehedge_scanner import _query_open_bets

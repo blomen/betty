@@ -135,6 +135,7 @@ def _bet_stake_sek(bet: Bet) -> float:
 
 
 def _keys_for_market(market: str) -> tuple[int, ...]:
+    """Return NFL key-number tuple for the market, or empty if not spread/total."""
     m = market.lower()
     if m in _SPREAD_MARKETS:
         return NFL_SPREAD_KEY_NUMBERS
