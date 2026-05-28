@@ -297,14 +297,17 @@ class PendingLoop:
                 continue
             seen.add(pid)
             url_lower = url.lower()
-            # Same gate as _sync_provider — never refresh while user is on an
-            # event page; a play runner may have a betslip prepped + pending
-            # confirmation, and we don't want to surface a network error
-            # banner mid-bet.
-            if "/event/" in url_lower or "#/event/" in url_lower:
-                continue
             try:
                 workflow = get_workflow(pid)
+            except Exception:
+                continue
+            on_event = "/event/" in url_lower or "#/event/" in url_lower
+            # Same gate as _sync_provider — never refresh while user is on an
+            # event page UNLESS the workflow is API-passive (sync_balance is
+            # pure-API for those — no risk of clobbering an open betslip).
+            if on_event and not getattr(workflow, "sync_history_is_passive", False):
+                continue
+            try:
                 if not await workflow.check_login(page):
                     continue
                 balance = await workflow.sync_balance(page)

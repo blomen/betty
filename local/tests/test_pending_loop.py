@@ -239,3 +239,78 @@ async def test_sync_provider_proceeds_on_event_page_for_passive(monkeypatch):
     await loop._sync_provider("pinnacle", [])
 
     workflow.sync_history.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# test_refresh_balances_skips_event_page_for_dom_driven
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_refresh_balances_skips_event_page_for_dom_driven(monkeypatch):
+    """_refresh_balances must NOT call sync_balance on a non-passive workflow on /event/."""
+    from unittest.mock import AsyncMock
+    import local.mirror.workflows as wfmod
+
+    page = MagicMock()
+    page.url = "https://altenar.example.com/event/123"
+
+    workflow = MagicMock()
+    workflow.sync_history_is_passive = False
+    workflow.check_login = AsyncMock(return_value=True)
+    workflow.sync_balance = AsyncMock(return_value=1234.0)
+
+    monkeypatch.setattr(wfmod, "get_workflow", lambda pid: workflow)
+
+    browser = _make_browser(running=True)
+    browser.context.pages = [page]
+    browser._detect_provider = MagicMock(return_value="altenar")
+
+    loop = PendingLoop(
+        browser=browser,
+        broadcaster=_make_broadcaster(),
+        proxy_url="http://localhost:8000",
+    )
+    loop._post_balance = AsyncMock(return_value=None)
+
+    await loop._refresh_balances()
+
+    workflow.sync_balance.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# test_refresh_balances_proceeds_on_event_page_for_passive
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_refresh_balances_proceeds_on_event_page_for_passive(monkeypatch):
+    """_refresh_balances DOES call sync_balance on a passive workflow on /event/."""
+    from unittest.mock import AsyncMock
+    import local.mirror.workflows as wfmod
+
+    page = MagicMock()
+    page.url = "https://pinnacle.se/sports/123/event/456"
+
+    workflow = MagicMock()
+    workflow.sync_history_is_passive = True
+    workflow.check_login = AsyncMock(return_value=True)
+    workflow.sync_balance = AsyncMock(return_value=2506.0)
+
+    monkeypatch.setattr(wfmod, "get_workflow", lambda pid: workflow)
+
+    browser = _make_browser(running=True)
+    browser.context.pages = [page]
+    browser._detect_provider = MagicMock(return_value="pinnacle")
+
+    loop = PendingLoop(
+        browser=browser,
+        broadcaster=_make_broadcaster(),
+        proxy_url="http://localhost:8000",
+    )
+    loop._post_balance = AsyncMock(return_value=None)
+
+    await loop._refresh_balances()
+
+    workflow.sync_balance.assert_called_once()
+    loop._post_balance.assert_called_once_with("pinnacle", 2506.0)
