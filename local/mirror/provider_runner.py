@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -28,7 +27,6 @@ from .play_loop import (
     _AUTH_VALUE,
     _CLUSTER_MEMBERS,
     _PROVIDER_TO_CLUSTER,
-    DAILY_BET_CAP,
     LOGIN_POLL_INTERVAL,
     LOGIN_TIMEOUT,
     STATE_IDLE,
@@ -37,9 +35,7 @@ from .play_loop import (
     STATE_PLACING,
     STATE_PROVIDER_OPENING,
     STATE_READY,
-    STATE_READY_TO_RUN,
     STATE_SETTLING,
-    UNCAPPED_PROVIDERS,
     _bet_ns,
 )
 
@@ -107,12 +103,6 @@ CONVERGING_PROVIDERS = frozenset({"polymarket", "pinnacle"})
 # are closed events, the cached batch's event slugs are likely stale (e.g.,
 # polymarket changed slug format). User should refresh batch or restart.
 CONSECUTIVE_HARD_FAIL_ALERT = 5
-
-# Continuous-sync intervals while the runner sits at STATE_READY_TO_RUN.
-# Conservative defaults — settlement events are infrequent and balance
-# fetches incur a network round trip per tick.
-READY_BALANCE_SYNC_INTERVAL_S = 60.0
-READY_PENDING_SYNC_INTERVAL_S = 300.0
 
 
 def should_redirect_to_top(
@@ -204,16 +194,6 @@ class ProviderRunner:
         # stale and a batch refresh / restart is needed. Reset on first
         # successful prep.
         self._consecutive_hard_fails = 0
-        # Run-gate. Default-CLOSED — runner reaches STATE_READY_TO_RUN and
-        # parks until the user presses Run on the yellow card. Login
-        # detection + settlement run automatically; only bet placement
-        # is gated. Once Run is pressed there is no toggle-off — the
-        # bet loop runs to completion.
-        self._run_event: asyncio.Event = asyncio.Event()
-        # Background task that performs continuous balance + pending sync
-        # while the runner is at STATE_READY_TO_RUN. Spawned on entry to
-        # ready, cancelled on transition to bet loop or stop().
-        self._ready_sync_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -231,9 +211,6 @@ class ProviderRunner:
             except Exception:
                 pass
             self._slip_stream = None
-        if self._ready_sync_task and not self._ready_sync_task.done():
-            self._ready_sync_task.cancel()
-        self._ready_sync_task = None
         if self._task and not self._task.done():
             self._task.cancel()
         self._task = None
@@ -269,29 +246,6 @@ class ProviderRunner:
 
     def skip(self) -> None:
         self._skip_event.set()
-
-    def set_run(self, run: bool) -> bool:
-        """Toggle the run gate. Returns True if state actually changed.
-
-        Setting True while at STATE_READY_TO_RUN releases the gate so the
-        bet loop iteration can begin. Clearing while running causes the
-        loop to drop back to STATE_READY_TO_RUN at the top of the next
-        iteration (mid-bet placements unwind naturally — pausing while at
-        STATE_READY waiting for Place/Skip simulates a Skip)."""
-        if run:
-            if self._run_event.is_set():
-                return False
-            self._run_event.set()
-            return True
-        else:
-            if not self._run_event.is_set():
-                return False
-            self._run_event.clear()
-            # If runner is sitting at STATE_READY waiting on Place/Skip,
-            # signal Skip so the bet loop can unwind and re-check the gate.
-            if self.state == STATE_READY:
-                self._skip_event.set()
-            return True
 
     def on_bet_intercepted(self, body: dict, request_body: dict | None = None) -> None:
         if self.state in (STATE_READY, STATE_NAVIGATING, STATE_PLACING):
@@ -378,7 +332,6 @@ class ProviderRunner:
                     "actual_odds": result.actual_odds,
                     "actual_stake": result.actual_stake,
                     "placed_today": self._placed_today.get(pid, 0),
-                    "daily_cap": DAILY_BET_CAP,
                 },
             )
         else:
@@ -461,85 +414,6 @@ class ProviderRunner:
                 pass
         return prep_result, live_odds, live_edge
 
-    async def _ready_sync_loop(self, workflow: Any, page: Any) -> None:
-        """Continuously refresh balance and re-detect pending while at
-        STATE_READY_TO_RUN. Cancelled when the runner enters its bet loop
-        or stops. Errors are swallowed — staleness is preferable to crashing
-        the runner mid-idle."""
-        pid = self.provider_id
-        last_balance = 0.0
-        last_pending = 0.0
-        while True:
-            now = time.monotonic()
-            try:
-                if now - last_balance >= READY_BALANCE_SYNC_INTERVAL_S:
-                    if hasattr(workflow, "fetch_balance"):
-                        try:
-                            await workflow.fetch_balance(page)
-                        except Exception as e:
-                            logger.debug(
-                                f"[Runner:{pid}] ready balance sync failed: {e!r}"
-                            )
-                    last_balance = now
-                if now - last_pending >= READY_PENDING_SYNC_INTERVAL_S:
-                    try:
-                        await self._detect_pending(pid, workflow, page)
-                        # If the gate was opened mid-detect, _run is already
-                        # transitioning to the bet loop — don't stomp state.
-                        if not self._run_event.is_set():
-                            self.state = STATE_READY_TO_RUN
-                            # _detect_pending broadcast settling_* SSE which
-                            # demoted the card to cyan; re-emit provider_ready
-                            # so the frontend snaps back to yellow.
-                            self._broadcaster.publish(
-                                "provider_ready",
-                                {
-                                    "provider_id": pid,
-                                    "state": STATE_READY_TO_RUN,
-                                    "placed_today": self._placed_today.get(pid, 0),
-                                    "daily_cap": DAILY_BET_CAP,
-                                },
-                            )
-                    except Exception as e:
-                        logger.debug(f"[Runner:{pid}] ready pending sync failed: {e!r}")
-                    last_pending = now
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                pass
-            await asyncio.sleep(5.0)
-
-    async def _await_run_gate(self, workflow: Any, page: Any) -> None:
-        """Park at STATE_READY_TO_RUN until the user opens the run gate.
-
-        Spawns a continuous-sync background task while parked; cancels it on
-        gate release. Idempotent — safe to call from multiple points in _run."""
-        self.state = STATE_READY_TO_RUN
-        self._broadcaster.publish(
-            "provider_ready",
-            {
-                "provider_id": self.provider_id,
-                "state": STATE_READY_TO_RUN,
-                "placed_today": self._placed_today.get(self.provider_id, 0),
-                "daily_cap": DAILY_BET_CAP,
-            },
-        )
-        self._ready_sync_task = asyncio.create_task(
-            self._ready_sync_loop(workflow, page),
-            name=f"ready_sync_{self.provider_id}",
-        )
-        try:
-            await self._run_event.wait()
-        finally:
-            if self._ready_sync_task and not self._ready_sync_task.done():
-                self._ready_sync_task.cancel()
-                try:
-                    await self._ready_sync_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            self._ready_sync_task = None
-        self._broadcaster.publish("provider_running", {"provider_id": self.provider_id})
-
     async def _run(self) -> None:
         self.state = STATE_PROVIDER_OPENING
         pid = self.provider_id
@@ -584,48 +458,12 @@ class ProviderRunner:
             # 3. Detect settlements (broadcast only — user confirms from UI)
             await self._detect_pending(pid, workflow, page)
 
-            # 4. Check daily cap
-            if pid not in UNCAPPED_PROVIDERS:
-                await self._fetch_placed_today(pid)
-                placed = self._placed_today.get(pid, 0)
-                if placed >= DAILY_BET_CAP:
-                    logger.info(
-                        f"[Runner:{pid}] At daily cap ({placed}/{DAILY_BET_CAP})"
-                    )
-                    self._broadcaster.publish(
-                        "provider_complete",
-                        {
-                            "provider_id": pid,
-                            "reason": f"daily cap ({placed}/{DAILY_BET_CAP})",
-                        },
-                    )
-                    return
-
-            # 5. NEW: Wait at READY_TO_RUN for the user to press Run.
-            # While waiting, run a slow continuous-sync task so balance
-            # and pending stay fresh. The task is cancelled the moment
-            # the gate is released.
-            await self._await_run_gate(workflow, page)
-
-            # 6. Process bets from shared queue
+            # 4. Process bets from shared queue
+            self._broadcaster.publish(
+                "provider_running", {"provider_id": self.provider_id}
+            )
             logger.info(f"[Runner:{pid}] Entering bet loop")
             while True:
-                # If the user paused, drop back to ready and await the gate again.
-                if not self._run_event.is_set():
-                    await self._await_run_gate(workflow, page)
-
-                if pid not in UNCAPPED_PROVIDERS:
-                    placed = self._placed_today.get(pid, 0)
-                    if placed >= DAILY_BET_CAP:
-                        self._broadcaster.publish(
-                            "provider_complete",
-                            {
-                                "provider_id": pid,
-                                "reason": f"daily cap ({placed}/{DAILY_BET_CAP})",
-                            },
-                        )
-                        break
-
                 bet = self._pop_bet()
                 if bet is None:
                     # Queue empty — but don't exit. Coordinator's _refresh_batch
@@ -944,23 +782,6 @@ class ProviderRunner:
 
                 # Ready — wait for interceptor or skip, polling live price
                 self.state = STATE_READY
-                # If the user paused while we were navigating/prepping, the
-                # gate may be closed. Auto-skip this bet and let the next
-                # iteration's gate-check drop the runner back to ready
-                # rather than waiting indefinitely on user Place/Skip input.
-                if not self._run_event.is_set():
-                    self._broadcaster.publish(
-                        "bet_skipped",
-                        {"bet": bet, "reason": "paused"},
-                    )
-                    self.stats["skipped"] += 1
-                    if self._slip_stream is not None:
-                        try:
-                            self._slip_stream.stop()
-                        except Exception:
-                            pass
-                        self._slip_stream = None
-                    continue
                 self._bet_intercepted_event.clear()
                 self._skip_event.clear()
                 self._intercepted_body = None
@@ -1439,7 +1260,6 @@ class ProviderRunner:
                 "actual_odds": result.actual_odds,
                 "actual_stake": result.actual_stake,
                 "placed_today": placed_count,
-                "daily_cap": DAILY_BET_CAP,
             },
         )
         self.stats["placed"] += 1
@@ -1532,6 +1352,19 @@ class ProviderRunner:
                             "source": f"{last_positive_source}+{source}",
                         }
                     )
+                    # Persist to MirrorProviderState so /api/mirror/state shows
+                    # logged_in=True. Without this the in-memory provider_data
+                    # is correct but the DB-backed read path stays stale —
+                    # frontend sees "Log in to continue" while the runner is
+                    # happily processing bets.
+                    try:
+                        from .state_writer import write_provider_state
+
+                        write_provider_state(pid, logged_in=True, balance=final_bal)
+                    except Exception as e:
+                        logger.debug(
+                            f"[Runner:{pid}] write_provider_state failed: {e!r}"
+                        )
                     self._broadcaster.publish(
                         "login_detected",
                         {"provider_id": pid, "balance": final_bal},
@@ -2201,20 +2034,6 @@ class ProviderRunner:
             if prov.get("provider_id") == provider_id:
                 return prov.get("bets", [])
         return []
-
-    async def _fetch_placed_today(self, provider_id: str) -> None:
-        from local.http_client import tunnel_client as _tc
-
-        try:
-            resp = await _tc().post(
-                "/api/opportunities/play/batch", json={}, timeout=30.0
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            placed = data.get("placed_today", {})
-            self._placed_today.update(placed)
-        except Exception:
-            logger.warning(f"[Runner:{provider_id}] failed to fetch placed_today")
 
     async def _record_settlements(
         self, provider_id: str, settlements: list[dict]

@@ -25,15 +25,12 @@ from .play_loop import (
     _AUTH_HEADER,
     _AUTH_VALUE,
     _PROVIDER_TO_CLUSTER,
-    DAILY_BET_CAP,
     LOGIN_POLL_INTERVAL,
     LOGIN_TIMEOUT,
     STATE_IDLE,
     STATE_LOGIN_WAITING,
     STATE_PROVIDER_OPENING,
-    STATE_READY_TO_RUN,
     STATE_SETTLING,
-    UNCAPPED_PROVIDERS,
     UNLIMITED_PROVIDERS,
     _bet_ns,
 )
@@ -110,7 +107,13 @@ class ArbRunner:
         self._state: str = STATE_IDLE
         self.current_opp: dict | None = None
         self.current_arb_group_id: str | None = None
-        self.stats: dict = {"placed": 0, "skipped": 0, "rejected": 0, "complete": 0, "total": 0}
+        self.stats: dict = {
+            "placed": 0,
+            "skipped": 0,
+            "rejected": 0,
+            "complete": 0,
+            "total": 0,
+        }
 
         # Anchor (soft) intercept
         self._anchor_event: asyncio.Event = asyncio.Event()
@@ -145,11 +148,6 @@ class ArbRunner:
         self.last_idle_reason: str | None = None
         self.last_skip_counts: dict[str, int] = {}
 
-        # Run-gate. Default-CLOSED — see ProviderRunner. Login + settle
-        # auto-run; arb bet loop waits on user Run press.
-        self._run_event: asyncio.Event = asyncio.Event()
-        self._ready_sync_task: asyncio.Task | None = None
-
     # ----- public surface -----
 
     def start(self) -> None:
@@ -170,9 +168,6 @@ class ArbRunner:
         if self._top_opp_watcher_task and not self._top_opp_watcher_task.done():
             self._top_opp_watcher_task.cancel()
         self._top_opp_watcher_task = None
-        if self._ready_sync_task and not self._ready_sync_task.done():
-            self._ready_sync_task.cancel()
-        self._ready_sync_task = None
         if self._task and not self._task.done():
             self._task.cancel()
         self._task = None
@@ -217,40 +212,36 @@ class ArbRunner:
         if self.state in (STATE_STANDBY, STATE_LOADING_LEGS):
             self._intercepted_while_red = not self._all_green
             if self._intercepted_while_red:
-                logger.warning(f"[Arb:{self.provider_id}] Anchor intercepted while NOT all-green — will reject")
+                logger.warning(
+                    f"[Arb:{self.provider_id}] Anchor intercepted while NOT all-green — will reject"
+                )
             else:
                 logger.info(f"[Arb:{self.provider_id}] Anchor placement intercepted")
             self._intercepted_body = body
             self._intercepted_request_body = request_body
             self._anchor_event.set()
         else:
-            logger.warning(f"[Arb:{self.provider_id}] Anchor intercept in state={self.state} — ignoring")
+            logger.warning(
+                f"[Arb:{self.provider_id}] Anchor intercept in state={self.state} — ignoring"
+            )
 
     def on_counter_bet_intercepted(
         self, counter_provider_id: str, body: dict, request_body: dict | None = None
     ) -> None:
         """Counter leg placement intercepted (called by play_loop router)."""
         if counter_provider_id in self._counter_events:
-            logger.info(f"[Arb:{self.provider_id}] Counter {counter_provider_id} intercepted")
-            self._counter_intercepted[counter_provider_id] = {"body": body, "request_body": request_body}
+            logger.info(
+                f"[Arb:{self.provider_id}] Counter {counter_provider_id} intercepted"
+            )
+            self._counter_intercepted[counter_provider_id] = {
+                "body": body,
+                "request_body": request_body,
+            }
             self._counter_events[counter_provider_id].set()
         else:
             logger.warning(
                 f"[Arb:{self.provider_id}] Counter intercept for {counter_provider_id} but no event registered"
             )
-
-    def set_run(self, run: bool) -> bool:
-        """Toggle the run gate. See ProviderRunner.set_run."""
-        if run:
-            if self._run_event.is_set():
-                return False
-            self._run_event.set()
-            return True
-        else:
-            if not self._run_event.is_set():
-                return False
-            self._run_event.clear()
-            return True
 
     def get_status(self) -> dict:
         return {
@@ -265,110 +256,6 @@ class ArbRunner:
             "last_skip_counts": dict(self.last_skip_counts),
         }
 
-    # ----- run gate -----
-
-    async def _await_run_gate(self, workflow: Any, page: Any) -> None:
-        """Park briefly at STATE_READY_TO_RUN, then auto-release for arb (drain).
-
-        F6 (per docs/superpowers/specs/2026-05-06-betinia-drain-workflow.md): the
-        arb runner is single-press — clicking the soft anchor card already
-        signals intent to drain, no second press needed. We still publish
-        `provider_ready` and sleep 0.5s so the SSE event lands and the card
-        flashes amber, then set `_run_event` so the bet loop starts.
-
-        Pause flow still works: a user-initiated `set_run(False)` clears the
-        event mid-loop, and the bet loop drops back into `_await_run_gate`,
-        which re-publishes `provider_ready` and re-auto-releases.
-        """
-        self.state = STATE_READY_TO_RUN
-        auto_released = not self._run_event.is_set()
-        self._broadcaster.publish(
-            "provider_ready",
-            {
-                "provider_id": self.provider_id,
-                "state": STATE_READY_TO_RUN,
-                "mode": "arb",
-                "placed_today": self._placed_today.get(self.provider_id, 0),
-                "daily_cap": DAILY_BET_CAP,
-                "auto_released": auto_released,
-            },
-        )
-        if auto_released:
-
-            async def _release_after_delay():
-                try:
-                    await asyncio.sleep(0.5)
-                    self._run_event.set()
-                except asyncio.CancelledError:
-                    pass
-
-            asyncio.create_task(_release_after_delay(), name=f"arb_auto_release_{self.provider_id}")
-        self._ready_sync_task = asyncio.create_task(
-            self._ready_sync_loop(workflow, page),
-            name=f"ready_sync_arb_{self.provider_id}",
-        )
-        try:
-            await self._run_event.wait()
-        finally:
-            if self._ready_sync_task and not self._ready_sync_task.done():
-                self._ready_sync_task.cancel()
-                try:
-                    await self._ready_sync_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            self._ready_sync_task = None
-        self._broadcaster.publish(
-            "provider_running",
-            {"provider_id": self.provider_id, "mode": "arb"},
-        )
-
-    async def _ready_sync_loop(self, workflow: Any, page: Any) -> None:
-        """Mirror of ProviderRunner._ready_sync_loop — slow balance + pending
-        re-sync while the arb runner sits at STATE_READY_TO_RUN."""
-        import time
-
-        from .provider_runner import (
-            READY_BALANCE_SYNC_INTERVAL_S,
-            READY_PENDING_SYNC_INTERVAL_S,
-        )
-
-        pid = self.provider_id
-        last_balance = 0.0
-        last_pending = 0.0
-        while True:
-            now = time.monotonic()
-            try:
-                if now - last_balance >= READY_BALANCE_SYNC_INTERVAL_S:
-                    if hasattr(workflow, "fetch_balance"):
-                        try:
-                            await workflow.fetch_balance(page)
-                        except Exception as e:
-                            logger.debug(f"[Arb:{pid}] ready balance sync failed: {e!r}")
-                    last_balance = now
-                if now - last_pending >= READY_PENDING_SYNC_INTERVAL_S:
-                    try:
-                        await self._detect_pending(pid, workflow, page)
-                        if not self._run_event.is_set():
-                            self.state = STATE_READY_TO_RUN
-                            self._broadcaster.publish(
-                                "provider_ready",
-                                {
-                                    "provider_id": pid,
-                                    "state": STATE_READY_TO_RUN,
-                                    "mode": "arb",
-                                    "placed_today": self._placed_today.get(pid, 0),
-                                    "daily_cap": DAILY_BET_CAP,
-                                },
-                            )
-                    except Exception as e:
-                        logger.debug(f"[Arb:{pid}] ready pending sync failed: {e!r}")
-                    last_pending = now
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                pass
-            await asyncio.sleep(5.0)
-
     # ----- main loop -----
 
     async def _run(self) -> None:
@@ -380,7 +267,9 @@ class ArbRunner:
             workflow = get_workflow(pid)
 
             # 1. Find tab
-            self._broadcaster.publish("provider_opening", {"provider_id": pid, "mode": "arb"})
+            self._broadcaster.publish(
+                "provider_opening", {"provider_id": pid, "mode": "arb"}
+            )
             page = None
             for _attempt in range(10):
                 if self._browser.context:
@@ -397,10 +286,16 @@ class ArbRunner:
             if page is None:
                 logger.warning(f"[Arb:{pid}] No tab found — stopping")
                 self.last_idle_reason = "no_tab"
-                self._broadcaster.publish("provider_skipped", {"provider_id": pid, "reason": "no_tab"})
+                self._broadcaster.publish(
+                    "provider_skipped", {"provider_id": pid, "reason": "no_tab"}
+                )
                 self._broadcaster.publish(
                     "arb_runner_idle",
-                    {"provider_id": pid, "reason": "no_tab", "details": {"domain": workflow.domain}},
+                    {
+                        "provider_id": pid,
+                        "reason": "no_tab",
+                        "details": {"domain": workflow.domain},
+                    },
                 )
                 return
 
@@ -411,7 +306,9 @@ class ArbRunner:
             if not logged_in:
                 logger.warning(f"[Arb:{pid}] Login timeout — stopping")
                 self.last_idle_reason = "login_timeout"
-                self._broadcaster.publish("provider_skipped", {"provider_id": pid, "reason": "login_timeout"})
+                self._broadcaster.publish(
+                    "provider_skipped", {"provider_id": pid, "reason": "login_timeout"}
+                )
                 self._broadcaster.publish(
                     "arb_runner_idle",
                     {"provider_id": pid, "reason": "login_timeout", "details": {}},
@@ -421,38 +318,14 @@ class ArbRunner:
             # 3. Settle pending bets
             await self._detect_pending(pid, workflow, page)
 
-            # 4. Check daily cap
-            if pid not in UNCAPPED_PROVIDERS:
-                await self._fetch_placed_today(pid)
-                placed = self._placed_today.get(pid, 0)
-                if placed >= DAILY_BET_CAP:
-                    logger.info(f"[Arb:{pid}] At daily cap ({placed}/{DAILY_BET_CAP})")
-                    self._broadcaster.publish(
-                        "provider_complete",
-                        {"provider_id": pid, "reason": f"daily cap ({placed}/{DAILY_BET_CAP})"},
-                    )
-                    return
-
-            # 5. Wait at READY_TO_RUN for the user to press Run.
-            await self._await_run_gate(workflow, page)
-
-            # 6. Arb bet loop
+            # 4. Arb bet loop
+            self._broadcaster.publish(
+                "provider_running",
+                {"provider_id": self.provider_id, "mode": "arb"},
+            )
             logger.info(f"[Arb:{pid}] Entering arb bet loop (v2)")
             skip_counts: dict[str, int] = {}
             while True:
-                # If the user paused, drop back to ready and await the gate.
-                if not self._run_event.is_set():
-                    await self._await_run_gate(workflow, page)
-
-                if pid not in UNCAPPED_PROVIDERS:
-                    placed = self._placed_today.get(pid, 0)
-                    if placed >= DAILY_BET_CAP:
-                        self._broadcaster.publish(
-                            "provider_complete",
-                            {"provider_id": pid, "reason": f"daily cap ({placed}/{DAILY_BET_CAP})"},
-                        )
-                        break
-
                 # Fetch fresh arb opps. Empty result is transient — first call
                 # often hits an in-flight scan (30s-3min server-side); the next
                 # call hits the warm cache. Don't break the runner on empty.
@@ -488,18 +361,25 @@ class ArbRunner:
                     self.state = STATE_LOADING_LEGS
                     loaded = await self._load_all_legs(opp)
                     if not loaded:
-                        skip_counts["load_failed"] = skip_counts.get("load_failed", 0) + 1
+                        skip_counts["load_failed"] = (
+                            skip_counts.get("load_failed", 0) + 1
+                        )
                         continue
 
                     self.stats["total"] += 1
 
                     # Stream and await anchor click (with top-opp watcher)
                     self.state = STATE_STANDBY
-                    self._top_opp_watcher_task = asyncio.create_task(self._watch_top_opp(), name=f"arb_watch_{pid}")
+                    self._top_opp_watcher_task = asyncio.create_task(
+                        self._watch_top_opp(), name=f"arb_watch_{pid}"
+                    )
                     try:
                         anchor_result = await self._stream_and_await_anchor()
                     finally:
-                        if self._top_opp_watcher_task and not self._top_opp_watcher_task.done():
+                        if (
+                            self._top_opp_watcher_task
+                            and not self._top_opp_watcher_task.done()
+                        ):
                             self._top_opp_watcher_task.cancel()
                             try:
                                 await self._top_opp_watcher_task
@@ -529,7 +409,12 @@ class ArbRunner:
                     self._placed_today[pid] = self._placed_today.get(pid, 0) + 1
 
                     anchor_bet = self._opp_to_bet(
-                        opp, next(l for l in (opp.get("arb_legs") or opp.get("legs", [])) if l.get("provider") == pid)
+                        opp,
+                        next(
+                            l
+                            for l in (opp.get("arb_legs") or opp.get("legs", []))
+                            if l.get("provider") == pid
+                        ),
                     )
                     anchor_bet["stake"] = anchor_result["actual_stake"]
                     anchor_placement = PlacementResult(
@@ -540,7 +425,10 @@ class ArbRunner:
                     )
                     self._block_event_market(anchor_bet)
                     await self._record_bet(
-                        anchor_bet, anchor_placement, self.current_arb_group_id or "", is_anchor=True
+                        anchor_bet,
+                        anchor_placement,
+                        self.current_arb_group_id or "",
+                        is_anchor=True,
                     )
 
                     # Update counter slips and await hedge clicks.
@@ -557,7 +445,9 @@ class ArbRunner:
                             0,
                         )
                     )
-                    await self._update_counter_slips_and_await_hedges(anchor_result["actual_stake"], actual_odds)
+                    await self._update_counter_slips_and_await_hedges(
+                        anchor_result["actual_stake"], actual_odds
+                    )
 
                     # Clean up streams
                     for s in self._streams.values():
@@ -570,7 +460,9 @@ class ArbRunner:
                     break  # Re-fetch fresh opps after each placement
 
                 if not placed_any:
-                    logger.info(f"[Arb:{pid}] No viable opps in batch — done. skip_counts={skip_counts}")
+                    logger.info(
+                        f"[Arb:{pid}] No viable opps in batch — done. skip_counts={skip_counts}"
+                    )
                     self.last_idle_reason = "no_viable_opps"
                     self.last_skip_counts = dict(skip_counts)
                     self._broadcaster.publish(
@@ -587,7 +479,9 @@ class ArbRunner:
                 await asyncio.sleep(_OPP_FETCH_COOLDOWN)
 
             # Done
-            self._broadcaster.publish("provider_complete", {"provider_id": pid, "mode": "arb"})
+            self._broadcaster.publish(
+                "provider_complete", {"provider_id": pid, "mode": "arb"}
+            )
             logger.info(f"[Arb:{pid}] Complete — {self.stats}")
 
         except asyncio.CancelledError:
@@ -609,11 +503,16 @@ class ArbRunner:
         if not is_valid_arb_shape(legs, unlimited=set(UNLIMITED_PROVIDERS)):
             self._broadcaster.publish(
                 "bet_skipped",
-                {"opp": opp, "reason": "invalid_arb_shape (need 1 soft + ≥1 unlimited)"},
+                {
+                    "opp": opp,
+                    "reason": "invalid_arb_shape (need 1 soft + ≥1 unlimited)",
+                },
             )
             return False
 
-        anchor_leg = next((l for l in legs if l.get("provider") == self.provider_id), None)
+        anchor_leg = next(
+            (l for l in legs if l.get("provider") == self.provider_id), None
+        )
         counter_legs = [l for l in legs if l.get("provider") != self.provider_id]
         if not anchor_leg or not counter_legs:
             self._broadcaster.publish(
@@ -623,8 +522,12 @@ class ArbRunner:
             return False
 
         # Anchor stake = full balance (capped at site max)
-        balance = self._browser.provider_data.get(self.provider_id, {}).get("balance") or 0.0
-        anchor_stake = round(balance, 2)  # site-max cap learned later from limit responses
+        balance = (
+            self._browser.provider_data.get(self.provider_id, {}).get("balance") or 0.0
+        )
+        anchor_stake = round(
+            balance, 2
+        )  # site-max cap learned later from limit responses
         if anchor_stake <= 0:
             self._broadcaster.publish(
                 "bet_skipped",
@@ -682,11 +585,17 @@ class ArbRunner:
                 is_anchor = pid == anchor_pid
                 is_autonomous = bool(getattr(wf, "autonomous_placement", False))
                 if not is_anchor and not is_autonomous:
-                    logger.info(f"[Arb:{self.provider_id}] {pid} is guided counter — nav-only (no prep/stream)")
+                    logger.info(
+                        f"[Arb:{self.provider_id}] {pid} is guided counter — nav-only (no prep/stream)"
+                    )
                     return pid, True, "guided_nav_only"
                 prep = await wf.prep_betslip(page, bet_ns, planned_stake)
                 if prep.status not in ("prepped", "placed"):
-                    return pid, False, f"prep_{prep.status}:{getattr(prep, 'reason', '') or 'no_reason'}"
+                    return (
+                        pid,
+                        False,
+                        f"prep_{prep.status}:{getattr(prep, 'reason', '') or 'no_reason'}",
+                    )
                 # Start SlipOddsStream for this leg
                 stream = SlipOddsStream(
                     provider_id=pid,
@@ -743,7 +652,9 @@ class ArbRunner:
                         "planned_odds": leg.get("odds"),
                         "slip_state": "loading",
                     }
-                    for leg, s in zip([anchor_leg] + counter_legs, [anchor_stake] + counter_stakes)
+                    for leg, s in zip(
+                        [anchor_leg] + counter_legs, [anchor_stake] + counter_stakes
+                    )
                 ],
             },
         )
@@ -757,7 +668,10 @@ class ArbRunner:
             self._latest_counter_odds[provider_id] = odds
             anchor_odds = self._streams[self.provider_id].current_odds or 0.0
 
-        counter_odds = [self._latest_counter_odds.get(l["provider"], l.get("odds", 0)) for l in self._counter_legs]
+        counter_odds = [
+            self._latest_counter_odds.get(l["provider"], l.get("odds", 0))
+            for l in self._counter_legs
+        ]
         if anchor_odds <= 0 or any(o <= 0 for o in counter_odds):
             return
         profit = recalc_profit_pct(anchor_odds, counter_odds)
@@ -765,7 +679,9 @@ class ArbRunner:
             return
 
         # Update counter slip stakes if drift exceeds threshold
-        new_stakes = recalc_counter_stakes(self._anchor_stake, anchor_odds, counter_odds)
+        new_stakes = recalc_counter_stakes(
+            self._anchor_stake, anchor_odds, counter_odds
+        )
         for leg, new_stake in zip(self._counter_legs, new_stakes):
             cur = leg.get("_current_stake", new_stake)
             if should_update_stake(cur, new_stake):
@@ -805,7 +721,10 @@ class ArbRunner:
                             "provider_id": self.provider_id,
                             "current_odds": anchor_odds,
                             "planned_odds": self._planned_anchor_odds,
-                            "drift_pct": round((anchor_odds / self._planned_anchor_odds - 1.0) * 100.0, 3)
+                            "drift_pct": round(
+                                (anchor_odds / self._planned_anchor_odds - 1.0) * 100.0,
+                                3,
+                            )
                             if self._planned_anchor_odds > 0
                             else 0.0,
                             "current_stake": self._anchor_stake,
@@ -815,11 +734,17 @@ class ArbRunner:
                     + [
                         {
                             "provider_id": leg["provider"],
-                            "current_odds": self._latest_counter_odds.get(leg["provider"], leg.get("odds", 0)),
-                            "planned_odds": leg.get("_planned_odds", leg.get("odds", 0)),
+                            "current_odds": self._latest_counter_odds.get(
+                                leg["provider"], leg.get("odds", 0)
+                            ),
+                            "planned_odds": leg.get(
+                                "_planned_odds", leg.get("odds", 0)
+                            ),
                             "drift_pct": round(
                                 (
-                                    self._latest_counter_odds.get(leg["provider"], leg.get("odds", 0))
+                                    self._latest_counter_odds.get(
+                                        leg["provider"], leg.get("odds", 0)
+                                    )
                                     / leg.get("_planned_odds", leg.get("odds", 1))
                                     - 1.0
                                 )
@@ -865,7 +790,11 @@ class ArbRunner:
 
         wf = get_workflow(self.provider_id)
         body = self._intercepted_body or {}
-        pstatus = wf.parse_placement_status(body) if hasattr(wf, "parse_placement_status") else {"success": True}
+        pstatus = (
+            wf.parse_placement_status(body)
+            if hasattr(wf, "parse_placement_status")
+            else {"success": True}
+        )
         if not pstatus.get("success"):
             self._broadcaster.publish(
                 "arb_anchor_rejected",
@@ -900,8 +829,13 @@ class ArbRunner:
     ) -> bool:
         """Re-derive counter stakes from actual anchor placement; update each counter slip; await placements."""
         # Use latest streamed counter odds (best truth available)
-        counter_odds = [self._latest_counter_odds.get(l["provider"], l.get("odds", 0)) for l in self._counter_legs]
-        new_stakes = recalc_counter_stakes(anchor_actual_stake, anchor_actual_odds, counter_odds)
+        counter_odds = [
+            self._latest_counter_odds.get(l["provider"], l.get("odds", 0))
+            for l in self._counter_legs
+        ]
+        new_stakes = recalc_counter_stakes(
+            anchor_actual_stake, anchor_actual_odds, counter_odds
+        )
 
         # Update slips in parallel
         async def _push_stake(leg: dict, stake: float) -> None:
@@ -911,10 +845,14 @@ class ArbRunner:
             try:
                 await wf.update_slip_stake(page, stake)
             except Exception:
-                logger.exception(f"[Arb:{self.provider_id}] update_slip_stake failed for {pid}")
+                logger.exception(
+                    f"[Arb:{self.provider_id}] update_slip_stake failed for {pid}"
+                )
             leg["_current_stake"] = stake
 
-        await asyncio.gather(*[_push_stake(l, s) for l, s in zip(self._counter_legs, new_stakes)])
+        await asyncio.gather(
+            *[_push_stake(l, s) for l, s in zip(self._counter_legs, new_stakes)]
+        )
 
         # Wait for every counter event
         await asyncio.gather(*(ev.wait() for ev in self._counter_events.values()))
@@ -926,7 +864,11 @@ class ArbRunner:
             intercepted = self._counter_intercepted.get(pid, {})
             body = intercepted.get("body", {}) if isinstance(intercepted, dict) else {}
             wf = get_workflow(pid)
-            pstatus = wf.parse_placement_status(body) if hasattr(wf, "parse_placement_status") else {"success": True}
+            pstatus = (
+                wf.parse_placement_status(body)
+                if hasattr(wf, "parse_placement_status")
+                else {"success": True}
+            )
             if not pstatus.get("success"):
                 self._broadcaster.publish(
                     "arb_hedge_failed",
@@ -969,7 +911,9 @@ class ArbRunner:
                 actual_odds=leg.get("odds"),
                 actual_stake=leg.get("_current_stake", 0),
             )
-            await self._record_bet(counter_bet, counter_placement, self.current_arb_group_id or "")
+            await self._record_bet(
+                counter_bet, counter_placement, self.current_arb_group_id or ""
+            )
 
         # Post-place profit re-check: now that we know the actual placed odds
         # on every leg, recompute the guaranteed-profit %. If the arb crossed
@@ -978,8 +922,12 @@ class ArbRunner:
         # surface a warning. Can't un-place the legs, but the SSE alert lets
         # the user see the slip immediately and audit logs flag it.
         try:
-            placed_counter_odds = [float(leg.get("odds") or 0) for leg in self._counter_legs]
-            placed_profit = recalc_profit_pct(float(anchor_actual_odds), placed_counter_odds)
+            placed_counter_odds = [
+                float(leg.get("odds") or 0) for leg in self._counter_legs
+            ]
+            placed_profit = recalc_profit_pct(
+                float(anchor_actual_odds), placed_counter_odds
+            )
             if placed_profit is not None and placed_profit < 0:
                 self._broadcaster.publish(
                     "arb_negative_profit",
@@ -1002,7 +950,9 @@ class ArbRunner:
             "arb_complete",
             {
                 "arb_group_id": self.current_arb_group_id,
-                "guaranteed_profit_pct": self.current_opp.get("guaranteed_profit_pct") if self.current_opp else None,
+                "guaranteed_profit_pct": self.current_opp.get("guaranteed_profit_pct")
+                if self.current_opp
+                else None,
             },
         )
         self.stats["complete"] += 1
@@ -1094,14 +1044,20 @@ class ArbRunner:
     def _should_dethrone(self, top_opp: dict) -> bool:
         """Decide whether to swap to a new top opp (spec §4.2 hysteresis)."""
         legs = top_opp.get("arb_legs") or top_opp.get("legs", [])
-        anchor_leg = next((l for l in legs if l.get("provider") == self.provider_id), None)
+        anchor_leg = next(
+            (l for l in legs if l.get("provider") == self.provider_id), None
+        )
         if anchor_leg is None:
             return False
         new_key = self._compute_opp_key(top_opp, anchor_leg)
         if new_key == self.current_opp_key:
             return False
         new_profit = top_opp.get("guaranteed_profit_pct", 0.0)
-        baseline = self._current_recomputed_profit_pct if self._current_recomputed_profit_pct is not None else 0.0
+        baseline = (
+            self._current_recomputed_profit_pct
+            if self._current_recomputed_profit_pct is not None
+            else 0.0
+        )
         return (new_profit - baseline) >= DETHRONE_HYSTERESIS_PCT
 
     async def _watch_top_opp(self) -> None:
@@ -1149,7 +1105,9 @@ class ArbRunner:
             "league": opp.get("league", ""),
             "start_time": opp.get("starts_at"),
             "is_bonus": False,
-            "provider_meta": dict(leg.get("provider_meta") or {}),  # From leg (matchup_id etc.)
+            "provider_meta": dict(
+                leg.get("provider_meta") or {}
+            ),  # From leg (matchup_id etc.)
         }
 
     async def _record_bet(
@@ -1175,7 +1133,9 @@ class ArbRunner:
         """
         from local.http_client import tunnel_client as _tc
 
-        provider_bet_id = result.bet_id if isinstance(result.bet_id, str) and result.bet_id else None
+        provider_bet_id = (
+            result.bet_id if isinstance(result.bet_id, str) and result.bet_id else None
+        )
         payload = {
             "event_id": bet.get("event_id", ""),
             "provider_id": bet.get("provider_id", ""),
@@ -1196,10 +1156,14 @@ class ArbRunner:
                 resp = await client.post("/api/bets", json=payload, timeout=10.0)
                 resp.raise_for_status()
                 data = resp.json()
-                logger.info(f"[Arb:{self.provider_id}] Recorded bet {data.get('bet_id', '?')} (group={arb_group_id})")
+                logger.info(
+                    f"[Arb:{self.provider_id}] Recorded bet {data.get('bet_id', '?')} (group={arb_group_id})"
+                )
                 return
             except Exception:
-                logger.exception(f"[Arb:{self.provider_id}] Failed to record bet (attempt {attempt + 1}/3)")
+                logger.exception(
+                    f"[Arb:{self.provider_id}] Failed to record bet (attempt {attempt + 1}/3)"
+                )
                 if attempt < 2:
                     await asyncio.sleep(2**attempt)
         logger.error(f"[Arb:{self.provider_id}] Bet lost after 3 attempts: {payload}")
@@ -1231,7 +1195,11 @@ class ArbRunner:
                         bal = await workflow.sync_balance(page)
                     except Exception:
                         bal = None
-                    return True, bal if (bal is not None and bal >= 0) else None, "workflow"
+                    return (
+                        True,
+                        bal if (bal is not None and bal >= 0) else None,
+                        "workflow",
+                    )
             except Exception:
                 pass
             return False, None, None
@@ -1270,6 +1238,13 @@ class ArbRunner:
                             "source": f"{last_positive_source}+{source}",
                         }
                     )
+                    # Persist to MirrorProviderState — see ProviderRunner for rationale.
+                    try:
+                        from .state_writer import write_provider_state
+
+                        write_provider_state(pid, logged_in=True, balance=final_bal)
+                    except Exception as e:
+                        logger.debug(f"[Arb:{pid}] write_provider_state failed: {e!r}")
                     self._broadcaster.publish(
                         "login_detected",
                         {"provider_id": pid, "balance": final_bal},
@@ -1286,11 +1261,17 @@ class ArbRunner:
 
             last_positive_source = None
             last_positive_balance = None
-            await asyncio.sleep(_LOGIN_FAST_POLL_S if elapsed < 30 else LOGIN_POLL_INTERVAL)
+            await asyncio.sleep(
+                _LOGIN_FAST_POLL_S if elapsed < 30 else LOGIN_POLL_INTERVAL
+            )
             elapsed += _LOGIN_FAST_POLL_S if elapsed < 30 else LOGIN_POLL_INTERVAL
             self._broadcaster.publish(
                 "login_waiting",
-                {"provider_id": pid, "elapsed": round(elapsed), "timeout": LOGIN_TIMEOUT},
+                {
+                    "provider_id": pid,
+                    "elapsed": round(elapsed),
+                    "timeout": LOGIN_TIMEOUT,
+                },
             )
         return False
 
@@ -1304,7 +1285,12 @@ class ArbRunner:
         if not pending_bets:
             self._broadcaster.publish(
                 "settling_done",
-                {"provider_id": pid, "pending_count": 0, "settled_count": 0, "skipped_no_pending": True},
+                {
+                    "provider_id": pid,
+                    "pending_count": 0,
+                    "settled_count": 0,
+                    "skipped_no_pending": True,
+                },
             )
             return
 
@@ -1354,7 +1340,11 @@ class ArbRunner:
             logger.info(f"[Arb:{pid}] reconciled {n} bets")
         self._broadcaster.publish(
             "settling_done",
-            {"provider_id": pid, "pending_count": len(pending_bets), "settled_count": n or 0},
+            {
+                "provider_id": pid,
+                "pending_count": len(pending_bets),
+                "settled_count": n or 0,
+            },
         )
 
     async def _fetch_pending(self, provider_id: str) -> list[dict]:
@@ -1371,23 +1361,15 @@ class ArbRunner:
                 return prov.get("bets", [])
         return []
 
-    async def _fetch_placed_today(self, provider_id: str) -> None:
-        from local.http_client import tunnel_client as _tc
-
-        try:
-            resp = await _tc().post("/api/opportunities/play/batch", json={}, timeout=30.0)
-            resp.raise_for_status()
-            data = resp.json()
-            placed = data.get("placed_today", {})
-            self._placed_today.update(placed)
-        except Exception:
-            logger.warning(f"[Arb:{provider_id}] failed to fetch placed_today")
-
     async def _post_balance(self, provider_id: str, balance: float) -> None:
         from local.http_client import tunnel_client as _tc
 
         try:
-            resp = await _tc().post(f"/api/bankroll/set/{provider_id}", json={"balance": balance}, timeout=15.0)
+            resp = await _tc().post(
+                f"/api/bankroll/set/{provider_id}",
+                json={"balance": balance},
+                timeout=15.0,
+            )
             resp.raise_for_status()
         except Exception:
             pass

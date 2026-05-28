@@ -89,10 +89,11 @@ const getTrigger = (b: ProviderBalanceLike | undefined): { amount: number; curre
     : null
 }
 // Providers whose balances + slip stakes are denominated in USD (USDC for
-// polymarket, USD for kalshi). Everything else is SEK. The /api/bankroll
-// `balance` field is normalised to SEK already (see PlayPage load()), so we
-// compute stakes in SEK and convert just for native-currency display.
-const USD_PROVIDERS = new Set(['polymarket', 'kalshi'])
+// polymarket + cloudbet, USD for kalshi). Everything else is SEK. The
+// /api/bankroll `balance` field is normalised to SEK already (see PlayPage
+// load()), so we compute stakes in SEK and convert just for native-currency
+// display.
+const USD_PROVIDERS = new Set(['polymarket', 'kalshi', 'cloudbet'])
 const SEK_PER_USD = 10.5
 
 // Providers that display prices in native cents (Polymarket: $0.62 ↔ 62¢,
@@ -174,9 +175,18 @@ function computeArbStakes(
 function BalanceCell({ pid, balances }: { pid: string; balances: Record<string, ProviderBalanceLike> }) {
   const balance = getBalance(balances[pid])
   const trigger = getTrigger(balances[pid])
+  // USD-denominated providers (polymarket, kalshi, cloudbet) display the
+  // native USDC/USD value with a $ prefix instead of the SEK-normalised
+  // `balance` field — otherwise cloudbet's $22.77 wallet renders as
+  // "239.09 kr" (the SEK conversion) which is meaningless to the user.
+  const raw = balances[pid]
+  const balDisplay = (typeof raw === 'object' && raw?.balance_native != null)
+    ? raw.balance_native
+    : balance
+  const isUsd = USD_PROVIDERS.has(pid)
   return (
     <span>
-      <span>{balance.toFixed(2)} kr</span>
+      <span>{isUsd ? '$' : ''}{balDisplay.toFixed(2)}{!isUsd ? ' kr' : ''}</span>
       {trigger && balance < 1 && (
         <span className="ml-2 text-xs text-orange-400/80" title="Deposit to unlock provider bonus">
           · deposit {trigger.amount.toFixed(0)} {trigger.currency.toLowerCase()}
@@ -257,6 +267,36 @@ export default function PlayPage() {
   // restart. Merged into loopProviderStatus by the effect below — SSE still
   // drives sub-5s updates between the 5s polls.
   const mirrorState = useMirrorState()
+  // Auto-nav toggle. When OFF (default), the unlimited-provider runners
+  // do NOT auto-spawn — login/balance/settle still passive-sync via
+  // browser interceptors + reactive history sync, but the runner doesn't
+  // auto-navigate the polymarket/cloudbet/kalshi/pinnacle tab to its
+  // top-edge bet. The user drives navigation by clicking arb cells or
+  // value-bet rows, which routes through /mirror/arb/navigate-opp.
+  // Toggle ON to get the historical autonomous-iteration behavior.
+  // Persisted to localStorage.
+  const AUTO_NAV_KEY = 'betty:autoNavEnabled:v1'
+  const [autoNavEnabled, setAutoNavEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(AUTO_NAV_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem(AUTO_NAV_KEY, autoNavEnabled ? '1' : '0')
+    } catch { /* full/disabled */ }
+    // Turning the toggle OFF (or first mount with toggle already OFF):
+    // tear down any active runners so the auto-nav stops immediately —
+    // otherwise a runner that was started in a previous betty session keeps
+    // iterating bets until its queue drains. Idempotent: 409 / no-op if
+    // there's no running loop.
+    if (!autoNavEnabled) {
+      api.stopPlayLoop().catch(() => { /* ignore — no loop to stop */ })
+      setLoopRunning(false)
+    }
+  }, [autoNavEnabled])
   const [loopRunning, setLoopRunning] = useState(false)
   const [currentBetReady, setCurrentBetReady] = useState<any>(null)
   const [toasts, setToasts] = useState<SettleToast[]>([])
@@ -281,7 +321,7 @@ export default function PlayPage() {
       return { ...prev, [pid]: msg }
     })
   }, [])
-  const [placementToast, setPlacementToast] = useState<{ bet: any; count: number; cap: number } | null>(null)
+  const [placementToast, setPlacementToast] = useState<{ bet: any; count: number } | null>(null)
   // Event IDs whose pages came back "Detta evenemang är avslutat" — filter
   // them out of arb rows so the runner doesn't re-pick a dead event.
   // Persist drained event_ids in localStorage with a 24h TTL — events
@@ -462,6 +502,23 @@ export default function PlayPage() {
       localStorage.setItem(COUNTER_FILTER_KEY, JSON.stringify([...enabledCounters]))
     } catch { /* full / disabled */ }
   }, [enabledCounters])
+  // Hide negative-profit arbs by default. They're useful for diagnosing
+  // soft-book pricing drift but spam the table — the user toggles them on
+  // when investigating. Persisted to localStorage.
+  const SHOW_NEG_ARBS_KEY = 'betty:showNegativeArbs:v1'
+  const [showNegativeArbs, setShowNegativeArbs] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(SHOW_NEG_ARBS_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem(SHOW_NEG_ARBS_KEY, showNegativeArbs ? '1' : '0')
+    } catch { /* full / disabled */ }
+  }, [showNegativeArbs])
+
   const toggleCounter = (pid: string) => {
     setEnabledCounters(prev => {
       const next = new Set(prev)
@@ -577,11 +634,6 @@ export default function PlayPage() {
     } catch { /* full / disabled */ }
   }, [oppsByCluster])
   const [arbLoading, setArbLoading] = useState(false)
-  // Stale-arb verifier state: one cluster at a time. While running, button
-  // disables and shows progress. Persists `cluster_id` so the user can see
-  // which one is being checked; null = idle.
-  const [verifyingCluster, setVerifyingCluster] = useState<string | null>(null)
-  const [verifyProgress, setVerifyProgress] = useState<{ done: number; total: number } | null>(null)
   // Sub-tab switcher within the Play page
   const [subTab, setSubTab] = useState<'arb' | 'value'>('value')
   // Tick state so the TTK column re-renders every 30s without depending on
@@ -888,14 +940,53 @@ export default function PlayPage() {
     // `s;0;s;1.5` holds both home@+1.5 and away@-1.5). Override KEY uses
     // leg.point (team-perspective) so storage/lookup match the leg dict.
     const overrides: Record<string, number> = {}
+    // Parallel array of per-leg payloads for the DB upsert below. We need the
+    // raw (market, outcome, point) tuple to POST /api/odds/live-update — the
+    // override key alone isn't reversible. Without this, the refreshed odds
+    // live only in React state and disappear on the next page refresh /
+    // arb-workflow scan that re-reads extraction-time odds.
+    const persistPayloads: Array<{
+      market: string
+      outcome: string
+      point: number | null
+      odds: number
+    }> = []
     for (const leg of (opp.legs ?? [])) {
       const lp = (leg.provider ?? leg.provider_id) as string
       if (lp !== 'pinnacle') continue
       const live = pickLiveOddsFromMarkets(market, leg.outcome, point, legsCount, res.markets)
       if (live == null || live <= 0) continue
       overrides[legOddsKey(eid, lp, leg.outcome, leg.point ?? point)] = live
+      persistPayloads.push({
+        market,
+        outcome: leg.outcome,
+        point: leg.point ?? point ?? null,
+        odds: live,
+      })
     }
     if (Object.keys(overrides).length === 0) return
+    // Fire-and-forget DB upsert so the refreshed odds survive a page reload
+    // and the next /arb-workflow scan returns them instead of the stale
+    // extraction-time value. /api/odds/live-update is UPDATE-only — if the
+    // (event_id, provider_id, market, outcome, point) row doesn't exist
+    // (rare for a Pinnacle leg we just arbed against), the call no-ops.
+    for (const p of persistPayloads) {
+      fetch('/api/odds/live-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider_id: 'pinnacle',
+          event_id: eid,
+          market: p.market,
+          outcome: p.outcome,
+          point: p.point,
+          odds: p.odds,
+          source: 'mirror',
+        }),
+      }).catch(err => {
+        console.warn('[refresh-matchup] DB persist failed', err)
+      })
+    }
     // Persist for cross-refresh continuity.
     setLiveLegOdds(prev => {
       const next = { ...prev }
@@ -944,48 +1035,6 @@ export default function PlayPage() {
       return mutated ? next : prev
     })
   }, [])
-
-  // Iterate over a cluster's currently-displayed top-N arbs, refreshing
-  // Pinnacle odds for each in series. After completion the list is sorted
-  // by *real* current profitability (refreshPinnacleMatchup mutates the
-  // opp's legs.odds and recomputes guaranteed_profit_pct, then re-sorts).
-  // Single-active: only one cluster can verify at a time. Subsequent
-  // clicks while running are dropped.
-  const verifyArbsInCluster = useCallback(async (clusterId: string) => {
-    if (verifyingCluster) return
-    const opps = oppsByCluster[clusterId] ?? []
-    // Only Pinnacle-side arbs need the targeted refresh. Filter + dedupe by
-    // matchup_id so we don't fetch the same matchup twice (3-leg arbs share
-    // one Pinnacle matchup_id across home/away legs).
-    const seen = new Set<string>()
-    const queue: Array<{ opp: any; matchupId: string }> = []
-    for (const o of opps.slice(0, 20)) {
-      const pinnLegs = (o.legs ?? []).filter((l: any) => (l.provider ?? l.provider_id) === 'pinnacle')
-      if (pinnLegs.length === 0) continue
-      const mid = pinnLegs[0]?.provider_meta?.matchup_id
-      if (!mid || seen.has(mid)) continue
-      seen.add(mid)
-      queue.push({ opp: o, matchupId: mid })
-    }
-    if (queue.length === 0) return
-    setVerifyingCluster(clusterId)
-    setVerifyProgress({ done: 0, total: queue.length })
-    try {
-      for (let i = 0; i < queue.length; i++) {
-        const { opp, matchupId } = queue[i]
-        try {
-          await refreshPinnacleMatchup(opp, matchupId)
-        } catch (e) {
-          console.warn('[verify-arbs] failed', matchupId, e)
-        }
-        setVerifyProgress({ done: i + 1, total: queue.length })
-      }
-    } finally {
-      setVerifyingCluster(null)
-      // Keep the final progress visible briefly, then clear.
-      setTimeout(() => setVerifyProgress(null), 2000)
-    }
-  }, [oppsByCluster, refreshPinnacleMatchup, verifyingCluster])
 
   const loadArbOpps = useCallback(async () => {
     // Cancel any in-flight scan so a stale result can't overwrite fresh state.
@@ -1191,14 +1240,26 @@ export default function PlayPage() {
                   activated.add(pid)
                   continue
                 }
+                // Open the tab + mirror ONCE per session per pid — repeating
+                // these calls every 10s tick steals window focus
+                // (api.openTab calls bring_to_front on the existing tab),
+                // producing visible tab flicker in the mirror chrome.
+                if (!activated.has(pid)) {
+                  setActiveProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
+                  try { await api.startMirror() } catch {}
+                  try { await api.openTab(pid) } catch {}
+                  activated.add(pid)
+                }
+                // Auto-nav gate: only spawn the runner (which iterates bets +
+                // navigates the tab) when the user has explicitly enabled it.
+                // Default OFF — user wants manual click-to-navigate, and the
+                // runner's auto-nav was clobbering arb-leg navigation by
+                // re-grabbing the tab between clicks.
+                if (!autoNavEnabled) continue
                 const bData = await getBatch()
                 const full: any[] = bData.batch || []
                 const myBets = full.filter((b: any) => b.provider_id === pid && (b.edge_pct ?? 0) > 0)
                 if (myBets.length === 0) continue
-                activated.add(pid)
-                setActiveProviders(prev => prev.has(pid) ? prev : new Set(prev).add(pid))
-                try { await api.startMirror() } catch {}
-                try { await api.openTab(pid) } catch {}
                 setLoopRunning(true)
                 await api.startPlayLoop(myBets, bData.provider_balances || {}, [pid])
               } catch { /* retry next tick */ }
@@ -1219,7 +1280,7 @@ export default function PlayPage() {
     // 1 status). Halving cadence cuts polling load to ~3 req/s steady-state.
     const id = setInterval(check, 10000)
     return () => { cancelled = true; clearInterval(id) }
-  }, [])
+  }, [autoNavEnabled])
 
   // Poll login state for soft providers we know about (have balance or pending).
   // Recovers green-state after a page reload AND auto-activates the runner once
@@ -1293,7 +1354,7 @@ export default function PlayPage() {
   // we'd have caught via SSE. /mirror/stream is pure live fan-out (no
   // replay), so a page reload mid-session leaves loopProviderStatus
   // empty and the chip stuck on the default 'tab_open' / red pill even
-  // though the backend has already advanced to ready_to_run / running.
+  // though the backend has already advanced to running.
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -1331,7 +1392,7 @@ export default function PlayPage() {
     // DB state can be stale from a prior betty.bat run that died without
     // writing state='idle'. Activity (i.e. activeProviders membership) must
     // come from the live in-memory runner via /mirror/play/status — NOT from
-    // DB. Otherwise a previous session's "ready_to_run" leaks into a fresh
+    // DB. Otherwise a previous session's "running" leaks into a fresh
     // launch where no runner exists. We ONLY update loopProviderStatus here,
     // and only for providers the user already activated this session.
     const seeded: Record<string, any> = {}
@@ -1347,7 +1408,7 @@ export default function PlayPage() {
         for (const [pid, v] of Object.entries(seeded)) {
           // SSE-driven entry is authoritative if it has a current_bet (live
           // update). Otherwise DB state wins — this unsticks the "Log in to
-          // continue" red pill when SSE missed the provider_ready event.
+          // continue" red pill when SSE missed the provider_running event.
           const existing = merged[pid]
           if (!existing || !existing.current_bet) merged[pid] = v
         }
@@ -1455,7 +1516,7 @@ export default function PlayPage() {
       const pid = bet?.provider_id || ''
       const currentPending = (pendingByProvider[pid] ?? []).length + 1
       const placedCount = data.placed_today ?? 1
-      setPlacementToast({ bet, count: currentPending, cap: 10 })
+      setPlacementToast({ bet, count: currentPending })
       setTimeout(() => setPlacementToast(null), 4000)
       if (bet?.provider_id) {
         setPlacedToday(prev => ({ ...prev, [bet.provider_id]: placedCount }))
@@ -1561,7 +1622,7 @@ export default function PlayPage() {
     if (type === 'provider_manual_nav') {
       // User browsed the counter tab to a matchup page on their own.
       // Match the URL's team slugs against open opps and auto-pick the
-      // first hit so the DUTCH ARB widget shows the right event without
+      // first hit so the ARB widget shows the right event without
       // the user having to click anything in the betty UI.
       const pid = data.provider_id
       const homeSlug = (data.home_slug ?? '') as string
@@ -1933,15 +1994,10 @@ export default function PlayPage() {
     // Update per-provider status from individual events
     if (type === 'provider_opening' || type === 'login_waiting' || type === 'login_detected' ||
         type === 'settling_pending' || type === 'settling_done' ||
-        type === 'provider_ready' || type === 'provider_running' ||
+        type === 'provider_running' ||
         type === 'bet_ready' || type === 'bet_placed' || type === 'bet_skipped' || type === 'bet_failed') {
       const epid = data.provider_id || data.bet?.provider_id
       if (epid) {
-        // bet_skipped with reason='paused' means the runner is unwinding to
-        // the gate after the user clicked Pause — don't stamp a 'navigating'
-        // state that would flap the card green between pause and the
-        // following provider_ready event.
-        if (type === 'bet_skipped' && data.reason === 'paused') return
         // settling_done is a transient signal — the runner immediately fires
         // provider_running / bet_ready next. Don't stamp 'settling' on
         // settling_done (would leave the card stuck in "Logged in · syncing"
@@ -1951,8 +2007,7 @@ export default function PlayPage() {
         setLoopProviderStatus(prev => ({
           ...prev,
           [epid]: {
-            state: type === 'provider_ready' ? 'ready_to_run' :
-                   type === 'provider_running' ? 'running' :
+            state: type === 'provider_running' ? 'running' :
                    type === 'bet_ready' ? 'ready' :
                    type === 'bet_placed' || type === 'bet_skipped' || type === 'bet_failed' ? 'navigating' :
                    type === 'login_waiting' ? 'login_waiting' :
@@ -2027,10 +2082,12 @@ export default function PlayPage() {
     if (!iso) return 'text-zinc-600'
     const diffMs = new Date(iso).getTime() - Date.now()
     if (Number.isNaN(diffMs)) return 'text-zinc-600'
-    if (diffMs < 0) return 'text-red-400'         // already started — pre-match arb is dead
-    if (diffMs < 15 * 60_000) return 'text-amber-400'  // <15m — urgent, place now
-    if (diffMs < 60 * 60_000) return 'text-yellow-300' // <1h
-    return 'text-zinc-400'
+    // Green = actionable sweet spot, red = too far (drift risk) or already started.
+    if (diffMs < 0) return 'text-red-500'                 // started — pre-match arb dead
+    if (diffMs < 24 * 3600_000) return 'text-emerald-400' // <24h — sweet spot
+    if (diffMs < 48 * 3600_000) return 'text-yellow-300'  // 24-48h
+    if (diffMs < 72 * 3600_000) return 'text-orange-400'  // 48-72h
+    return 'text-red-400'                                 // 3d+ — too far out
   }
   const getTtkHours = (b: BatchBet) => {
     if (!b.start_time) return null
@@ -2313,6 +2370,22 @@ export default function PlayPage() {
             )
           })}
         </div>
+        {/* Auto-nav toggle — gates the unlimited-provider runner spawn so
+            the polymarket/cloudbet/kalshi/pinnacle tab stays where the user
+            put it via arb-cell or value-bet click. Default OFF (manual mode). */}
+        <button
+          onClick={() => setAutoNavEnabled(v => !v)}
+          title={autoNavEnabled
+            ? 'Auto-nav ON — runner iterates bets and drives the tab automatically. Click to disable.'
+            : 'Auto-nav OFF — you drive navigation by clicking bets. Click to enable autonomous mode.'}
+          className={`ml-auto px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider rounded transition-colors ${
+            autoNavEnabled
+              ? 'bg-emerald-700/40 text-emerald-200 border border-emerald-600/50'
+              : 'bg-zinc-800 text-zinc-400 border border-zinc-700 hover:text-zinc-200'
+          }`}
+        >
+          auto-nav: {autoNavEnabled ? 'on' : 'off'}
+        </button>
       </div>
 
       {/* Header */}
@@ -2363,7 +2436,7 @@ export default function PlayPage() {
         </div>
       )}
 
-      {/* DUTCH ARB / WAITING widget moved per-provider — see the per-cluster
+      {/* ARB / WAITING widget moved per-provider — see the per-cluster
           render below where it appears under each provider header row, scoped
           to that provider's currently-picked event_id (pickedEventByProvider). */}
 
@@ -2412,13 +2485,14 @@ export default function PlayPage() {
           button. All other states (login_waiting, settling, navigating,
           placing, running) are duplicated by the per-provider card badge
           inside each cluster, so showing them here is redundant noise.
-          Polymarket is rendered inline inside its own cluster header below
-          (search for "POLYMARKET inline status") — keeps the ready/Skip
-          control next to the polymarket bets list. */}
+          Unlimited providers (pinnacle/polymarket/cloudbet/kalshi) are
+          rendered inline inside their own cluster headers below (search
+          for "unlimited-cluster inline status") — keeps the ready/Skip
+          control next to each provider's bets list. */}
       {loopRunning && loopProviderStatus && Object.keys(loopProviderStatus).length > 0 && (
         <div className="border-b border-zinc-800">
           {Object.entries(loopProviderStatus)
-            .filter(([pid, status]: [string, any]) => pid !== 'polymarket' && status?.state === 'ready')
+            .filter(([pid, status]: [string, any]) => !UNLIMITED_PROVIDERS.has(pid) && status?.state === 'ready')
             .map(([pid, status]: [string, any]) => (
             <div key={pid} className="flex items-center gap-2 px-3 py-1 border-b border-zinc-800/50 bg-zinc-900/30">
               <span className="text-[10px] font-semibold text-amber-400 uppercase w-20">{pid}</span>
@@ -2534,7 +2608,12 @@ export default function PlayPage() {
             if (bi >= 0) return 1
             return a.localeCompare(b)
           })
-          const totalOpps = Object.values(oppsByCluster).reduce((n, arr) => n + arr.length, 0)
+          const totalOpps = Object.values(oppsByCluster).reduce((n, arr) => {
+            const visible = showNegativeArbs
+              ? arr
+              : arr.filter((o: any) => (o.guaranteed_profit_pct ?? 0) >= 0)
+            return n + visible.length
+          }, 0)
 
           return (
             <div className="border-b border-zinc-800 pb-2 mb-2">
@@ -2572,6 +2651,19 @@ export default function PlayPage() {
                     </button>
                   )
                 })}
+                <button
+                  onClick={() => setShowNegativeArbs(v => !v)}
+                  className={`ml-2 px-1.5 py-0.5 text-[9px] uppercase font-semibold rounded border transition-colors cursor-pointer ${
+                    showNegativeArbs
+                      ? 'bg-amber-500/20 text-amber-100 border-amber-500/40 hover:bg-amber-500/30'
+                      : 'bg-zinc-800/40 text-zinc-500 border-zinc-700/40 hover:bg-zinc-800/70'
+                  }`}
+                  title={showNegativeArbs
+                    ? 'Click to hide arbs with negative guaranteed profit'
+                    : 'Click to also show arbs with negative guaranteed profit (diagnostic)'}
+                >
+                  {showNegativeArbs ? 'showing neg' : 'pos only'}
+                </button>
                 <span className="text-[10px] text-zinc-600 ml-auto">
                   top 20 per cluster · siblings share odds · drained excluded
                 </span>
@@ -2755,36 +2847,6 @@ export default function PlayPage() {
                           <span className="text-[10px] font-bold text-purple-300 uppercase tracking-wider">
                             {cluster}
                           </span>
-                          {/* Verify-all button: hits the targeted refresh for every visible
-                              Pinnacle-side arb in this cluster, in series. Single-active
-                              across the whole UI — disabled while ANY cluster is verifying.
-                              Once done, the list is auto-sorted by real-time profitability. */}
-                          {(() => {
-                            const isThisCluster = verifyingCluster === cluster
-                            const isAnyRunning = verifyingCluster !== null
-                            const hasPinnacle = (opps as any[]).some(o =>
-                              (o.legs ?? []).some((l: any) => (l.provider ?? l.provider_id) === 'pinnacle'),
-                            )
-                            if (!hasPinnacle) return null
-                            return (
-                              <button
-                                onClick={() => verifyArbsInCluster(cluster)}
-                                disabled={isAnyRunning}
-                                className={`px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider rounded border transition-colors ${
-                                  isThisCluster
-                                    ? 'bg-amber-700/40 text-amber-200 border-amber-600/50 cursor-wait animate-pulse'
-                                    : isAnyRunning
-                                      ? 'bg-zinc-800 text-zinc-600 border-zinc-700 cursor-not-allowed'
-                                      : 'bg-purple-900/30 text-purple-200 border-purple-700/50 hover:bg-purple-900/50 cursor-pointer'
-                                }`}
-                                title="Verify each top-20 arb's live Pinnacle odds in series. Real top arbs surface; ghost arbs (stale-data positives) drop."
-                              >
-                                {isThisCluster && verifyProgress
-                                  ? `Verifying ${verifyProgress.done}/${verifyProgress.total}…`
-                                  : 'Verify all'}
-                              </button>
-                            )
-                          })()}
                           <span className="text-[10px] text-zinc-600 ml-auto">
                             {opps.length} arb{opps.length === 1 ? '' : 's'} · siblings share odds
                           </span>
@@ -2897,7 +2959,7 @@ export default function PlayPage() {
                                 </div>
                               </div>
                               {(() => {
-                                // Per-provider arb widget — DUTCH ARB / WAITING moved here from
+                                // Per-provider arb widget — ARB / WAITING moved here from
                                 // the global header. Tracks the event the user most recently
                                 // picked for this provider (pickedEventByProvider[pid]) and
                                 // shows: profit %, all legs (anchor + counters) with planned
@@ -2964,7 +3026,7 @@ export default function PlayPage() {
                                 return (
                                   <div className="px-6 py-1.5 border-b border-zinc-800/30 bg-purple-950/15">
                                     <div className="flex items-center gap-2 mb-1 flex-wrap">
-                                      <span className="px-1.5 py-0.5 text-[9px] font-bold bg-purple-900/50 text-purple-300 border border-purple-700/50 rounded">DUTCH ARB</span>
+                                      <span className="px-1.5 py-0.5 text-[9px] font-bold bg-purple-900/50 text-purple-300 border border-purple-700/50 rounded">ARB</span>
                                       <span className={`text-[10px] font-mono font-semibold ${profit > 0 ? 'text-green-400' : 'text-red-400'}`}>
                                         {profit > 0 ? '+' : ''}{profit.toFixed(2)}%
                                       </span>
@@ -3264,6 +3326,7 @@ export default function PlayPage() {
                                       // them so they can't trick the user into placing.
                                       const p = opp.guaranteed_profit_pct ?? 0
                                       if (p > 30) return false
+                                      if (p < 0 && !showNegativeArbs) return false
                                       return true
                                     }).map((opp: any, i: number) => {
                                       const counterLegs = opp.counter_plan ?? opp.counter_legs ?? opp.legs ?? []
@@ -3378,7 +3441,7 @@ export default function PlayPage() {
                                         navInFlight.current.add(lk)
                                         setLegBusy(`${lk}:${eid}`)
                                         // Anchor click that switches event for the same soft provider:
-                                        // wipe the prior event's UI state so the DUTCH ARB widget
+                                        // wipe the prior event's UI state so the ARB widget
                                         // moves to the new event and the old row no longer reads as
                                         // synced/green/picking. Previously the old picked event would
                                         // stick (widget keeps showing the dead pick, sync chips stay
@@ -3401,7 +3464,7 @@ export default function PlayPage() {
                                               return next
                                             })
                                             // Detach any counter providers that were pointed at the
-                                            // OLD event — otherwise their DUTCH ARB widget (if shown
+                                            // OLD event — otherwise their ARB widget (if shown
                                             // somewhere else) and their "checking…" status would
                                             // linger on a pick the user has abandoned.
                                             setPickedEventByProvider(prev => {
@@ -3547,7 +3610,7 @@ export default function PlayPage() {
                                         } else {
                                           // Manual-play branch: navigateLeg is skipped (anchor not
                                           // logged in), so pickedEventByProvider[pid] would never
-                                          // get set — meaning the DUTCH ARB calculator widget
+                                          // get set — meaning the ARB calculator widget
                                           // (editable payout + per-leg stakes) never renders for
                                           // manual-play rows. Pin the picked event manually
                                           // so the user still sees stake math while placing on
@@ -3908,13 +3971,22 @@ export default function PlayPage() {
                 </span>
               </div>
 
-              {/* POLYMARKET inline status — moved out of the global header so the
-                  ready/Skip control sits next to the polymarket bet list. */}
-              {clusterId === 'polymarket' && loopRunning && loopProviderStatus?.polymarket && (() => {
-                const status = loopProviderStatus.polymarket
+              {/* Unlimited-cluster inline status — moved out of the global header
+                  so the ready/Skip control sits next to each provider's bet list.
+                  Applies to pinnacle, polymarket, cloudbet, kalshi (the cluster
+                  id matches the provider id for unlimited providers). */}
+              {UNLIMITED_PROVIDERS.has(clusterId) && loopRunning && loopProviderStatus?.[clusterId] && (() => {
+                const status = loopProviderStatus[clusterId]
+                // Polymarket's loop status carries native USD stakes; the other
+                // unlimited providers carry SEK in loop status (even when the
+                // bankroll is USD-denominated). Match each provider's existing
+                // per-cluster bet table format.
+                const stakeInUsd = clusterId === 'polymarket'
+                const fmtStakeStatus = (s: number | undefined | null) =>
+                  stakeInUsd ? `$${(s ?? 0).toFixed(2)}` : `${Math.round(s ?? 0)} kr`
                 return (
                   <div className="flex items-center gap-2 px-3 py-1 border-b border-zinc-800/50 bg-zinc-900/30">
-                    <span className="text-[10px] font-semibold text-amber-400 uppercase w-20">polymarket</span>
+                    <span className="text-[10px] font-semibold text-amber-400 uppercase w-20">{clusterId}</span>
                     <span className={`text-[10px] px-1.5 py-0.5 rounded ${
                       status.state === 'ready' ? 'bg-green-900/40 text-green-400' :
                       status.state === 'navigating' ? 'bg-blue-900/40 text-blue-400' :
@@ -3930,18 +4002,18 @@ export default function PlayPage() {
                         <span className="text-[10px] text-cyan-400/80 font-mono uppercase">{fmtMarket(status.current_bet)}</span>
                         <span className="text-[10px] text-amber-400 font-medium">{resolveOutcome(status.current_bet)}</span>
                         <span className="text-[10px] font-mono text-zinc-200">
-                          @ {fmtOddsWithCents((status.current_bet.live_odds ?? status.current_bet.odds) ?? 0, true)}
+                          @ {fmtOddsWithCents((status.current_bet.live_odds ?? status.current_bet.odds) ?? 0, isCentsMarket(clusterId))}
                         </span>
                         {status.current_bet.edge_pct != null && (
                           <span className="text-[10px] text-green-400">+{status.current_bet.edge_pct?.toFixed(1)}%</span>
                         )}
-                        <span className="text-[10px] font-mono text-zinc-500">${status.current_bet.stake?.toFixed(2)}</span>
+                        <span className="text-[10px] font-mono text-zinc-500">{fmtStakeStatus(status.current_bet.stake)}</span>
                       </>
                     )}
                     {status.state === 'ready' && (
                       <div className="ml-auto flex items-center gap-2">
                         <button
-                          onClick={() => api.skipCurrent('polymarket')}
+                          onClick={() => api.skipCurrent(clusterId)}
                           className="text-[10px] text-zinc-500 hover:text-zinc-300"
                         >Skip</button>
                       </div>

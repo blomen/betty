@@ -52,7 +52,16 @@ def _bet_ns(bet: dict) -> SimpleNamespace:
 
 # Cluster membership — same odds across all siblings
 _CLUSTER_MEMBERS: dict[str, list[str]] = {
-    "kambi": ["unibet", "leovegas", "expekt", "betmgm", "speedybet", "x3000", "goldenbull", "1x2"],
+    "kambi": [
+        "unibet",
+        "leovegas",
+        "expekt",
+        "betmgm",
+        "speedybet",
+        "x3000",
+        "goldenbull",
+        "1x2",
+    ],
     "spectate": ["888sport", "mrgreen"],
     "altenar_main": ["betinia", "campobet", "lodur", "quickcasino", "swiper", "dbet"],
     "gecko_betsson": ["betsson", "nordicbet", "betsafe", "spelklubben"],
@@ -72,19 +81,16 @@ STATE_RUNNING = "running"
 STATE_PROVIDER_OPENING = "provider_opening"
 STATE_LOGIN_WAITING = "login_waiting"
 STATE_SETTLING = "settling"
-STATE_READY_TO_RUN = "ready_to_run"  # gated: settled, awaiting user Run press
 STATE_NAVIGATING = "navigating"
 STATE_READY = "ready"
 STATE_PLACING = "placing"
 
 LOGIN_POLL_INTERVAL = 5.0  # seconds between login checks
 LOGIN_TIMEOUT = 120.0  # seconds to wait for login before skipping provider
-DAILY_BET_CAP = 10  # max bets per soft provider per day
 
 # Unlimited providers — play value bets via ProviderRunner (no arb required; they don't limit).
 # Everything else (soft books) routes through ArbRunner for arb-only placement.
 UNLIMITED_PROVIDERS = {"pinnacle", "polymarket", "cloudbet", "kalshi"}
-UNCAPPED_PROVIDERS = UNLIMITED_PROVIDERS  # backward-compat alias for existing imports
 
 
 class PlayLoop:
@@ -103,7 +109,9 @@ class PlayLoop:
         loop.stop()  # stop all runners
     """
 
-    def __init__(self, browser: MirrorBrowser, broadcaster: MirrorBroadcaster, proxy_url: str):
+    def __init__(
+        self, browser: MirrorBrowser, broadcaster: MirrorBroadcaster, proxy_url: str
+    ):
         self._browser = browser
         self._broadcaster = broadcaster
         self._proxy_url = proxy_url.rstrip("/")
@@ -169,10 +177,12 @@ class PlayLoop:
 
         def _is_funded(b: dict) -> bool:
             pid = b.get("provider_id", "")
-            if pid in UNCAPPED_PROVIDERS:
-                return True  # Uncapped providers (pinnacle, polymarket, cloudbet) always eligible
+            if pid in UNLIMITED_PROVIDERS:
+                return True  # Unlimited providers (pinnacle, polymarket, cloudbet, kalshi) always eligible
             cluster = _PROVIDER_TO_CLUSTER.get(pid)
-            return pid in funded_clusters or (cluster is not None and cluster in funded_clusters)
+            return pid in funded_clusters or (
+                cluster is not None and cluster in funded_clusters
+            )
 
         filtered = [b for b in batch if _is_funded(b)]
         filtered.sort(key=lambda b: -b.get("edge_pct", 0.0))
@@ -185,9 +195,14 @@ class PlayLoop:
                 self._cluster_queues[cluster] = []
             # Avoid duplicates when re-loading for added providers
             existing_keys = {
-                (b.get("event_id"), b.get("market"), b.get("outcome")) for b in self._cluster_queues[cluster]
+                (b.get("event_id"), b.get("market"), b.get("outcome"))
+                for b in self._cluster_queues[cluster]
             }
-            if (bet.get("event_id"), bet.get("market"), bet.get("outcome")) not in existing_keys:
+            if (
+                bet.get("event_id"),
+                bet.get("market"),
+                bet.get("outcome"),
+            ) not in existing_keys:
                 self._cluster_queues[cluster].append(bet)
 
         self._queue_total = sum(len(q) for q in self._cluster_queues.values())
@@ -209,7 +224,9 @@ class PlayLoop:
             # Already running — add new providers dynamically
             self._add_new_runners()
             return
-        self._coordinator_task = asyncio.create_task(self._run_coordinator(), name="play_coordinator")
+        self._coordinator_task = asyncio.create_task(
+            self._run_coordinator(), name="play_coordinator"
+        )
 
     def stop(self) -> None:
         """Stop all runners and the coordinator."""
@@ -235,18 +252,9 @@ class PlayLoop:
         if runner:
             runner.skip()
 
-    def set_run(self, provider_id: str, run: bool) -> bool:
-        """Toggle the run gate for a provider runner. Returns True if the runner
-        was found and the gate was toggled; False otherwise (no runner / runner
-        in a state where toggling is a no-op)."""
-        runner = self._runners.get(provider_id)
-        if runner is None:
-            return False
-        if not hasattr(runner, "set_run"):
-            return False
-        return runner.set_run(run)
-
-    def on_bet_intercepted(self, provider_id: str, body: dict, request_body: dict | None = None) -> None:
+    def on_bet_intercepted(
+        self, provider_id: str, body: dict, request_body: dict | None = None
+    ) -> None:
         """Route intercepted bet to the correct runner, or record directly as fallback."""
         from .arb_runner import STATE_AWAITING_HEDGES, STATE_LOADING_LEGS, STATE_STANDBY
 
@@ -285,7 +293,9 @@ class PlayLoop:
         try:
             wf_for_key = _gw(provider_id)
             key_id = (
-                wf_for_key.parse_placement_response(body) if hasattr(wf_for_key, "parse_placement_response") else None
+                wf_for_key.parse_placement_response(body)
+                if hasattr(wf_for_key, "parse_placement_response")
+                else None
             )
         except Exception:
             key_id = None
@@ -296,7 +306,9 @@ class PlayLoop:
             import json as _json
 
             try:
-                key_id = hashlib.md5(_json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()[:16]
+                key_id = hashlib.md5(
+                    _json.dumps(body, sort_keys=True, default=str).encode()
+                ).hexdigest()[:16]
             except Exception:
                 key_id = str(id(body))
         dedup_key = f"{provider_id}|{key_id}"
@@ -305,10 +317,14 @@ class PlayLoop:
         for k in [k for k, ts in recorded.items() if now_ts - ts > 60]:
             recorded.pop(k, None)
         if dedup_key in recorded:
-            logger.info(f"[PlayCoordinator] {provider_id} duplicate intercept (key={key_id}) — skipping")
+            logger.info(
+                f"[PlayCoordinator] {provider_id} duplicate intercept (key={key_id}) — skipping"
+            )
             return
         recorded[dedup_key] = now_ts
-        logger.info(f"[PlayCoordinator] Bet intercepted for {provider_id} — no runner, recording via fallback")
+        logger.info(
+            f"[PlayCoordinator] Bet intercepted for {provider_id} — no runner, recording via fallback"
+        )
         self._broadcaster.publish(
             "bet_intercepted_unattached",
             {"provider_id": provider_id, "body": body, "request_body": request_body},
@@ -336,7 +352,9 @@ class PlayLoop:
         populates — so the user has to click the arb row first to set context,
         then mark placed.
         """
-        picked = (getattr(self._browser, "_user_picked_opp", {}) or {}).get(provider_id) or {}
+        picked = (getattr(self._browser, "_user_picked_opp", {}) or {}).get(
+            provider_id
+        ) or {}
         if not picked:
             raise ValueError(
                 f"no picked-opp context for {provider_id} — click the arb/value-bet row first, then mark it placed"
@@ -380,7 +398,9 @@ class PlayLoop:
         )
         return {"ok": True, "bet_id": bet_id, "payload": payload}
 
-    async def _record_manual_bet(self, provider_id: str, body: dict, request_body: dict | None) -> None:
+    async def _record_manual_bet(
+        self, provider_id: str, body: dict, request_body: dict | None
+    ) -> None:
         """POST an intercepted bet to /api/bets when no runner is active."""
         from .workflows import get_workflow
 
@@ -393,10 +413,15 @@ class PlayLoop:
             try:
                 pstatus = wf.parse_placement_status(body) or {}
                 if pstatus and pstatus.get("success") is False:
-                    logger.info(f"[PlayCoordinator] {provider_id} placement returned success=false — skipping record")
+                    logger.info(
+                        f"[PlayCoordinator] {provider_id} placement returned success=false — skipping record"
+                    )
                     self._broadcaster.publish(
                         "bet_record_failed",
-                        {"provider_id": provider_id, "reason": pstatus.get("reason") or "rejected"},
+                        {
+                            "provider_id": provider_id,
+                            "reason": pstatus.get("reason") or "rejected",
+                        },
                     )
                     return
             except Exception:
@@ -444,7 +469,9 @@ class PlayLoop:
         # browser._user_picked_opp[provider_id] is set by that endpoint and
         # carries event_id + market + outcome — fills in whatever the
         # response body didn't provide.
-        picked = (getattr(self._browser, "_user_picked_opp", {}) or {}).get(provider_id) or {}
+        picked = (getattr(self._browser, "_user_picked_opp", {}) or {}).get(
+            provider_id
+        ) or {}
         event_id = picked.get("event_id") or ""
         market = picked.get("market") or ""
         outcome = picked.get("outcome") or ""
@@ -457,7 +484,9 @@ class PlayLoop:
         # value "arb" was a catch-all that downstream filters (arb_correlation,
         # stats views) ignored — splitting into arb_anchor/arb_counter lets
         # correlate_arbs link the legs and lets per-side analytics work.
-        inferred_bet_type = "arb_counter" if provider_id in ("polymarket", "kalshi") else "arb_anchor"
+        inferred_bet_type = (
+            "arb_counter" if provider_id in ("polymarket", "kalshi") else "arb_anchor"
+        )
         payload = {
             "event_id": event_id,
             "provider_id": provider_id,
@@ -497,7 +526,9 @@ class PlayLoop:
                 },
             )
         except Exception as e:
-            logger.exception(f"[PlayCoordinator] Failed to record manual bet for {provider_id}: {e}")
+            logger.exception(
+                f"[PlayCoordinator] Failed to record manual bet for {provider_id}: {e}"
+            )
             self._broadcaster.publish(
                 "bet_record_failed",
                 {"provider_id": provider_id, "reason": str(e)[:120]},
@@ -535,7 +566,9 @@ class PlayLoop:
             from local.http_client import tunnel_client
 
             client = tunnel_client()
-            resp = await client.post("/api/opportunities/play/batch", json={}, timeout=10.0)
+            resp = await client.post(
+                "/api/opportunities/play/batch", json={}, timeout=10.0
+            )
             if resp.status_code != 200:
                 return
             data = resp.json()
@@ -552,8 +585,15 @@ class PlayLoop:
                     continue
                 queue = self._cluster_queues[cluster]
                 key = (bet.get("event_id"), bet.get("market"), bet.get("outcome"))
-                existing = {(b.get("event_id"), b.get("market"), b.get("outcome")) for b in queue}
-                if key not in existing and not self._is_blocked(bet) and not self._is_recently_skipped(bet):
+                existing = {
+                    (b.get("event_id"), b.get("market"), b.get("outcome"))
+                    for b in queue
+                }
+                if (
+                    key not in existing
+                    and not self._is_blocked(bet)
+                    and not self._is_recently_skipped(bet)
+                ):
                     queue.append(bet)
                     touched_clusters.add(cluster)
                     added += 1
@@ -569,7 +609,9 @@ class PlayLoop:
 
             if added:
                 self._queue_total = sum(len(q) for q in self._cluster_queues.values())
-                logger.info(f"[PlayCoordinator] Batch refresh: added {added} new bets (total={self._queue_total})")
+                logger.info(
+                    f"[PlayCoordinator] Batch refresh: added {added} new bets (total={self._queue_total})"
+                )
         except Exception as e:
             logger.debug(f"[PlayCoordinator] Batch refresh failed: {e}")
 
@@ -604,7 +646,9 @@ class PlayLoop:
             tasks = [r._task for r in active if r._task]
             if tasks:
                 try:
-                    _done, _pending = await asyncio.wait(tasks, timeout=5.0, return_when=asyncio.FIRST_COMPLETED)
+                    _done, _pending = await asyncio.wait(
+                        tasks, timeout=5.0, return_when=asyncio.FIRST_COMPLETED
+                    )
                 except Exception:
                     await asyncio.sleep(1)
             else:
@@ -614,7 +658,9 @@ class PlayLoop:
         for pid, runner in self._runners.items():
             self.provider_stats[pid] = runner.stats
 
-        self._broadcaster.publish("play_complete", {"provider_stats": self.provider_stats})
+        self._broadcaster.publish(
+            "play_complete", {"provider_stats": self.provider_stats}
+        )
         logger.info("[PlayCoordinator] All runners complete")
         self.state = STATE_IDLE
 
@@ -667,7 +713,9 @@ class PlayLoop:
                 )
             self._runners[pid] = runner
             runner.start()
-            logger.info(f"[PlayCoordinator] Spawned {'ProviderRunner' if is_unlimited else 'ArbRunner'} for {pid}")
+            logger.info(
+                f"[PlayCoordinator] Spawned {'ProviderRunner' if is_unlimited else 'ArbRunner'} for {pid}"
+            )
 
     def _add_new_runners(self) -> None:
         """Add runners for newly-selected providers while coordinator is running."""
@@ -703,7 +751,12 @@ class PlayLoop:
             # even slightly below the cached value.
             candidates = queue
             if exclude_key is not None:
-                candidates = [b for b in queue if (b.get("event_id"), b.get("market"), b.get("outcome")) != exclude_key]
+                candidates = [
+                    b
+                    for b in queue
+                    if (b.get("event_id"), b.get("market"), b.get("outcome"))
+                    != exclude_key
+                ]
             if not candidates:
                 return None
             return max(b.get("edge_pct", 0.0) for b in candidates)
@@ -723,7 +776,11 @@ class PlayLoop:
         def push(bet: dict) -> None:
             key = (bet.get("event_id"), bet.get("market"), bet.get("outcome"))
             for existing in queue:
-                if (existing.get("event_id"), existing.get("market"), existing.get("outcome")) == key:
+                if (
+                    existing.get("event_id"),
+                    existing.get("market"),
+                    existing.get("outcome"),
+                ) == key:
                     existing["edge_pct"] = bet.get("edge_pct", existing.get("edge_pct"))
                     queue.sort(key=lambda b: -float(b.get("edge_pct") or 0))
                     return
@@ -747,7 +804,12 @@ class PlayLoop:
             self._cluster_queues[cluster_name] = [
                 b
                 for b in queue
-                if (b.get("event_id"), "moneyline" if b.get("market") in ("1x2", "moneyline") else b.get("market"))
+                if (
+                    b.get("event_id"),
+                    "moneyline"
+                    if b.get("market") in ("1x2", "moneyline")
+                    else b.get("market"),
+                )
                 != block_key
             ]
             removed = before - len(self._cluster_queues[cluster_name])
@@ -782,7 +844,11 @@ class PlayLoop:
 
         now = _time.monotonic()
         # Cleanup expired entries lazily.
-        expired = [k for k, ts in self._recently_skipped.items() if now - ts > self._recently_skipped_ttl_s]
+        expired = [
+            k
+            for k, ts in self._recently_skipped.items()
+            if now - ts > self._recently_skipped_ttl_s
+        ]
         for k in expired:
             del self._recently_skipped[k]
         key = (bet.get("event_id", ""), bet.get("market", ""), bet.get("outcome", ""))

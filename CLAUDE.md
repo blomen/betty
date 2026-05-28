@@ -249,7 +249,7 @@ IDLE → OPENING → LOGIN_WAITING → SETTLING → NAVIGATING → READY → PLA
 
 **Key rules:**
 - Cluster deduplication: siblings share odds, one bet blocks all (`play_loop.py:_CLUSTER_MEMBERS`)
-- Daily cap: 10/day per soft provider (uncapped: pinnacle, polymarket, cloudbet)
+- No per-provider daily cap — bets are gated only by balance, arb-availability, and per-bet user confirm.
 - Provider history is source of truth — unknown bets recorded to DB during settlement
 
 **Mirror invariants (read before touching ANY workflow):**

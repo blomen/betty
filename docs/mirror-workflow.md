@@ -222,9 +222,6 @@ SETTLING
    │ workflow.sync_history(page) → _detect_settlements() → broadcast
    │ record unknown bets to DB
    ▼
-(daily-cap check)
-   │ if placed_today >= DAILY_BET_CAP and pid not UNCAPPED → exit
-   ▼
 READY_TO_RUN  ─── gated ───
    │ broadcast `provider_ready`
    │ spawn _ready_sync_task (passive balance + pending refresh)
@@ -280,7 +277,7 @@ The runner emits these events. The frontend's `mirror.lastEvent` handler in `Pla
 | `login_waiting` | `{provider_id}` | `tab_open` (blue) |
 | `login_detected` | `{provider_id}` | `tab_open` (still blue until settling kicks in) |
 | `settling_pending` / `settling_done` | `{provider_id, …}` | `logged_in_syncing` (cyan) — `settling_pending` is **skipped** when DB has zero pending bets; the runner emits only `settling_done` with `skipped_no_pending: true` and the card stays out of cyan |
-| `provider_ready` | `{provider_id, state: "ready_to_run", placed_today, daily_cap, [mode: "arb"]}` | `ready_to_run` (yellow) |
+| `provider_ready` | `{provider_id, state: "ready_to_run", placed_today, [mode: "arb"]}` | `ready_to_run` (yellow) |
 | `provider_running` | `{provider_id, [mode: "arb"]}` | `running` (green) |
 | `bet_navigating` / `bet_ready` / `bet_placed` / `bet_skipped` / `bet_failed` | `{provider_id, bet, …}` | `running` (green) |
 | `provider_complete` / `provider_skipped` | `{provider_id, reason}` | resets to `idle` |
@@ -354,7 +351,7 @@ class Workflow:
 
 | Trait | Value |
 |---|---|
-| Daily bet cap | 10 (`DAILY_BET_CAP`) |
+| Daily bet cap | none — gated only by balance, arb-availability, and per-bet user confirm |
 | Eligible play modes | Value (ProviderRunner) AND Arb (ArbRunner) |
 | Arb role | Anchor only; counter pool excludes cluster siblings |
 | Gate semantics | Standard (yellow → green = run, green → yellow = pause) |
@@ -526,7 +523,6 @@ User clicks yellow card → `POST /mirror/play/run/{pid}` → `play_loop.set_run
 |------|--------|---------|
 | Pop from cluster queue | `pop_bet()` | Sorted by edge %, highest first |
 | Check cluster blocking | `_is_blocked(event_id, market)` | No duplicate event+market across cluster siblings |
-| Check daily cap | `DAILY_BET_CAP=10` | Per provider per day. Uncapped: pinnacle, polymarket, cloudbet, kalshi |
 | Navigate to event | `workflow.navigate_to_event(page, bet)` | Platform-specific URL/API |
 | Detect closed event | DOM text scan | "closed", "stängd", "avbruten", … |
 
@@ -660,7 +656,7 @@ async def _run(self):
 ```python
 async def _await_run_gate(self, workflow, page):
     self.state = READY_TO_RUN
-    emit("provider_ready", placed_today, daily_cap)
+    emit("provider_ready", placed_today)
     self._ready_sync_task = create_task(_ready_sync_loop(workflow, page))
     try:
         await self._run_event.wait()
