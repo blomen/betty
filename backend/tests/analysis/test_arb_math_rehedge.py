@@ -75,7 +75,8 @@ class TestMiddleSize:
 
     def test_target_one_percent_wing_loss(self):
         # Accept 1% loss on wings → smaller stake_b, bigger middle upside.
-        # Note: case where odds differ (odds_b > odds_a) so Case 2 applies.
+        # Note: odds_b > odds_a; with these inputs Case 1 (B becomes the
+        # smaller-payout side after under-staking) applies.
         stake_a, odds_a, odds_b = 100.0, 2.0, 2.15
         stake_b = middle_size(stake_a, odds_a, odds_b, target_wing_pct=0.01)
         # Equal-payout would be 100. Accepting 1% loss → slightly smaller.
