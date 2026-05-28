@@ -526,6 +526,28 @@ export default function PlayPage() {
     } catch { /* full / disabled */ }
   }, [showNegativeArbs])
 
+  // Pinnacle max-stake threshold (SEK) for the arb sub-tab. 0 = off (default).
+  // Cycles through 0 / 2000 / 5000 / 10000 on chip click. Rows whose
+  // pinnacle_max_stake_sek is null (pre-backfill or no Pinnacle leg) pass when
+  // threshold = 0 and hide when threshold > 0 — strict.
+  const LIQ_THRESHOLD_KEY = 'betty:arbLiqThreshold:v1'
+  const [liqThresholdSek, setLiqThresholdSek] = useState<number>(() => {
+    const raw = localStorage.getItem(LIQ_THRESHOLD_KEY)
+    const parsed = raw ? parseInt(raw, 10) : 0
+    return isFinite(parsed) && parsed >= 0 ? parsed : 0
+  })
+  useEffect(() => {
+    localStorage.setItem(LIQ_THRESHOLD_KEY, String(liqThresholdSek))
+  }, [liqThresholdSek])
+  const cycleLiqThreshold = () => {
+    setLiqThresholdSek(prev => {
+      if (prev === 0) return 2000
+      if (prev === 2000) return 5000
+      if (prev === 5000) return 10000
+      return 0
+    })
+  }
+
   const toggleCounter = (pid: string) => {
     setEnabledCounters(prev => {
       const next = new Set(prev)
@@ -2617,9 +2639,12 @@ export default function PlayPage() {
             return a.localeCompare(b)
           })
           const totalOpps = Object.values(oppsByCluster).reduce((n, arr) => {
+            const liqFiltered = liqThresholdSek > 0
+              ? arr.filter((o: any) => (o.pinnacle_max_stake_sek ?? 0) >= liqThresholdSek)
+              : arr
             const visible = showNegativeArbs
-              ? arr
-              : arr.filter((o: any) => (o.guaranteed_profit_pct ?? 0) >= 0)
+              ? liqFiltered
+              : liqFiltered.filter((o: any) => (o.guaranteed_profit_pct ?? 0) >= 0)
             return n + visible.length
           }, 0)
 
@@ -2672,6 +2697,21 @@ export default function PlayPage() {
                 >
                   {showNegativeArbs ? 'showing neg' : 'pos only'}
                 </button>
+                <button
+                  onClick={cycleLiqThreshold}
+                  className={`px-1.5 py-0.5 text-[9px] uppercase font-semibold rounded border transition-colors cursor-pointer ${
+                    liqThresholdSek > 0
+                      ? 'bg-cyan-500/20 text-cyan-100 border-cyan-500/40 hover:bg-cyan-500/30'
+                      : 'bg-zinc-800/40 text-zinc-500 border-zinc-700/40 hover:bg-zinc-800/70'
+                  }`}
+                  title={liqThresholdSek > 0
+                    ? `Hiding opps whose Pinnacle max stake < ${liqThresholdSek.toLocaleString()} kr. Click to cycle threshold.`
+                    : 'Pinnacle max stake — soft books cap stakes proportionally to this. Click to filter.'}
+                >
+                  {liqThresholdSek === 0
+                    ? 'liq off'
+                    : `liq ≥ ${(liqThresholdSek / 1000).toFixed(0)}k`}
+                </button>
                 <span className="text-[10px] text-zinc-600 ml-auto">
                   top 20 per cluster · siblings share odds · drained excluded
                 </span>
@@ -2699,7 +2739,9 @@ export default function PlayPage() {
                     // cards, no Place/Skip — user must deposit first).
                     if (funded.length === 0) {
                       const qualifyingOpps = opps.filter(
-                        (o: any) => (o.guaranteed_profit_pct ?? 0) >= DEPOSIT_HINT_MIN_PROFIT_PCT,
+                        (o: any) =>
+                          (o.guaranteed_profit_pct ?? 0) >= DEPOSIT_HINT_MIN_PROFIT_PCT &&
+                          (liqThresholdSek === 0 || (o.pinnacle_max_stake_sek ?? 0) >= liqThresholdSek),
                       ).slice(0, 10)
                       return (
                         <div key={cluster} className="border-b border-zinc-800/50 last:border-b-0">
@@ -3335,6 +3377,7 @@ export default function PlayPage() {
                                       const p = opp.guaranteed_profit_pct ?? 0
                                       if (p > 30) return false
                                       if (p < 0 && !showNegativeArbs) return false
+                                      if (liqThresholdSek > 0 && (opp.pinnacle_max_stake_sek ?? 0) < liqThresholdSek) return false
                                       return true
                                     }).map((opp: any, i: number) => {
                                       const counterLegs = opp.counter_plan ?? opp.counter_legs ?? opp.legs ?? []
@@ -3746,6 +3789,16 @@ export default function PlayPage() {
                                           </td>
                                           <td className={`px-2 py-1 font-mono text-[10px] w-[44px] text-right ${ttkClass(opp.starts_at)}`} title={opp.starts_at ? `kicks off ${new Date(opp.starts_at).toLocaleString()}` : 'no start time'}>
                                             {fmtTtkFromIso(opp.starts_at)}
+                                          </td>
+                                          <td className="px-1 py-1 text-[9px] w-[50px] text-right">
+                                            {opp.pinnacle_max_stake_sek != null && (
+                                              <span
+                                                className="px-1 py-0.5 rounded bg-cyan-900/30 text-cyan-300 border border-cyan-700/30 uppercase tracking-wider font-mono"
+                                                title={`Pinnacle max stake ${Math.round(opp.pinnacle_max_stake_sek).toLocaleString()} kr — soft books typically cap stakes proportionally to this`}
+                                              >
+                                                liq {(opp.pinnacle_max_stake_sek / 1000).toFixed(1)}k
+                                              </span>
+                                            )}
                                           </td>
                                           <td
                                       className="px-2 py-1 text-zinc-500 text-[10px] uppercase cursor-help"
