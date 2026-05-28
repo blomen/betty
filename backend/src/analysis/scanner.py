@@ -883,10 +883,18 @@ class OpportunityScanner:
 
             # Save best soft for arb check (even if below fair)
             if best_soft_provider and best_soft_odds > 1:
+                # Lookup the chosen soft leg's max_stake (typically None — only
+                # Pinnacle currently populates this field, but the schema stays
+                # uniform in case a soft extractor ever ships caps).
+                best_soft_max_stake = next(
+                    (po.get("max_stake") for po in provider_odds_list if po["provider"] == best_soft_provider),
+                    None,
+                )
                 soft_per_outcome[outcome] = {
                     "provider": best_soft_provider,
                     "odds": best_soft_odds,
                     "fair_odds": round(fair_odds, 3),
+                    "max_stake": best_soft_max_stake,
                 }
 
             # Use soft book if it beats fair odds; otherwise fall back to Pinnacle fair (0% edge)
@@ -925,12 +933,23 @@ class OpportunityScanner:
             if abs(edge_pct) > MAX_EDGE_PCT:
                 return None  # Entire market suspect
 
+            # Lookup the chosen leg's max_stake (Pinnacle per-line cap, USD). For
+            # is_sharp=True legs we built `best_odds` from Pinnacle's raw price,
+            # but pinnacle_market doesn't carry max_stake — search the raw
+            # provider_odds_list. None for non-Pinnacle legs whose extractors
+            # don't populate the field.
+            best_max_stake = next(
+                (po.get("max_stake") for po in provider_odds_list if po["provider"] == best_provider),
+                None,
+            )
+
             best_per_outcome[outcome] = {
                 "provider": best_provider,
                 "odds": best_odds,
                 "edge_pct": round(edge_pct, 2),
                 "fair_odds": round(fair_odds, 3),
                 "is_sharp": is_sharp,
+                "max_stake": best_max_stake,
             }
 
         # In constrained-provider mode: reject market if any leg fell back to
@@ -955,12 +974,22 @@ class OpportunityScanner:
         # Placing multiple outcomes on the same bookmaker flags the account.
         # Resolve conflicts: keep the higher-edge leg, demote the other to
         # its next-best provider from a different platform (or Pinnacle).
+        # Build Pinnacle max_stake lookup so Pinnacle-fallback legs in
+        # _resolve_platform_conflicts carry the per-line cap.
+        pinnacle_max_stake_map = {
+            outcome: next(
+                (po.get("max_stake") for po in pol if po["provider"] == "pinnacle"),
+                None,
+            )
+            for outcome, pol in odds_by_outcome.items()
+        }
         self._resolve_platform_conflicts(
             best_per_outcome,
             soft_candidates,
             fair_odds_map,
             anchor_provider,
             pinnacle_market=pinnacle_market,
+            pinnacle_max_stake_map=pinnacle_max_stake_map,
         )
 
         # Check again after conflict resolution (a demotion may have assigned Pinnacle)
@@ -1004,6 +1033,7 @@ class OpportunityScanner:
                     "is_sharp": data["is_sharp"],
                     "point": point_by_outcome.get(out),
                     "currency": get_provider_currency(data["provider"]),
+                    "max_stake": data.get("max_stake"),
                 }
             )
 
@@ -1050,6 +1080,7 @@ class OpportunityScanner:
                                         "is_sharp": False,
                                         "point": point_by_outcome.get(out),
                                         "currency": get_provider_currency(sdata["provider"]),
+                                        "max_stake": sdata.get("max_stake"),
                                     }
                                 )
                             arb_legs.sort(key=lambda x: x["edge_pct"], reverse=True)
@@ -1109,6 +1140,7 @@ class OpportunityScanner:
         fair_odds_map: dict,
         anchor_provider: str | None,
         pinnacle_market: dict | None = None,
+        pinnacle_max_stake_map: dict | None = None,
     ) -> None:
         """Ensure no two soft legs share the same canonical platform.
 
@@ -1148,6 +1180,7 @@ class OpportunityScanner:
                         "edge_pct": round(alt_edge, 2),
                         "fair_odds": round(fair_odds, 3),
                         "is_sharp": False,
+                        "max_stake": None,  # soft providers don't populate this field
                     }
                     used_canonicals.add(alt_canon)
                     replaced = True
@@ -1166,6 +1199,7 @@ class OpportunityScanner:
                         "edge_pct": leg_edge,
                         "fair_odds": round(fair_odds, 3),
                         "is_sharp": True,
+                        "max_stake": (pinnacle_max_stake_map or {}).get(loser_outcome),
                     }
 
     def _resolve_platform_conflicts_soft(
