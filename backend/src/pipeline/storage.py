@@ -9,13 +9,14 @@ import logging
 import re
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import literal_column
+from sqlalchemy import and_, literal_column, or_
 
 from ..constants import (
     ALLOWED_MARKETS,
     ENRICHMENT_MARKETS,
     EXTENDED_MARKET_PROVIDERS,
     PROVIDER_CANONICAL,
+    SHARP_PROVIDERS,
 )
 from ..core import StandardEvent
 from ..db.models import DeferredEvent, Event, Odds
