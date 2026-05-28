@@ -102,6 +102,14 @@ class GenericWorkflow(ProviderWorkflow):
         self.autonomous_placement = bool(
             (self.intel or {}).get("autonomous_placement", False)
         )
+        # Strategy-declared: True iff this provider's sync_history is purely
+        # page.evaluate(fetch(...)) with no DOM mutation. Read by PendingLoop
+        # to bypass the event-page skip guard. Source is the Strategy dataclass
+        # (not intel JSON) because passive-ness is an implementation property
+        # of _sync_history, not a config knob.
+        self.sync_history_is_passive = bool(
+            self.strategy and self.strategy.sync_history_is_passive
+        )
         # fetch_balance is OPTIONAL on the workflow surface — provider_runner /
         # arb_runner gate the ready-state passive refresh on
         # hasattr(workflow, "fetch_balance"), so we only expose it when the

@@ -65,8 +65,13 @@ class ProviderWorkflow(ABC):
 
     platform: str  # "altenar", "gecko", "kambi", "pinnacle", "polymarket"
     autonomous_placement: bool = False  # True for API-based providers (Pinnacle) — place_bet() called on user confirm
+    sync_history_is_passive: bool = (
+        False  # True when sync_history is pure-API — safe to poll on event pages
+    )
 
-    def __init__(self, provider_id: str, domain: str, mode: WorkflowMode = WorkflowMode.GUIDED):
+    def __init__(
+        self, provider_id: str, domain: str, mode: WorkflowMode = WorkflowMode.GUIDED
+    ):
         self.provider_id = provider_id
         self.domain = domain
         self.mode = mode
@@ -126,7 +131,9 @@ class ProviderWorkflow(ABC):
 
         Default: no-op (for workflows where prep_betslip does everything).
         """
-        return PlacementResult(status="manual", bet_id=0, reason="user_confirms_on_site")
+        return PlacementResult(
+            status="manual", bet_id=0, reason="user_confirms_on_site"
+        )
 
     async def read_slip_odds(self, page: Page) -> float | None:
         """Read the odds the loaded slip widget currently displays.
@@ -145,7 +152,9 @@ class ProviderWorkflow(ABC):
         """
         return False
 
-    async def fetch_history_for_bet(self, page: Page, bet: dict) -> list[HistoryEntry] | None:
+    async def fetch_history_for_bet(
+        self, page: Page, bet: dict
+    ) -> list[HistoryEntry] | None:
         """Targeted history lookup for a specific bet that wasn't found in the
         paginated sync_history window.
 
@@ -157,14 +166,18 @@ class ProviderWorkflow(ABC):
         """
         return None
 
-    async def check_live_price(self, page: Page, bet) -> tuple[float | None, float | None]:
+    async def check_live_price(
+        self, page: Page, bet
+    ) -> tuple[float | None, float | None]:
         """Read live odds and return (live_odds, live_edge) or (None, None).
 
         Override for providers with DOM/API price reads.
         """
         return None, None
 
-    async def await_confirmation(self, page: Page, timeout_s: float = 15.0) -> PlacementResult | None:
+    async def await_confirmation(
+        self, page: Page, timeout_s: float = 15.0
+    ) -> PlacementResult | None:
         """Wait for placement confirmation. Default: no-op (API response IS confirmation).
         Override for DOM-based platforms where confirmation is async (e.g., Polymarket)."""
         return None
@@ -194,7 +207,9 @@ class ProviderWorkflow(ABC):
         """Called after all bets for this provider are done. Override to close extra tabs etc."""
         pass
 
-    async def _evaluate_api(self, page: Page, url: str, method: str = "GET", body: dict | None = None) -> dict | None:
+    async def _evaluate_api(
+        self, page: Page, url: str, method: str = "GET", body: dict | None = None
+    ) -> dict | None:
         """Make an API call from the page's session (inherits cookies/auth).
 
         Tries the BrowserContext request API first — it shares cookies with the
@@ -215,9 +230,13 @@ class ProviderWorkflow(ABC):
                 headers["Referer"] = origin + "/"
             if body is not None:
                 headers["Content-Type"] = "application/json"
-                resp = await page.context.request.fetch(url, method=method, headers=headers, data=body)
+                resp = await page.context.request.fetch(
+                    url, method=method, headers=headers, data=body
+                )
             else:
-                resp = await page.context.request.fetch(url, method=method, headers=headers)
+                resp = await page.context.request.fetch(
+                    url, method=method, headers=headers
+                )
             if resp.status < 200 or resp.status >= 400:
                 logger.debug(
                     f"[{self.provider_id}] context.request {method} {url} → {resp.status}; falling back to page.evaluate"
@@ -226,12 +245,16 @@ class ProviderWorkflow(ABC):
             try:
                 return await resp.json()
             except Exception as e:
-                logger.debug(f"[{self.provider_id}] context.request {url} JSON parse failed: {e}")
+                logger.debug(
+                    f"[{self.provider_id}] context.request {url} JSON parse failed: {e}"
+                )
                 return None
         except RuntimeError:
             pass
         except Exception as e:
-            logger.debug(f"[{self.provider_id}] context.request {url} raised: {e!r}; falling back")
+            logger.debug(
+                f"[{self.provider_id}] context.request {url} raised: {e!r}; falling back"
+            )
 
         # Path B: page.evaluate (legacy) — keeps working for providers where
         # auth depends on something only available in the page context.

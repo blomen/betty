@@ -57,6 +57,11 @@ class Strategy:
     )
     parse_placement_response: Callable | None = None  # sync (body) -> str | None
     parse_placement_status: Callable | None = None  # sync (body) -> dict
+    # True for strategies whose sync_history is purely page.evaluate(fetch(...))
+    # — no page.goto, no DOM clicks. Safe to background-poll even while the
+    # user is on an event page; the call cannot clobber an open betslip.
+    # Consumed by PendingLoop to bypass its event-page skip guard.
+    sync_history_is_passive: bool = False
 
 
 def load_strategy(provider_id: str) -> Strategy | None:

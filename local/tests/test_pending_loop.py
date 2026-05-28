@@ -1,7 +1,7 @@
 """Tests for PendingLoop — settlement sync and detection."""
+
 from __future__ import annotations
 
-import pytest
 from unittest.mock import MagicMock
 
 from local.mirror.pending_loop import PendingLoop, _detect_settlements
@@ -10,6 +10,7 @@ from local.mirror.pending_loop import PendingLoop, _detect_settlements
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 def _make_browser(running: bool = False):
     browser = MagicMock()
@@ -28,6 +29,7 @@ def _make_broadcaster():
 # test_initial_state
 # ---------------------------------------------------------------------------
 
+
 def test_initial_state():
     """PendingLoop starts with running=False and no task."""
     loop = PendingLoop(
@@ -43,6 +45,7 @@ def test_initial_state():
 # ---------------------------------------------------------------------------
 # test_detect_settlements_matches
 # ---------------------------------------------------------------------------
+
 
 def test_detect_settlements_matches():
     """_detect_settlements returns settlements when odds+stake match within tolerance."""
@@ -69,6 +72,7 @@ def test_detect_settlements_matches():
 # test_detect_settlements_no_match
 # ---------------------------------------------------------------------------
 
+
 def test_detect_settlements_no_match():
     """_detect_settlements returns empty list when no history entries match."""
     db_pending = [
@@ -84,3 +88,43 @@ def test_detect_settlements_no_match():
     ]
     result = _detect_settlements(db_pending, history)
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# test_sync_history_is_passive_defaults_false
+# ---------------------------------------------------------------------------
+
+
+def test_sync_history_is_passive_defaults_false(monkeypatch):
+    """GenericWorkflow.__init__ leaves sync_history_is_passive False when the strategy doesn't set it."""
+    from local.mirror.workflows.generic import GenericWorkflow
+    import local.mirror.workflows.generic as gmod
+    import local.mirror.workflows.strategies as smod
+    from local.mirror.workflows.strategies import Strategy
+
+    monkeypatch.setattr(gmod, "load_intel", lambda pid, intel_dir: None)
+    monkeypatch.setattr(smod, "load_strategy", lambda pid: Strategy())
+
+    wf = GenericWorkflow("test", "example.com")
+    assert wf.sync_history_is_passive is False
+
+
+# ---------------------------------------------------------------------------
+# test_sync_history_is_passive_true_when_strategy_sets_flag
+# ---------------------------------------------------------------------------
+
+
+def test_sync_history_is_passive_true_when_strategy_sets_flag(monkeypatch):
+    """GenericWorkflow.__init__ sets sync_history_is_passive=True when the strategy declares it."""
+    from local.mirror.workflows.generic import GenericWorkflow
+    import local.mirror.workflows.generic as gmod
+    import local.mirror.workflows.strategies as smod
+    from local.mirror.workflows.strategies import Strategy
+
+    monkeypatch.setattr(gmod, "load_intel", lambda pid, intel_dir: None)
+    monkeypatch.setattr(
+        smod, "load_strategy", lambda pid: Strategy(sync_history_is_passive=True)
+    )
+
+    wf = GenericWorkflow("test", "example.com")
+    assert wf.sync_history_is_passive is True
