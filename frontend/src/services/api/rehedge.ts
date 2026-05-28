@@ -35,7 +35,7 @@ export interface RehedgeOpportunity {
   detected_at: string | null;
 }
 
-export async function fetchRehedgeOpportunities(): Promise<RehedgeOpportunity[]> {
+async function fetchRehedgeOpportunities(): Promise<RehedgeOpportunity[]> {
   const resp = await fetch('/api/opportunities/rehedge');
   if (!resp.ok) {
     throw new Error(`/api/opportunities/rehedge failed: ${resp.status}`);
@@ -43,3 +43,7 @@ export async function fetchRehedgeOpportunities(): Promise<RehedgeOpportunity[]>
   const data: { opportunities: RehedgeOpportunity[] } = await resp.json();
   return data.opportunities;
 }
+
+export const rehedgeApi = {
+  fetchRehedgeOpportunities,
+};
