@@ -163,7 +163,9 @@ _fetch_balance = _sync_balance
 # ---------------------------------------------------------------------------
 
 
-def _entry_from_position(p: dict, status: str, payout: float | None) -> HistoryEntry | None:
+def _entry_from_position(
+    p: dict, status: str, payout: float | None
+) -> HistoryEntry | None:
     market_ticker = p.get("market_ticker") or ""
     if not market_ticker:
         return None
@@ -220,7 +222,9 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
     """
     out: list[HistoryEntry] = []
 
-    open_resp = await _api_get(page, "/v1/users/<U>/event_positions?position_status=open")
+    open_resp = await _api_get(
+        page, "/v1/users/<U>/event_positions?position_status=open"
+    )
     for pos in _walk_positions(open_resp):
         e = _entry_from_position(pos, "pending", None)
         if e:
@@ -300,7 +304,9 @@ def _series_from_event_ticker(event_ticker: str) -> str:
     return (event_ticker.split("-", 1)[0] or "").upper()
 
 
-async def _resolve_market_id(page: Page, event_ticker: str, market_ticker: str | None) -> str | None:
+async def _resolve_market_id(
+    page: Page, event_ticker: str, market_ticker: str | None
+) -> str | None:
     """Map (event_ticker, market_ticker) → market_id (UUID).
 
     Web order POST takes market_id, not market_ticker. /v1/cached/events/
@@ -310,15 +316,23 @@ async def _resolve_market_id(page: Page, event_ticker: str, market_ticker: str |
         return None
     data = await _api_get(page, f"/v1/cached/events/?tickers={event_ticker}")
     if not isinstance(data, dict) or "__error" in data:
-        print(f"[kalshi resolve] api error for event={event_ticker!r}: {data}", flush=True)
+        print(
+            f"[kalshi resolve] api error for event={event_ticker!r}: {data}", flush=True
+        )
         return None
     events = data.get("events") or []
     if not events:
-        print(f"[kalshi resolve] no events for ticker={event_ticker!r} (response keys={list(data.keys())})", flush=True)
+        print(
+            f"[kalshi resolve] no events for ticker={event_ticker!r} (response keys={list(data.keys())})",
+            flush=True,
+        )
         return None
     markets = (events[0] or {}).get("markets") or []
     if not markets:
-        print(f"[kalshi resolve] event found but no markets — event={events[0]!r}", flush=True)
+        print(
+            f"[kalshi resolve] event found but no markets — event={events[0]!r}",
+            flush=True,
+        )
         return None
     if market_ticker:
         mt = market_ticker.upper()
@@ -365,7 +379,9 @@ async def _navigate_to_event(page: Page, bet, intel: dict | None) -> bool:
     # If the bet has an explicit provider_event_id distinct from the market
     # ticker, prefer it. Otherwise derive event_ticker by stripping any
     # trailing -OUTCOME segment from the market ticker.
-    pe_id = str(getattr(bet, "provider_event_id", "") or "").upper().replace("KALSHI_", "")
+    pe_id = (
+        str(getattr(bet, "provider_event_id", "") or "").upper().replace("KALSHI_", "")
+    )
     if pe_id and pe_id != market_ticker:
         event_ticker = pe_id
     else:
@@ -385,7 +401,9 @@ async def _navigate_to_event(page: Page, bet, intel: dict | None) -> bool:
                 event_ticker = event_ticker_alt
                 series = _series_from_event_ticker(event_ticker)
         if not market_id:
-            logger.warning(f"[kalshi] Could not resolve market_id for event={event_ticker} market={market_ticker}")
+            logger.warning(
+                f"[kalshi] Could not resolve market_id for event={event_ticker} market={market_ticker}"
+            )
             return False
 
     _pending["market_id"] = market_id
@@ -411,7 +429,9 @@ def _infer_yes_price_dollars(bet) -> float:
     return max(0.01, min(0.99, round(1.0 / odds, 4)))
 
 
-async def _prep_betslip(page: Page, bet, stake: float, intel: dict | None) -> PlacementResult:
+async def _prep_betslip(
+    page: Page, bet, stake: float, intel: dict | None
+) -> PlacementResult:
     bid = getattr(bet, "bet_id", None) or getattr(bet, "id", 0)
     if not _pending.get("market_id"):
         return PlacementResult(status="failed", bet_id=bid, reason="no_market_id")
@@ -453,7 +473,11 @@ def _bet_is_no_side(bet) -> bool:
     """
     outcome = str(getattr(bet, "outcome", "") or "").lower().strip()
     meta = getattr(bet, "provider_meta", None) or {}
-    yes_side = str(getattr(bet, "yes_side", None) or meta.get("yes_side") or "").lower().strip()
+    yes_side = (
+        str(getattr(bet, "yes_side", None) or meta.get("yes_side") or "")
+        .lower()
+        .strip()
+    )
     if yes_side:  # spread — meta tells us which side the YES contract favours
         return outcome != yes_side
     return outcome == "under"  # total — "under" is the NO complement of "Over N.5"
@@ -526,7 +550,9 @@ async def _poll_order(page: Page, order_id: str) -> tuple[str, dict]:
     return _classify_create_response(data)
 
 
-async def _place_bet(page: Page, bet, stake: float, intel: dict | None) -> PlacementResult:
+async def _place_bet(
+    page: Page, bet, stake: float, intel: dict | None
+) -> PlacementResult:
     bid = getattr(bet, "bet_id", None) or getattr(bet, "id", 0)
     market_id = _pending.get("market_id")
     if not market_id:
@@ -556,7 +582,9 @@ async def _place_bet(page: Page, bet, stake: float, intel: dict | None) -> Place
     create = await _api_post(page, "/v1/users/<U>/orders", body)
     if isinstance(create, dict) and "__error" in create:
         reason = f"http_{create['__error']}"
-        return PlacementResult(status="failed", bet_id=bid, reason=reason, raw_response=create)
+        return PlacementResult(
+            status="failed", bet_id=bid, reason=reason, raw_response=create
+        )
 
     state, info = _classify_create_response(create)
     if state == "filled":
@@ -666,4 +694,5 @@ strategy = Strategy(
     place_bet=_place_bet,
     parse_placement_response=_parse_placement_response,
     parse_placement_status=_parse_placement_status,
+    sync_history_is_passive=True,
 )

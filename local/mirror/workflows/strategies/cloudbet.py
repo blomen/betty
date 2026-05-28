@@ -442,4 +442,5 @@ strategy = Strategy(
     fetch_balance=_fetch_balance,
     sync_history=_sync_history,
     navigate_to_event=_navigate_to_event,
+    sync_history_is_passive=True,
 )

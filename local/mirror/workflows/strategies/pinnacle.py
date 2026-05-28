@@ -1,11 +1,14 @@
-"""Pinnacle strategy — full API-based autonomous betting.
+"""Pinnacle strategy — API-based balance, history, settlement, and live odds.
 
-Overrides GenericWorkflow methods with Pinnacle-specific API logic:
+Overrides GenericWorkflow methods with Pinnacle-specific REST API logic:
   - scan(): read-only preview of account state (balance, pending, settled, DB diff)
-  - settle_all(): scrape pending bets → record missing → auto-settle → sync balance
-  - sync_history(): DOM scrape + API fallback for settled bets
-  - place_bet(): market fetch → slippage check → API placement
+  - settle_all(): API fetch of pending/settled bets → record missing → auto-settle → sync balance
+  - sync_history(): API-only pull of /bets?status=unsettled + /bets?status=settled
   - check_live_price(): fetch markets → compute edge vs fair odds
+
+Placement is intentionally NOT autonomous — the user reviews every stake
+and clicks Place on the Pinnacle tab; the placement XHR is intercepted by
+parse_placement_status / parse_placement_response.
 """
 
 from __future__ import annotations
@@ -638,125 +641,87 @@ async def _settle_all(page: Page, intel: dict | None) -> dict:
 
 
 async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
-    """Scrape settled bets from Pinnacle. DOM first, API fallback."""
+    """API-only sync of pending + settled bets from Pinnacle.
+
+    The previous DOM scrape split page text on 'Settled:' / 'Rättat:' markers
+    and classified each card by substring match against words like 'TTAT',
+    'LOSS', 'VOID'. On the betting-history page those keywords appear in
+    filter-button chrome (e.g. the 'Rättat' status filter), so a pending bet
+    on the page would get sliced into a card whose upper-cased text contained
+    'TTAT' → mis-classified as won and auto-settled (2026-05-28: bet
+    #2238830388 Hills Hornets +8.37 settled as won while still PENDING).
+
+    Pinnacle's REST API is the source of truth: unsettled → status="pending",
+    settled with outcome="win"/"loss"/"push" → won/lost/void. The user just
+    needs to be logged in (cookies + harvested headers); they do NOT need to
+    be on the history tab.
+    """
     api = _api_base(intel)
     entries: list[HistoryEntry] = []
+    start, end = _date_range()
 
-    # DOM scrape (works when on history page)
-    try:
-        raw = await page.evaluate("() => document.body.innerText")
-    except Exception:
-        raw = ""
-
-    if raw:
-        flat = raw.replace("\n", " ").replace("\r", "")
-        cards = re.split(r"(?=(?:Settled|R.ttat):\s)", flat)
-        for card in cards:
-            if "Stake:" not in card and "Insats:" not in card:
-                continue
-            odds_m = re.search(r"@\s*([\d.]+)", card)
-            stake_m = re.search(r"(?:Stake|Insats):\s*([\d.,]+)", card)
-            if not odds_m or not stake_m:
-                continue
-            odds = float(odds_m.group(1))
-            stake = float(stake_m.group(1).replace(",", "."))
-            upper = card.upper()
-            if "RLUST" in upper or "LOSS" in upper:
-                status = "lost"
-            elif "VOID" in upper or "CANCEL" in upper or "OGILTIG" in upper:
-                status = "void"
-            elif "SETTLED" in upper or "TTAT" in upper:
-                status = "won"
-            else:
-                continue
-            payout = (
-                0.0
-                if status == "lost"
-                else (stake * odds if status == "won" else stake)
+    # Pending bets — emit as status="pending" so _record_unknown_open_bets
+    # picks them up (it skips non-"pending" entries).
+    unsettled = await _evaluate_api(
+        page, f"{api}/bets?status=unsettled&startDate={start}&endDate={end}"
+    )
+    if isinstance(unsettled, dict) and "__error" in unsettled:
+        logger.warning(f"[pinnacle] sync_history unsettled API failed: {unsettled}")
+        unsettled = None
+    for b in _bets_list(unsettled):
+        p = _parse_api_bet(b)
+        if not p["stake"] or not p["odds"]:
+            continue
+        entries.append(
+            HistoryEntry(
+                provider_bet_id=str(p["pin_id"] or ""),
+                event_name=p["event"],
+                market=p["market_type"],
+                outcome=p["designation"],
+                odds=p["odds"],
+                stake=p["stake"],
+                status="pending",
+                payout=0.0,
             )
-            bet_id_m = re.search(r"#(\d+)", card)
-            event_m = re.search(
-                r"(\w[\w\s.]+?)\s+vs\s+(\w[\w\s.]+?)(?:\s+[A-Z]|\s+@|\s+Bet)", card
-            )
-            if stake > 0 and odds > 0:
-                entries.append(
-                    HistoryEntry(
-                        provider_bet_id=bet_id_m.group(1) if bet_id_m else "",
-                        event_name=f"{event_m.group(1).strip()} vs {event_m.group(2).strip()}"
-                        if event_m
-                        else "",
-                        market="",
-                        outcome="",
-                        odds=odds,
-                        stake=stake,
-                        status=status,
-                        payout=payout,
-                    )
-                )
-
-    logger.info(f"[pinnacle] DOM scrape: {len(entries)} bet(s)")
-
-    # API fallback — runs whenever the DOM scrape didn't find settled cards.
-    # Always fetch BOTH unsettled (pending) AND settled. The pending side is
-    # what the reactive sync needs to record placements so they appear in
-    # the UI's PENDING section and get blacklisted out of the value-bet
-    # table; the settled side is for reconcile to mark won/lost/void.
-    if not entries:
-        start, end = _date_range()
-
-        # Pending bets — emit as status="pending" so _record_unknown_open_bets
-        # picks them up (it skips non-"pending" entries).
-        unsettled = await _evaluate_api(
-            page, f"{api}/bets?status=unsettled&startDate={start}&endDate={end}"
         )
-        if isinstance(unsettled, dict) and "__error" in unsettled:
-            unsettled = None
-        for b in _bets_list(unsettled):
-            p = _parse_api_bet(b)
-            if not p["stake"] or not p["odds"]:
-                continue
-            entries.append(
-                HistoryEntry(
-                    provider_bet_id=str(p["pin_id"] or ""),
-                    event_name=p["event"],
-                    market=p["market_type"],
-                    outcome=p["designation"],
-                    odds=p["odds"],
-                    stake=p["stake"],
-                    status="pending",
-                    payout=0.0,
-                )
-            )
 
-        # Settled bets — for reconcile/settlement matching.
-        data = await _evaluate_api(
-            page, f"{api}/bets?status=settled&startDate={start}&endDate={end}"
+    # Settled bets — for reconcile/settlement matching.
+    data = await _evaluate_api(
+        page, f"{api}/bets?status=settled&startDate={start}&endDate={end}"
+    )
+    if isinstance(data, dict) and "__error" in data:
+        logger.warning(f"[pinnacle] sync_history settled API failed: {data}")
+        data = None
+    for b in _bets_list(data):
+        p = _parse_api_bet(b)
+        # Outcome "none" means still unsettled despite being in the settled
+        # response — skip rather than guess. Reconcile re-runs next tick.
+        if p["outcome"] == "none":
+            continue
+        if p["outcome"] == "win":
+            st, pay = "won", p["stake"] * p["odds"]
+        elif p["outcome"] == "loss":
+            st, pay = "lost", 0
+        else:
+            st, pay = "void", p["stake"]
+        entries.append(
+            HistoryEntry(
+                provider_bet_id=str(p["pin_id"] or ""),
+                event_name=p["event"],
+                market=p["market_type"],
+                outcome=p["designation"],
+                odds=p["odds"],
+                stake=p["stake"],
+                status=st,
+                payout=pay,
+            )
         )
-        if isinstance(data, dict) and "__error" in data:
-            data = None
-        for b in _bets_list(data):
-            p = _parse_api_bet(b)
-            if p["outcome"] == "none":
-                continue
-            if p["outcome"] == "win":
-                st, pay = "won", p["stake"] * p["odds"]
-            elif p["outcome"] == "loss":
-                st, pay = "lost", 0
-            else:
-                st, pay = "void", p["stake"]
-            entries.append(
-                HistoryEntry(
-                    provider_bet_id=str(p["pin_id"] or ""),
-                    event_name=p["event"],
-                    market=p["market_type"],
-                    outcome=p["designation"],
-                    odds=p["odds"],
-                    stake=p["stake"],
-                    status=st,
-                    payout=pay,
-                )
-            )
 
+    pending_n = sum(1 for e in entries if e.status == "pending")
+    logger.info(
+        f"[pinnacle] sync_history (API): {len(entries)} total "
+        f"({pending_n} pending, {len(entries) - pending_n} settled)"
+    )
     return entries
 
 
@@ -889,7 +854,6 @@ def _slug(s: str) -> str:
       "West Ham United"          → "west-ham-united"
       "Soccer"                   → "soccer"
     """
-    import re
 
     s = (s or "").lower().strip()
     s = re.sub(r"[\s_]+", "-", s)
@@ -1485,6 +1449,7 @@ strategy = Strategy(
     update_slip_stake=_update_slip_stake,
     parse_placement_response=parse_placement_response,
     parse_placement_status=parse_placement_status,
+    sync_history_is_passive=True,
 )
 # place_bet intentionally omitted: GenericWorkflow.place_bet falls back to
 # manual mode without autonomous_placement, and provider_runner only invokes

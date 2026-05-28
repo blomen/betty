@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from unittest.mock import MagicMock
 
 from local.mirror.pending_loop import PendingLoop, _detect_settlements
@@ -128,3 +129,41 @@ def test_sync_history_is_passive_true_when_strategy_sets_flag(monkeypatch):
 
     wf = GenericWorkflow("test", "example.com")
     assert wf.sync_history_is_passive is True
+
+
+# ---------------------------------------------------------------------------
+# test_passive_strategies_have_flag_set
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "provider_id", ["pinnacle", "kalshi", "polymarket", "cloudbet"]
+)
+def test_passive_strategies_have_flag_set(provider_id):
+    """The four API-only strategies declare themselves passive."""
+    from local.mirror.workflows.strategies import load_strategy
+
+    strat = load_strategy(provider_id)
+    assert strat is not None, f"strategy for {provider_id} did not load"
+    assert strat.sync_history_is_passive is True, (
+        f"{provider_id} strategy must set sync_history_is_passive=True — its "
+        f"_sync_history is API-only and safe to poll on event pages"
+    )
+
+
+# ---------------------------------------------------------------------------
+# test_dom_driven_strategy_is_not_passive
+# ---------------------------------------------------------------------------
+
+
+def test_dom_driven_strategy_is_not_passive():
+    """Altenar strategy must NOT be flagged passive — its sync_history navigates."""
+    from local.mirror.workflows.strategies import load_strategy
+
+    strat = load_strategy("altenar")
+    if strat is None:
+        pytest.skip("altenar strategy not present in this checkout")
+    assert strat.sync_history_is_passive is False, (
+        "altenar _sync_history uses page.goto / DOM clicks; flagging it passive "
+        "would let PendingLoop clobber open betslips"
+    )

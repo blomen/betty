@@ -1420,6 +1420,7 @@ strategy = Strategy(
     scrape_portfolio=_scrape_portfolio,
     claim_banner=_claim_banner,
     redeem_all=_redeem_all,
+    sync_history_is_passive=True,
 )
 # Module-level export so provider_runner can import without going through the
 # Strategy dataclass (which would require adding yet another field).
