@@ -14,7 +14,12 @@ Phase 1: read-only — emits RehedgeCandidate objects. Upsert into
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Literal
+
+from sqlalchemy.orm import Session
+
+from src.db.models import Bet, Event
 
 RehedgeCase = Literal["post_placement_middle", "clv_inversion_salvage"]
 
@@ -41,6 +46,28 @@ class RehedgeCandidate:
     recommended_stake_base: float
     base_currency: str
     metadata: dict = field(default_factory=dict)
+
+
+def _query_open_bets(db: Session) -> list[Bet]:
+    """Return pending bets on future events that are scannable for rehedge.
+
+    Filters:
+    - result == 'pending'
+    - event_id IS NOT NULL (excludes boost / free-text bets)
+    - Event.start_time > now (excludes started/live events — out of scope)
+    """
+    now = datetime.now(UTC)
+    return (
+        db.query(Bet)
+        .join(Event, Event.id == Bet.event_id)
+        .filter(
+            Bet.result == "pending",
+            Bet.event_id.isnot(None),
+            Event.start_time.isnot(None),
+            Event.start_time > now,
+        )
+        .all()
+    )
 
 
 def scan_open_positions(db: Session) -> list[RehedgeCandidate]:
