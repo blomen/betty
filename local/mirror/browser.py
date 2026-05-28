@@ -42,6 +42,15 @@ else:
 
 logger = logging.getLogger(__name__)
 
+# Sharp providers — the only set the mirror auto-handles. Soft providers
+# (every Altenar/Gecko/Kambi/Spectate/ComeOn/etc. tenant) are fully manual
+# via PlayPage inline controls (place / settle / adjust odds / adjust
+# balance). Interception, DOM login detection, and workflow.sync_balance
+# auto-runs all short-circuit for anything not in this set.
+_SHARP_PROVIDERS: frozenset[str] = frozenset(
+    {"pinnacle", "polymarket", "cloudbet", "kalshi"}
+)
+
 # URL patterns for classifying intercepted responses
 _BALANCE_KEYWORDS = (
     "account/balance",
@@ -935,6 +944,10 @@ class MirrorBrowser:
         """Check login by scraping balance from DOM — fallback when interception misses."""
         if not self._context:
             return {"logged_in": False}
+        # Soft providers: no DOM scraping. Login state isn't auto-detected;
+        # the user manages bankroll via the inline UI controls in PlayPage.
+        if provider_id not in _SHARP_PROVIDERS:
+            return {"logged_in": False, "reason": "manual_only"}
         from ._urls import hostname_matches
         from .workflows import get_workflow
 
@@ -1147,6 +1160,12 @@ class MirrorBrowser:
                 print(f"[intercept] {provider_id} API: {url[:120]}", flush=True)
 
         if not provider_id:
+            return
+
+        # Soft providers are fully manual — no auto-interception. Only sharp
+        # providers (pinnacle/cloudbet/kalshi/polymarket) get balance/bet/
+        # history captured automatically.
+        if provider_id not in _SHARP_PROVIDERS:
             return
 
         url_lower = url.lower()

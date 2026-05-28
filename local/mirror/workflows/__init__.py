@@ -95,8 +95,8 @@ _FALLBACK_DOMAINS: dict[str, str] = {
     "quickcasino": "quickcasino.se",
     "campobet": "campobet.se",
     "comeon": "comeon.com",
-    "swiper": "swiper.bet",
-    "lodur": "lodurbet.com",
+    "swiper": "swiper.se",
+    "lodur": "lodur.se",
     "dbet": "dbet.com",
     "unibet": "unibet.se",
     "leovegas": "leovegas.com",
@@ -144,7 +144,17 @@ def get_workflow(provider_id: str) -> ProviderWorkflow:
     # exists for that provider.
     _explicit_platform = _PROVIDER_TO_PLATFORM.get(provider_id)
     if _explicit_platform and _explicit_platform in _PLATFORM_MAP:
-        domain = _FALLBACK_DOMAINS.get(provider_id, "")
+        domain = ""
+        try:
+            from ...config.loader import load_config
+
+            p = load_config().get_provider(provider_id)
+            if p and p.domain:
+                domain = p.domain
+        except ImportError:
+            pass
+        if not domain:
+            domain = _FALLBACK_DOMAINS.get(provider_id, "")
         instance = _PLATFORM_MAP[_explicit_platform](
             provider_id=provider_id, domain=domain
         )

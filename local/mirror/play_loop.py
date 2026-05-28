@@ -148,6 +148,75 @@ class PlayLoop:
         self.current_bet: dict | None = None
         self.provider_stats: dict[str, dict] = {}
 
+        # Externally-placed suppression — populated by /mirror/bet/external-placed
+        # when the user clicks "PLACE BET" in the Betty UI (which records all
+        # legs via /api/bets/batch with external_placement=true). When the user
+        # later physically clicks Place on the bookmaker tab, the browser
+        # interceptor fires bet_intercepted → on_bet_intercepted → manual
+        # fallback → _record_manual_bet would POST the same bet a second time.
+        # The backend dup check on (event_id, market, outcome, point) catches
+        # this only if picked_opp[provider_id].event_id matches — which isn't
+        # guaranteed (picked_opp is set by /mirror/arb/navigate-opp; the user
+        # might click PLACE BET without first navigating the counter tab).
+        # This in-mirror cache closes the gap: any intercept for a provider
+        # within 10 min of an external batch placement gets skipped at the
+        # manual-fallback boundary.
+        #
+        # Key: (provider_id, event_id, market, outcome) → unix ts.
+        # 10 min TTL handles realistic place-on-tab latency without growing.
+        self._externally_placed: dict[tuple[str, str, str, str], float] = {}
+        self._externally_placed_ttl_s: float = 600.0
+
+    def mark_external_placed(
+        self, provider_id: str, event_id: str, market: str, outcome: str
+    ) -> None:
+        """Mark (provider, event, market, outcome) as already-recorded via the
+        /api/bets/batch external-placement path. Subsequent browser intercepts
+        for this provider that match (directly or via picked_opp) are dropped
+        in _record_manual_bet instead of inserting a duplicate row."""
+        import time as _time
+
+        key = (provider_id, event_id or "", market or "", outcome or "")
+        self._externally_placed[key] = _time.time()
+        # Opportunistic eviction so the dict can't grow unbounded over a long
+        # session. Cheap — only runs on each new mark, and we have at most a
+        # few legs per arb.
+        cutoff = _time.time() - self._externally_placed_ttl_s
+        stale = [k for k, ts in self._externally_placed.items() if ts < cutoff]
+        for k in stale:
+            self._externally_placed.pop(k, None)
+
+    def _is_externally_placed(
+        self, provider_id: str, event_id: str, market: str, outcome: str
+    ) -> bool:
+        """Return True if this provider+leg was externally placed within TTL.
+
+        Matches in priority order:
+          1. Exact (provider, event_id, market, outcome) — when picked_opp is
+             populated and we know what leg this intercept covers.
+          2. (provider, "", "", "") — fallback when picked_opp was empty and
+             we marked the entry with only a provider; protects the case where
+             the batch ran but no nav was performed.
+          3. Any non-stale entry for this provider — broader catch when fields
+             differ (e.g. market name mismatch "1x2" vs "moneyline"). Safe
+             because external-placed entries are short-lived (10 min) and
+             provider-scoped, so a different real bet on the same provider
+             within the window is the realistic risk we want to drop anyway.
+        """
+        import time as _time
+
+        cutoff = _time.time() - self._externally_placed_ttl_s
+        # Tier 1: exact match
+        key = (provider_id, event_id or "", market or "", outcome or "")
+        ts = self._externally_placed.get(key)
+        if ts is not None and ts >= cutoff:
+            return True
+        # Tier 2 + 3: provider-level fallback
+        for (pid, _eid, _mk, _oc), ts in self._externally_placed.items():
+            if pid == provider_id and ts >= cutoff:
+                return True
+        return False
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -478,6 +547,32 @@ class PlayLoop:
         point = picked.get("point")
         planned_odds = picked.get("planned_odds")
         start_time = picked.get("start_time")
+
+        # External-placement suppression: if the user already recorded this
+        # leg via Betty's "PLACE BET" button (/api/bets/batch with
+        # external_placement=true), the mirror was notified via /mirror/bet/
+        # external-placed. Skip the manual record so we don't double-insert
+        # the same Pinnacle / counter leg. The backend's create_bet has a
+        # dup check on (event_id, market, outcome, point), but it only fires
+        # when picked_opp is populated — which isn't guaranteed when the user
+        # clicks PLACE BET without first navigating the counter tab.
+        if self._is_externally_placed(provider_id, event_id, market, outcome):
+            logger.info(
+                f"[PlayCoordinator] {provider_id} intercept dropped — "
+                f"leg already recorded via PLACE BET batch (event={event_id[:60]}, "
+                f"market={market}, outcome={outcome})"
+            )
+            self._broadcaster.publish(
+                "bet_record_skipped",
+                {
+                    "provider_id": provider_id,
+                    "reason": "external_placement",
+                    "event_id": event_id,
+                    "market": market,
+                    "outcome": outcome,
+                },
+            )
+            return
 
         # bet_type by provider role: polymarket/kalshi are always counter legs
         # in this stack, every other provider acts as the anchor. The legacy

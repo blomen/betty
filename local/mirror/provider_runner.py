@@ -49,6 +49,13 @@ from .play_loop import (
 DETHRONE_HYSTERESIS_PCT = 2.0
 DETHRONE_POLL_S = 3.0
 
+# Providers whose runner does the standard setup (open tab / wait login /
+# sync balance / detect pending) but does NOT enter the auto-iterate bet
+# loop. Navigation is driven entirely by user clicks in PlayPage. Add a
+# provider here when the user-flow is "manually pick from the arb table"
+# and the auto-runner's value-bet popping was clobbering the picked page.
+PASSIVE_RUNNERS: set[str] = {"polymarket"}
+
 # Edge-drift skip: DISABLED. The previous threshold (5pts of edge dropped from
 # queue cache to live) was too aggressive — it killed FRESH top-edge bets the
 # moment polymarket tightened a few cents. Skip semantics now rely on:
@@ -457,6 +464,25 @@ class ProviderRunner:
 
             # 3. Detect settlements (broadcast only — user confirms from UI)
             await self._detect_pending(pid, workflow, page)
+
+            # 3.5 Passive providers — login, balance, settlement detection only.
+            # No auto-iterate. Navigation is fully driven by the user clicking
+            # arb / value-bet rows in PlayPage (→ /mirror/arb/navigate-opp).
+            # Without this, polymarket's runner kept popping +EV value bets and
+            # navigating to each, including ones that prep-failed because the
+            # market doesn't exist on poly (no_cent_button_matched). The skipped
+            # log spam clobbered the user's manual flow whenever they had
+            # picked a different event. User complaint 2026-05-28.
+            if pid in PASSIVE_RUNNERS:
+                logger.info(
+                    f"[Runner:{pid}] Passive mode — setup done, idling for user-driven nav"
+                )
+                self._broadcaster.publish(
+                    "provider_running",
+                    {"provider_id": self.provider_id, "mode": "passive"},
+                )
+                while True:
+                    await asyncio.sleep(60)
 
             # 4. Process bets from shared queue
             self._broadcaster.publish(
