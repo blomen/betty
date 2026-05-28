@@ -48,7 +48,7 @@ class TestBracketsKeyNumber:
         # Both lines on same side of 3 — no key bracketed.
         assert brackets_key_number(point_a=-1.5, point_b=2.5, keys=(3, 7, 6, 10, 14)) is None
 
-    def test_no_bracket_too_wide_skips_keys(self):
+    def test_multiple_brackets_picks_closest_to_midpoint(self):
         # -2.5 and +10.5 brackets 3 AND 7 AND 10 — we return the closest key
         # to the midpoint (4.0) → 3.
         assert brackets_key_number(point_a=-2.5, point_b=10.5, keys=(3, 7, 6, 10, 14)) == 3
