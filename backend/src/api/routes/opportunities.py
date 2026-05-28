@@ -118,27 +118,10 @@ def list_rehedge_opportunities(db: Session = Depends(get_db)) -> dict:
     """
     from src.db.models import Bet, Event, Opportunity
 
-    opps = (
-        db.query(Opportunity)
-        .filter(Opportunity.type == "rehedge", Opportunity.is_active.is_(True))
-        .all()
-    )
-    bet_ids = [
-        (o.annotations or {}).get("bet_id")
-        for o in opps
-        if (o.annotations or {}).get("bet_id")
-    ]
-    bets_by_id = (
-        {b.id: b for b in db.query(Bet).filter(Bet.id.in_(bet_ids)).all()}
-        if bet_ids
-        else {}
-    )
-    events_by_id = {
-        e.id: e
-        for e in db.query(Event)
-        .filter(Event.id.in_([o.event_id for o in opps]))
-        .all()
-    }
+    opps = db.query(Opportunity).filter(Opportunity.type == "rehedge", Opportunity.is_active.is_(True)).all()
+    bet_ids = [(o.annotations or {}).get("bet_id") for o in opps if (o.annotations or {}).get("bet_id")]
+    bets_by_id = {b.id: b for b in db.query(Bet).filter(Bet.id.in_(bet_ids)).all()} if bet_ids else {}
+    events_by_id = {e.id: e for e in db.query(Event).filter(Event.id.in_([o.event_id for o in opps])).all()}
 
     out = []
     for o in opps:
@@ -172,13 +155,12 @@ def list_rehedge_opportunities(db: Session = Depends(get_db)) -> dict:
                 "recommended_stake_sek": a.get("recommended_stake_base"),
                 "key_number": a.get("key_number"),
                 "wing_loss_pct": a.get("wing_loss_pct"),
+                "on_arb_leg": a.get("on_arb_leg", False),
                 "event": {
                     "id": event.id if event else o.event_id,
                     "home_team": event.home_team if event else None,
                     "away_team": event.away_team if event else None,
-                    "start_time": (
-                        event.start_time.isoformat() if event and event.start_time else None
-                    ),
+                    "start_time": (event.start_time.isoformat() if event and event.start_time else None),
                     "sport": event.sport if event else None,
                 },
                 "detected_at": o.detected_at.isoformat() if o.detected_at else None,

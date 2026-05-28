@@ -214,6 +214,7 @@ def _classify_case1(db: Session, bet: Bet) -> RehedgeCandidate | None:
                     "original_bet_odds": bet.odds,
                     "original_bet_point": bet.point,
                     "original_bet_stake_sek": round(bet_stake_sek, 2),
+                    "on_arb_leg": bet.arb_group_id is not None,
                 },
             )
     return best

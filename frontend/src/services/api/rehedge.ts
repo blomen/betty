@@ -31,6 +31,7 @@ export interface RehedgeOpportunity {
   recommended_stake_sek: number;
   key_number: number | null;
   wing_loss_pct: number | null;
+  on_arb_leg: boolean;
   event: RehedgeEvent;
   detected_at: string | null;
 }

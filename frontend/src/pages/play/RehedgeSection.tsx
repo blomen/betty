@@ -72,6 +72,11 @@ function RehedgeCard({ opp }: { opp: RehedgeOpportunity }) {
             middle on {opp.key_number}
           </span>
         )}
+        {opp.on_arb_leg && (
+          <span className="ml-2 rounded bg-blue-200 px-1.5 py-0.5 text-blue-900">
+            on arbed leg
+          </span>
+        )}
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div>
