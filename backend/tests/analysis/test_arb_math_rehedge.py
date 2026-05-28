@@ -8,6 +8,7 @@ import pytest
 from local.mirror.arb_math import (
     brackets_key_number,
     equalise_payouts,
+    middle_size,
 )
 
 
@@ -61,3 +62,39 @@ class TestBracketsKeyNumber:
         # Missing points (boost bets, moneylines) → no bracket.
         assert brackets_key_number(point_a=None, point_b=3.5, keys=(3, 7)) is None
         assert brackets_key_number(point_a=-2.5, point_b=None, keys=(3, 7)) is None
+
+
+class TestMiddleSize:
+    def test_target_zero_loss_equals_equalise(self):
+        # With target_wing_pct=0, stake_b should equal equalise_payouts —
+        # both wings produce identical payout, total stake is just refunded
+        # on whichever side wins.
+        stake_a, odds_a, odds_b = 100.0, 2.0, 2.0
+        stake_b = middle_size(stake_a, odds_a, odds_b, target_wing_pct=0.0)
+        assert stake_b == pytest.approx(equalise_payouts(stake_a, odds_a, odds_b))
+
+    def test_target_one_percent_wing_loss(self):
+        # Accept 1% loss on wings → smaller stake_b, bigger middle upside.
+        # Note: case where odds differ (odds_b > odds_a) so Case 2 applies.
+        stake_a, odds_a, odds_b = 100.0, 2.0, 2.15
+        stake_b = middle_size(stake_a, odds_a, odds_b, target_wing_pct=0.01)
+        # Equal-payout would be 100. Accepting 1% loss → slightly smaller.
+        assert stake_b < 100.0
+        # Verify the resulting wing-loss is ~1%.
+        total = stake_a + stake_b
+        a_wins_payout = stake_a * odds_a
+        b_wins_payout = stake_b * odds_b
+        wing_loss = total - min(a_wins_payout, b_wins_payout)
+        assert wing_loss / total == pytest.approx(0.01, abs=0.001)
+
+    def test_invalid_target_clamps_to_zero(self):
+        # Negative target_wing_pct nonsensical — clamp.
+        stake_a, odds_a, odds_b = 100.0, 2.0, 2.0
+        assert middle_size(stake_a, odds_a, odds_b, target_wing_pct=-0.5) == pytest.approx(
+            equalise_payouts(stake_a, odds_a, odds_b)
+        )
+
+    @pytest.mark.parametrize("bad", [0.0, -1.0])
+    def test_invalid_odds_returns_zero(self, bad):
+        assert middle_size(100.0, bad, 2.0, target_wing_pct=0.01) == 0.0
+        assert middle_size(100.0, 2.0, bad, target_wing_pct=0.01) == 0.0
