@@ -1,3 +1,6 @@
+# Worktrees (isolated dev workspaces)
+.worktrees/
+
 # Python
 __pycache__/
 *.py[cod]
