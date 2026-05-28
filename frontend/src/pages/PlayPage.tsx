@@ -564,6 +564,20 @@ export default function PlayPage() {
       return next
     })
   }
+  // Edit buffer for the per-leg odds inputs. While the input is focused, the
+  // raw text the user is typing lives here — not the formatted override. This
+  // prevents the controlled-input reformat-flap that made the field feel
+  // un-editable: previously `value={odds.toFixed(2)}` snapped "1.835" back to
+  // "1.84" mid-typing and cleared values bounced to the scanner default.
+  const [oddsEditBuffer, setOddsEditBuffer] = useState<Record<string, string>>({})
+  const clearOddsEditBuffer = (key: string) => {
+    setOddsEditBuffer(prev => {
+      if (!(key in prev)) return prev
+      const next = { ...prev }
+      delete next[key]
+      return next
+    })
+  }
   // Tracks which event_ids are currently being placed (Place-bet button
   // disabled + label "placing…" while in flight). Keyed by event_id.
   const [placingArbs, setPlacingArbs] = useState<Set<string>>(new Set())
@@ -2341,6 +2355,19 @@ export default function PlayPage() {
   }
   const fmtTtk = (b: BatchBet) => fmtTtkFromIso(b.start_time)
 
+  // Short market label for the arb calc header. Spread/total include the
+  // point so the user can tell apart parallel arbs on the same event (e.g.
+  // total 224.5 vs total 225.5). Spread uses the home-perspective point —
+  // matches how the scanner ships opp.point.
+  const fmtArbMarket = (market: string | null | undefined, point: number | null | undefined): string => {
+    const m = (market ?? '').toLowerCase()
+    if (m === 'moneyline') return 'ML'
+    if (m === '1x2') return '1X2'
+    if (m === 'spread' && point != null) return `SPREAD ${point > 0 ? '+' : ''}${point}`
+    if (m === 'total' && point != null) return `O/U ${point}`
+    return (market ?? '').toUpperCase()
+  }
+
   // Blacklist: hide value bets where (event, market) is already placed.
   // Two-tier matching, same as Section A:
   //   1. exact event_id|market match (scanner-stamped bets)
@@ -3327,6 +3354,18 @@ export default function PlayPage() {
                                       <span className={`text-[10px] font-mono font-semibold ${profit > 0 ? 'text-green-400' : 'text-red-400'}`}>
                                         {profit > 0 ? '+' : ''}{profit.toFixed(2)}%
                                       </span>
+                                      {(() => {
+                                        const label = fmtArbMarket(pickedOpp.market, pickedOpp.point)
+                                        if (!label) return null
+                                        return (
+                                          <span
+                                            className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-sky-900/50 text-sky-300 border border-sky-700/50 font-mono uppercase tracking-wider"
+                                            title={`Market: ${pickedOpp.market}${pickedOpp.point != null ? ` @ ${pickedOpp.point}` : ''}`}
+                                          >
+                                            {label}
+                                          </span>
+                                        )
+                                      })()}
                                       <span className="text-[10px] text-zinc-400 truncate max-w-[260px]">{eventLabel}</span>
                                       <span
                                         className={`text-[10px] font-mono ${ttkClass(pickedOpp.starts_at)}`}
@@ -3586,21 +3625,27 @@ export default function PlayPage() {
                                             <span className="text-zinc-400 uppercase w-20">{displayPid}</span>
                                             {/* Editable odds input — same recompute pattern as the stake
                                                 input below: type a new value, all stake math (payout,
-                                                per-leg stakes, profit) re-runs. Empty/cleared input
-                                                drops the override and reverts to the scanner value. */}
+                                                per-leg stakes, profit) re-runs. While focused, raw text
+                                                lives in oddsEditBuffer so multi-digit decimals don't get
+                                                reformatted mid-typing; on blur the buffer clears and the
+                                                formatted override/scanner value takes over again.
+                                                type=text + inputMode=decimal sidesteps HTML5 number-input
+                                                locale quirks (Swedish "1,83") and the comma is normalised
+                                                to a dot before Number(). */}
                                             <span className="inline-flex items-center gap-1 w-24">
                                               <span className="text-[9px] text-zinc-600">@</span>
                                               <input
-                                                type="number"
-                                                step="0.01"
-                                                min="1.01"
-                                                value={oddsForLeg ? oddsForLeg.toFixed(2) : ''}
+                                                type="text"
+                                                inputMode="decimal"
+                                                value={oddsEditBuffer[oddsOverrideKey] ?? (oddsForLeg ? oddsForLeg.toFixed(2) : '')}
                                                 onChange={(e) => {
                                                   const raw = e.target.value
+                                                  setOddsEditBuffer(prev => ({ ...prev, [oddsOverrideKey]: raw }))
                                                   if (raw === '') { setOddsOverride(oddsOverrideKey, null); return }
-                                                  const n = Number(raw)
-                                                  if (isFinite(n)) setOddsOverride(oddsOverrideKey, n)
+                                                  const n = Number(raw.replace(',', '.'))
+                                                  if (isFinite(n) && n >= 1.01) setOddsOverride(oddsOverrideKey, n)
                                                 }}
+                                                onBlur={() => clearOddsEditBuffer(oddsOverrideKey)}
                                                 title={`Odds for ${displayPid.toUpperCase()}${hasOddsOverride ? ' (edited — overrides scanner value)' : ''}`}
                                                 className={`w-14 px-1 py-0 bg-zinc-900 border rounded font-mono text-[10px] text-right focus:outline-none focus:border-purple-500 ${
                                                   hasOddsOverride
