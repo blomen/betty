@@ -442,10 +442,13 @@ class PinnacleRetriever(Retriever):
                 continue
 
             # Capture provider-specific IDs at market level
+            limits = market.get("limits") or []
+            max_stake_usd = float(limits[0]["amount"]) if (limits and limits[0].get("amount") is not None) else None
             market_meta = {
                 "matchup_id": str(market.get("matchupId", "")),
                 "period": period,
                 "line_id": str(market.get("lineId", "")),
+                "max_stake_usd": max_stake_usd,
             }
 
             # ── Period 0 (full game / OT-included) ──
@@ -542,6 +545,7 @@ class PinnacleRetriever(Retriever):
                         "name": designation,
                         "odds": decimal_odds,
                         "provider_meta": {"designation": designation},
+                        "max_stake": market_meta.get("max_stake_usd"),
                     }
                 )
 
@@ -580,6 +584,7 @@ class PinnacleRetriever(Retriever):
                         "odds": decimal_odds,
                         "point": float(points),
                         "provider_meta": {"designation": designation},
+                        "max_stake": market_meta.get("max_stake_usd"),
                     }
                 )
 
@@ -605,6 +610,7 @@ class PinnacleRetriever(Retriever):
                         "odds": decimal_odds,
                         "point": float(points),
                         "provider_meta": {"designation": designation},
+                        "max_stake": market_meta.get("max_stake_usd"),
                     }
                 )
 
