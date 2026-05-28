@@ -24,6 +24,27 @@ from ..risk.allocator import ProviderAllocator
 
 logger = logging.getLogger(__name__)
 
+# Hard-coded SEK→USD rate used to convert Pinnacle's USD maxRiskStake into
+# the SEK-denominated threshold the frontend filter compares against.
+# Mirrors frontend/src/pages/PlayPage.tsx SEK_PER_USD. If this ever becomes
+# dynamic, lift to backend/src/config/exchange_rates.py.
+_SEK_PER_USD = 10.5
+
+
+def _compute_pinnacle_max_stake_sek(legs: list[dict]) -> float | None:
+    """Per-opp Pinnacle max-stake in SEK.
+
+    Returns the smallest non-null Pinnacle-leg max_stake across the opp,
+    converted to SEK. Returns None when no Pinnacle leg has a populated
+    max_stake (pre-backfill rows, opp with no Pinnacle leg).
+    """
+    pinnacle_caps = [
+        leg.get("max_stake") for leg in legs if leg.get("provider") == "pinnacle" and leg.get("max_stake") is not None
+    ]
+    if not pinnacle_caps:
+        return None
+    return min(pinnacle_caps) * _SEK_PER_USD
+
 
 def get_provider_last_checked(db: Session, provider_ids: list[str] | None = None) -> dict[str, str]:
     """Get last successful extraction time per provider from provider_run_metrics.
@@ -690,6 +711,7 @@ class OpportunityService:
                     "total_stake": 0,  # Frontend sets via anchor stake
                     "arb_profit_pct": r.get("arb_profit_pct"),
                     "arb_legs": enriched_arb_legs,
+                    "pinnacle_max_stake_sek": _compute_pinnacle_max_stake_sek(enriched_legs),
                 }
             )
 
