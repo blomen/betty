@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal
 
-from local.mirror.arb_math import brackets_key_number, middle_size
 from sqlalchemy.orm import Session
 
 from src.analysis.key_numbers import (
@@ -25,6 +24,7 @@ from src.analysis.key_numbers import (
     NFL_TOTAL_KEY_NUMBERS,
     is_nfl,
 )
+from src.analysis.middle_math import brackets_key_number, middle_size
 from src.config.loader import get_exchange_rate
 from src.db.models import Bet, Event, Odds, Opportunity
 

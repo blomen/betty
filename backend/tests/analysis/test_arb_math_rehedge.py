@@ -1,11 +1,11 @@
-"""Unit tests for rehedge sizing helpers in local.mirror.arb_math.
+"""Unit tests for rehedge sizing helpers in src.analysis.middle_math.
 
-Pure-function tests — no DB, no I/O. The local.mirror import path works
-because the repo root is on sys.path during pytest (see backend/tests/conftest.py).
+Pure-function tests — no DB, no I/O.
 """
 
 import pytest
-from local.mirror.arb_math import (
+
+from src.analysis.middle_math import (
     brackets_key_number,
     equalise_payouts,
     middle_size,

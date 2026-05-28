@@ -1,18 +1,12 @@
 """Shared test fixtures for Betty tests."""
 
 import os
-import sys
-from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from src.db.models import Base
-
-# Add repo root to sys.path so local.mirror imports work in tests
-_repo_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(_repo_root))
 
 
 @pytest.fixture
