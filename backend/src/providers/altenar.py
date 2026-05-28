@@ -27,6 +27,31 @@ from ..matching.normalizer import normalize_team_name
 logger = logging.getLogger(__name__)
 
 
+# Altenar ships 1.8334 / 1.8334 (= 11/6 implied 0.5455 each side) on spread/total
+# markets the bookmaker hasn't actively priced. The customer website renders the
+# real ladder from a separate (likely WebSocket) feed Betty doesn't subscribe to,
+# so this sentinel never matches anything the user can actually bet — and
+# comparing it to Pinnacle's real prices generates phantom +EV / arb opportunities.
+_PLACEHOLDER_ODDS = 1.8334
+_PLACEHOLDER_TOLERANCE = 0.001
+
+
+def _is_placeholder_market(outcomes: list[dict]) -> bool:
+    """True if every outcome carries Altenar's ~1.8334 no-juice sentinel.
+
+    Real bookmaker spreads/totals almost never have all legs at the same value
+    around 1.83 (a pick'em mainline lands at ~1.91/1.91 with vig). Requiring an
+    exact value match — not just leg equality — avoids dropping genuinely
+    balanced markets.
+    """
+    if len(outcomes) < 2:
+        return False
+    prices = [o.get("odds") for o in outcomes]
+    if any(not p for p in prices):
+        return False
+    return all(abs(p - _PLACEHOLDER_ODDS) < _PLACEHOLDER_TOLERANCE for p in prices)
+
+
 def scope_for(type_id: int, sport: str | None) -> str:
     """Map Altenar typeId + sport to canonical scope.
 
@@ -463,6 +488,13 @@ class AltenarRetriever(Retriever):
                         outcomes.append(outcome_dict)
 
                 if outcomes:
+                    if market_type in ("spread", "total") and _is_placeholder_market(outcomes):
+                        logger.debug(
+                            f"[{self.provider_id}] Skipping placeholder {market_type} "
+                            f"(point={market_point}, both legs ~{_PLACEHOLDER_ODDS}) "
+                            f"for event {event_id}"
+                        )
+                        continue
                     market_meta = {
                         "event_id": event_id,
                         "market_id": str(market_id),
@@ -743,6 +775,13 @@ class AltenarRetriever(Retriever):
                 outcomes.append(outcome_dict)
 
             if outcomes:
+                if _is_placeholder_market(outcomes):
+                    logger.debug(
+                        f"[{self.provider_id}] Skipping placeholder {market_type} "
+                        f"(point={market_point}, both legs ~{_PLACEHOLDER_ODDS}) "
+                        f"for event {event.id}"
+                    )
+                    continue
                 new_markets.append(
                     {
                         "type": market_type,
