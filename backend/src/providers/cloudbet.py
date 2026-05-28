@@ -123,31 +123,38 @@ def _resolve_market_type(market_key: str) -> str | None:
 def parse_selections_to_market(
     selections: list,
     market_key: str,
-) -> dict | None:
-    """Parse Cloudbet selections into a normalized market dict.
+) -> list[dict]:
+    """Parse Cloudbet selections into normalized market dicts.
 
-    Returns None if:
+    Spread/total return one market per ladder rung (each handicap / total line
+    becomes its own market with its own `point`). Storage and the scanner both
+    key on (market_type, point), so this matches the alternate-line ladder
+    Pinnacle already ships for sharp middles + cross-line comparison.
+
+    Returns an empty list if:
     - selections list is empty
     - any selection status is not SELECTION_ENABLED
     - market key is unrecognized
+    - no rung resolves cleanly
     """
     if not selections:
-        return None
+        return []
 
     # All selections must be enabled
     if not all(s.get("status") == "SELECTION_ENABLED" for s in selections):
-        return None
+        return []
 
     market_type = _resolve_market_type(market_key)
     if market_type is None:
-        return None
+        return []
 
     if market_type == "spread":
         return _parse_handicap(selections)
     elif market_type == "total":
         return _parse_totals(selections)
     else:
-        return _parse_winner(selections, market_type)
+        winner = _parse_winner(selections, market_type)
+        return [winner] if winner else []
 
 
 def _parse_winner(selections: list, market_type: str) -> dict | None:
@@ -165,9 +172,18 @@ def _parse_winner(selections: list, market_type: str) -> dict | None:
     return {"type": market_type, "outcomes": outcomes}
 
 
-def _parse_handicap(selections: list) -> dict | None:
-    """Parse Asian handicap selections, taking the main line (smallest absolute handicap)."""
-    # Group by handicap value
+def _parse_handicap(selections: list) -> list[dict]:
+    """Parse Asian handicap selections, emitting one market per ladder rung.
+
+    Pinnacle ships its full alternate-handicap ladder; cloudbet does too. We
+    used to keep only the smallest-abs line, which made sharp middles
+    impossible (Pinnacle's -2.5 vs cloudbet's -1.5 mainline can't form a middle
+    if we never extract cloudbet's -2.5). Now we emit each handicap line that
+    has both home and away quoted as its own `spread` market.
+    """
+    # Group selections by absolute handicap (each rung). Home & away come in as
+    # separate selections with raw_hcp = +X / -X; we collapse them into one
+    # market per |X| with the home's signed handicap as `point`.
     lines: dict[float, dict] = {}
     for sel in selections:
         params = sel.get("params", "")
@@ -182,27 +198,33 @@ def _parse_handicap(selections: list) -> dict | None:
             lines[abs_hcp] = {}
         lines[abs_hcp][outcome_name] = {"price": price, "raw_hcp": hcp}
 
-    if not lines:
-        return None
+    markets: list[dict] = []
+    for abs_hcp in sorted(lines.keys()):
+        line = lines[abs_hcp]
+        if "home" not in line or "away" not in line:
+            continue
+        home_hcp = line["home"]["raw_hcp"]
+        markets.append(
+            {
+                "type": "spread",
+                "outcomes": [
+                    {"name": "home", "odds": line["home"]["price"], "point": home_hcp},
+                    {"name": "away", "odds": line["away"]["price"], "point": -home_hcp},
+                ],
+            }
+        )
+    return markets
 
-    # Take smallest absolute handicap as main line
-    main_abs = min(lines.keys())
-    line = lines[main_abs]
 
-    if "home" not in line or "away" not in line:
-        return None
+def _parse_totals(selections: list) -> list[dict]:
+    """Parse totals selections, emitting one market per ladder rung.
 
-    home_hcp = line["home"]["raw_hcp"]
-    outcomes = [
-        {"name": "home", "odds": line["home"]["price"], "point": home_hcp},
-        {"name": "away", "odds": line["away"]["price"], "point": -home_hcp},
-    ]
-    return {"type": "spread", "outcomes": outcomes}
-
-
-def _parse_totals(selections: list) -> dict | None:
-    """Parse totals selections, taking the main line (smallest total value)."""
-    # Group by total value
+    Same rationale as `_parse_handicap`: Pinnacle ships alternates and we used
+    to discard everything but the smallest total. With every rung now stored,
+    scanner can compare cloudbet over/under @ each line against Pinnacle's
+    matching alternate, and middles between cloudbet O7.5 and Pinnacle O8.5
+    become detectable.
+    """
     lines: dict[float, dict] = {}
     for sel in selections:
         params = sel.get("params", "")
@@ -216,21 +238,21 @@ def _parse_totals(selections: list) -> dict | None:
             lines[total] = {}
         lines[total][outcome_name] = price
 
-    if not lines:
-        return None
-
-    # Take smallest total as main line
-    main_total = min(lines.keys())
-    line = lines[main_total]
-
-    if "over" not in line or "under" not in line:
-        return None
-
-    outcomes = [
-        {"name": "over", "odds": line["over"], "point": main_total},
-        {"name": "under", "odds": line["under"], "point": main_total},
-    ]
-    return {"type": "total", "outcomes": outcomes}
+    markets: list[dict] = []
+    for total in sorted(lines.keys()):
+        line = lines[total]
+        if "over" not in line or "under" not in line:
+            continue
+        markets.append(
+            {
+                "type": "total",
+                "outcomes": [
+                    {"name": "over", "odds": line["over"], "point": total},
+                    {"name": "under", "odds": line["under"], "point": total},
+                ],
+            }
+        )
+    return markets
 
 
 def parse_event(
@@ -281,9 +303,7 @@ def parse_event(
         submarkets = (market_obj or {}).get("submarkets") or {}
         for _subkey, submarket in submarkets.items():
             selections = (submarket or {}).get("selections") or []
-            market = parse_selections_to_market(selections, market_key)
-            if market:
-                markets.append(market)
+            markets.extend(parse_selections_to_market(selections, market_key))
 
     if not markets:
         return None

@@ -15,11 +15,12 @@ class TestParseSelectionsToMarket:
             {"outcome": "away", "params": "", "price": 2.00, "status": "SELECTION_ENABLED", "side": "BACK"},
         ]
         result = parse_selections_to_market(selections, "basketball.moneyline")
-        assert result is not None
-        assert result["type"] == "moneyline"
-        assert len(result["outcomes"]) == 2
-        assert result["outcomes"][0] == {"name": "home", "odds": 1.80}
-        assert result["outcomes"][1] == {"name": "away", "odds": 2.00}
+        assert len(result) == 1
+        assert result[0]["type"] == "moneyline"
+        assert result[0]["outcomes"] == [
+            {"name": "home", "odds": 1.80},
+            {"name": "away", "odds": 2.00},
+        ]
 
     def test_1x2_three_selections_with_draw(self):
         selections = [
@@ -28,14 +29,15 @@ class TestParseSelectionsToMarket:
             {"outcome": "away", "params": "", "price": 2.50, "status": "SELECTION_ENABLED", "side": "BACK"},
         ]
         result = parse_selections_to_market(selections, "soccer.match_odds")
-        assert result is not None
-        assert result["type"] == "1x2"
-        assert len(result["outcomes"]) == 3
-        assert result["outcomes"][0] == {"name": "home", "odds": 2.80}
-        assert result["outcomes"][1] == {"name": "draw", "odds": 3.40}
-        assert result["outcomes"][2] == {"name": "away", "odds": 2.50}
+        assert len(result) == 1
+        assert result[0]["type"] == "1x2"
+        assert result[0]["outcomes"] == [
+            {"name": "home", "odds": 2.80},
+            {"name": "draw", "odds": 3.40},
+            {"name": "away", "odds": 2.50},
+        ]
 
-    def test_handicap_selections_main_line_only(self):
+    def test_handicap_emits_every_ladder_rung(self):
         selections = [
             {
                 "outcome": "home",
@@ -67,18 +69,19 @@ class TestParseSelectionsToMarket:
             },
         ]
         result = parse_selections_to_market(selections, "soccer.asian_handicap")
-        assert result is not None
-        assert result["type"] == "spread"
-        assert len(result["outcomes"]) == 2
-        # Main line = smallest absolute handicap = 1.5
-        home = next(o for o in result["outcomes"] if o["name"] == "home")
-        away = next(o for o in result["outcomes"] if o["name"] == "away")
-        assert home["point"] == -1.5
-        assert home["odds"] == 2.10
-        assert away["point"] == 1.5
-        assert away["odds"] == 1.75
+        assert len(result) == 2  # two rungs: |1.5| and |2.5|
+        assert all(m["type"] == "spread" for m in result)
+        by_point = {m["outcomes"][0]["point"]: m for m in result}
+        # Mainline (-1.5)
+        m_main = by_point[-1.5]
+        assert next(o for o in m_main["outcomes"] if o["name"] == "home")["odds"] == 2.10
+        assert next(o for o in m_main["outcomes"] if o["name"] == "away")["odds"] == 1.75
+        # Alternate (-2.5)
+        m_alt = by_point[-2.5]
+        assert next(o for o in m_alt["outcomes"] if o["name"] == "home")["odds"] == 3.00
+        assert next(o for o in m_alt["outcomes"] if o["name"] == "away")["odds"] == 1.40
 
-    def test_totals_selections_main_line_only(self):
+    def test_totals_emits_every_ladder_rung(self):
         selections = [
             {"outcome": "over", "params": "total=2.5", "price": 1.90, "status": "SELECTION_ENABLED", "side": "BACK"},
             {"outcome": "under", "params": "total=2.5", "price": 1.90, "status": "SELECTION_ENABLED", "side": "BACK"},
@@ -86,37 +89,35 @@ class TestParseSelectionsToMarket:
             {"outcome": "under", "params": "total=3.5", "price": 1.65, "status": "SELECTION_ENABLED", "side": "BACK"},
         ]
         result = parse_selections_to_market(selections, "soccer.total_goals")
-        assert result is not None
-        assert result["type"] == "total"
-        assert len(result["outcomes"]) == 2
-        # Main line = smallest total = 2.5
-        over = next(o for o in result["outcomes"] if o["name"] == "over")
-        under = next(o for o in result["outcomes"] if o["name"] == "under")
-        assert over["point"] == 2.5
-        assert over["odds"] == 1.90
-        assert under["point"] == 2.5
-        assert under["odds"] == 1.90
+        assert len(result) == 2
+        assert all(m["type"] == "total" for m in result)
+        by_point = {m["outcomes"][0]["point"]: m for m in result}
+        # Mainline (2.5)
+        m_main = by_point[2.5]
+        assert next(o for o in m_main["outcomes"] if o["name"] == "over")["odds"] == 1.90
+        assert next(o for o in m_main["outcomes"] if o["name"] == "under")["odds"] == 1.90
+        # Alternate (3.5)
+        m_alt = by_point[3.5]
+        assert next(o for o in m_alt["outcomes"] if o["name"] == "over")["odds"] == 2.20
+        assert next(o for o in m_alt["outcomes"] if o["name"] == "under")["odds"] == 1.65
 
-    def test_disabled_selection_returns_none(self):
+    def test_disabled_selection_returns_empty(self):
         selections = [
             {"outcome": "home", "params": "", "price": 2.80, "status": "SELECTION_DISABLED", "side": "BACK"},
             {"outcome": "draw", "params": "", "price": 3.40, "status": "SELECTION_ENABLED", "side": "BACK"},
             {"outcome": "away", "params": "", "price": 2.50, "status": "SELECTION_ENABLED", "side": "BACK"},
         ]
-        result = parse_selections_to_market(selections, "soccer.match_odds")
-        assert result is None
+        assert parse_selections_to_market(selections, "soccer.match_odds") == []
 
-    def test_empty_selections_returns_none(self):
-        result = parse_selections_to_market([], "soccer.match_odds")
-        assert result is None
+    def test_empty_selections_returns_empty(self):
+        assert parse_selections_to_market([], "soccer.match_odds") == []
 
-    def test_suspended_selection_returns_none(self):
+    def test_suspended_selection_returns_empty(self):
         selections = [
             {"outcome": "home", "params": "", "price": 2.80, "status": "SELECTION_SUSPENDED", "side": "BACK"},
             {"outcome": "away", "params": "", "price": 2.50, "status": "SELECTION_ENABLED", "side": "BACK"},
         ]
-        result = parse_selections_to_market(selections, "basketball.moneyline")
-        assert result is None
+        assert parse_selections_to_market(selections, "basketball.moneyline") == []
 
     def test_market_key_basketball_handicap(self):
         selections = [
@@ -136,8 +137,8 @@ class TestParseSelectionsToMarket:
             },
         ]
         result = parse_selections_to_market(selections, "basketball.handicap")
-        assert result is not None
-        assert result["type"] == "spread"
+        assert len(result) == 1
+        assert result[0]["type"] == "spread"
 
     def test_market_key_basketball_totals(self):
         selections = [
@@ -145,9 +146,9 @@ class TestParseSelectionsToMarket:
             {"outcome": "under", "params": "total=220.5", "price": 1.90, "status": "SELECTION_ENABLED", "side": "BACK"},
         ]
         result = parse_selections_to_market(selections, "basketball.totals")
-        assert result is not None
-        assert result["type"] == "total"
-        over = next(o for o in result["outcomes"] if o["name"] == "over")
+        assert len(result) == 1
+        assert result[0]["type"] == "total"
+        over = next(o for o in result[0]["outcomes"] if o["name"] == "over")
         assert over["point"] == 220.5
 
     def test_totals_single_line(self):
@@ -157,9 +158,9 @@ class TestParseSelectionsToMarket:
             {"outcome": "under", "params": "total=2.5", "price": 1.90, "status": "SELECTION_ENABLED", "side": "BACK"},
         ]
         result = parse_selections_to_market(selections, "soccer.total_goals")
-        assert result is not None
-        assert result["type"] == "total"
-        assert len(result["outcomes"]) == 2
+        assert len(result) == 1
+        assert result[0]["type"] == "total"
+        assert len(result[0]["outcomes"]) == 2
 
 
 class TestParseEvent:

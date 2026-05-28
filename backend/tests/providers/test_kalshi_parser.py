@@ -361,24 +361,38 @@ class TestParseSpreadEvent:
             },
         ]
 
-    def test_picks_closest_to_target(self):
+    def test_emits_every_quoted_rung(self):
         raw = {
             "event_ticker": "KXNBASPREAD-26MAY19CLENYK",
             "title": "Game 1: Cleveland at New York: Spread",
             "markets": self._ladder(),
         }
-        out = parse_spread_event(raw, home="New York", away="Cleveland", target_abs_point=8.0, min_volume_usd=100)
-        assert out is not None
-        assert out["type"] == "spread"
-        home_o = next(o for o in out["outcomes"] if o["name"] == "home")
-        away_o = next(o for o in out["outcomes"] if o["name"] == "away")
-        # Closest to 8.0 in ladder {7.5, 12.5, 29.5} = 7.5
-        assert home_o["point"] == -7.5
-        assert away_o["point"] == 7.5
-        # YES side favors home (NYK), so home odds = 1/effective(0.55), away = 1/effective(0.45)
-        assert home_o["odds"] < away_o["odds"]  # home is favored at -7.5
+        out = parse_spread_event(raw, home="New York", away="Cleveland", min_volume_usd=100)
+        # All three ladder rungs (7.5, 12.5, 29.5) cleanly quoted → 3 markets emitted.
+        assert len(out) == 3
+        assert all(m["type"] == "spread" for m in out)
+        points = sorted({abs(m["outcomes"][0]["point"]) for m in out})
+        assert points == [7.5, 12.5, 29.5]
+        # On every rung the YES contract is "home wins by over |point|", so home
+        # always carries the negative point. The favored side flips with the
+        # spread: at -7.5 home is favored (55% YES), at -29.5 home is the
+        # underdog (8% YES) — both are valid sharp-middle / alternate-line rows.
+        for m in out:
+            home_o = next(o for o in m["outcomes"] if o["name"] == "home")
+            away_o = next(o for o in m["outcomes"] if o["name"] == "away")
+            assert home_o["point"] < 0
+            assert away_o["point"] > 0
+            assert home_o["point"] == -away_o["point"]
+        m_low = next(m for m in out if m["outcomes"][0]["point"] == -7.5)
+        m_high = next(m for m in out if m["outcomes"][0]["point"] == -29.5)
+        low_home = next(o for o in m_low["outcomes"] if o["name"] == "home")["odds"]
+        low_away = next(o for o in m_low["outcomes"] if o["name"] == "away")["odds"]
+        high_home = next(o for o in m_high["outcomes"] if o["name"] == "home")["odds"]
+        high_away = next(o for o in m_high["outcomes"] if o["name"] == "away")["odds"]
+        assert low_home < low_away
+        assert high_home > high_away
 
-    def test_all_submarkets_filtered_returns_none(self):
+    def test_no_matching_submarkets_returns_empty(self):
         raw = {
             "event_ticker": "X",
             "title": "Game 1: Cleveland at New York: Spread",
@@ -392,9 +406,9 @@ class TestParseSpreadEvent:
                 },
             ],
         }
-        assert parse_spread_event(raw, home="New York", away="Cleveland", target_abs_point=8.0) is None
+        assert parse_spread_event(raw, home="New York", away="Cleveland") == []
 
-    def test_zero_yes_price_returns_none(self):
+    def test_zero_yes_price_skips_rung(self):
         raw = {
             "event_ticker": "X",
             "title": "X",
@@ -408,11 +422,11 @@ class TestParseSpreadEvent:
                 },
             ],
         }
-        assert parse_spread_event(raw, home="New York", away="Cleveland", target_abs_point=5.0) is None
+        assert parse_spread_event(raw, home="New York", away="Cleveland") == []
 
 
 class TestParseTotalEvent:
-    def test_picks_closest_to_target(self):
+    def test_emits_every_quoted_rung(self):
         raw = {
             "event_ticker": "KXNBATOTAL-26MAY19CLENYK",
             "title": "Game 1: Cleveland at New York: Total Points",
@@ -443,13 +457,13 @@ class TestParseTotalEvent:
                 },
             ],
         }
-        out = parse_total_event(raw, target_point=210.0, min_volume_usd=100)
-        assert out is not None
-        assert out["type"] == "total"
-        over_o = next(o for o in out["outcomes"] if o["name"] == "over")
-        under_o = next(o for o in out["outcomes"] if o["name"] == "under")
-        assert over_o["point"] == 209.5
-        assert under_o["point"] == 209.5
-        # 0.50 each side → both odds ~2.0
+        out = parse_total_event(raw, min_volume_usd=100)
+        assert len(out) == 3
+        points = sorted(m["outcomes"][0]["point"] for m in out)
+        assert points == [195.5, 209.5, 225.5]
+        # Middle rung at 0.50/0.50 → odds ~2.0 each side.
+        mid = next(m for m in out if m["outcomes"][0]["point"] == 209.5)
+        over_o = next(o for o in mid["outcomes"] if o["name"] == "over")
+        under_o = next(o for o in mid["outcomes"] if o["name"] == "under")
         assert 1.9 < over_o["odds"] < 2.1
         assert 1.9 < under_o["odds"] < 2.1

@@ -766,54 +766,8 @@ def _parse_total_rung(m: dict) -> float | None:
         return None
 
 
-def _pick_closest_rung(candidates: list[tuple[float, dict]], target_abs: float) -> tuple[float, dict] | None:
-    """From a list of (abs_point, market) rungs, return the one closest to target_abs."""
-    if not candidates:
-        return None
-    return min(candidates, key=lambda c: abs(c[0] - target_abs))
-
-
-def parse_spread_event(
-    raw: dict,
-    home: str,
-    away: str,
-    target_abs_point: float,
-    min_volume_usd: float = 100.0,
-    fee_rate: float = 0.02,
-) -> dict | None:
-    """Parse a Kalshi spread event into a single {"type":"spread", ...} market dict.
-
-    Picks the rung whose absolute point is closest to `target_abs_point`
-    (Pinnacle's current main line) and emits home/away outcomes for that line.
-    Returns None if no rung parses cleanly or all are sub-volume.
-    """
-    raw_markets = [
-        m for m in raw.get("markets", []) if m.get("status") == "active" and _market_volume_usd(m) >= min_volume_usd
-    ]
-    if not raw_markets:
-        return None
-
-    home_rungs: list[tuple[float, dict]] = []
-    away_rungs: list[tuple[float, dict]] = []
-    for m in raw_markets:
-        parsed = _parse_spread_rung(m, home, away)
-        if parsed is None:
-            continue
-        side, abs_pt = parsed
-        if side == "home":
-            home_rungs.append((abs_pt, m))
-        else:
-            away_rungs.append((abs_pt, m))
-
-    # Pick the closest-to-target on whichever side has matching rungs.
-    # Both sides should be present for a symmetric spread, but Kalshi often
-    # ladders only the favored side. We can still emit both outcomes off a
-    # single rung — YES = favored covers, NO = underdog covers same line.
-    chosen = _pick_closest_rung(home_rungs, target_abs_point) or _pick_closest_rung(away_rungs, target_abs_point)
-    if chosen is None:
-        return None
-    abs_point, mkt = chosen
-    yes_side = "home" if (chosen in home_rungs) else "away"
+def _build_spread_market(mkt: dict, yes_side: str, abs_point: float, fee_rate: float) -> dict | None:
+    """Build a single spread market dict from one ladder rung. Returns None if quotes are degenerate."""
     yes_price = _market_price_dollars(mkt)
     if yes_price <= 0.0 or yes_price >= 1.0:
         return None
@@ -827,39 +781,73 @@ def parse_spread_event(
     else:
         away_odds, away_point = yes_odds, -abs_point
         home_odds, home_point = no_odds, abs_point
-    outcomes = [
-        {
-            "name": "home",
-            "odds": home_odds,
-            "point": home_point,
-            "provider_meta": {"ticker": mkt.get("ticker"), "volume": _market_volume_usd(mkt), "yes_side": yes_side},
-        },
-        {
-            "name": "away",
-            "odds": away_odds,
-            "point": away_point,
-            "provider_meta": {"ticker": mkt.get("ticker"), "volume": _market_volume_usd(mkt), "yes_side": yes_side},
-        },
-    ]
-    return {"type": "spread", "outcomes": outcomes}
+    meta = {"ticker": mkt.get("ticker"), "volume": _market_volume_usd(mkt), "yes_side": yes_side}
+    return {
+        "type": "spread",
+        "outcomes": [
+            {"name": "home", "odds": home_odds, "point": home_point, "provider_meta": meta},
+            {"name": "away", "odds": away_odds, "point": away_point, "provider_meta": meta},
+        ],
+    }
 
 
-def parse_total_event(
+def parse_spread_event(
     raw: dict,
-    target_point: float,
+    home: str,
+    away: str,
     min_volume_usd: float = 100.0,
     fee_rate: float = 0.02,
-) -> dict | None:
-    """Parse a Kalshi total event into a single {"type":"total", ...} market dict.
+) -> list[dict]:
+    """Parse a Kalshi spread event into a list of spread market dicts, one per rung.
 
-    Picks the rung whose point is closest to `target_point` (Pinnacle's
-    current main line) and emits over/under outcomes at that line.
+    Previously kept only the rung closest to Pinnacle's mainline, which made
+    sharp middles between Kalshi and Pinnacle alternates impossible to detect.
+    Now emits every ladder rung whose YES + NO quotes are non-degenerate;
+    storage and scanner key on (market, point) so each rung is independently
+    scanned against any provider quoting the same line.
     """
     raw_markets = [
         m for m in raw.get("markets", []) if m.get("status") == "active" and _market_volume_usd(m) >= min_volume_usd
     ]
     if not raw_markets:
-        return None
+        return []
+
+    rungs: list[tuple[float, dict, str]] = []  # (abs_point, market, yes_side)
+    for m in raw_markets:
+        parsed = _parse_spread_rung(m, home, away)
+        if parsed is None:
+            continue
+        side, abs_pt = parsed
+        rungs.append((abs_pt, m, side))
+
+    # Sort by absolute point so storage receives a deterministic ladder order;
+    # this is mostly for stable test output, scanner is point-keyed and doesn't care.
+    rungs.sort(key=lambda r: r[0])
+
+    markets: list[dict] = []
+    for abs_point, mkt, yes_side in rungs:
+        built = _build_spread_market(mkt, yes_side, abs_point, fee_rate)
+        if built is not None:
+            markets.append(built)
+    return markets
+
+
+def parse_total_event(
+    raw: dict,
+    min_volume_usd: float = 100.0,
+    fee_rate: float = 0.02,
+) -> list[dict]:
+    """Parse a Kalshi total event into a list of total market dicts, one per rung.
+
+    Mirror of `parse_spread_event` — keeps every cleanly-quoted ladder rung so
+    cross-line comparison against Pinnacle's alternate total ladder can find
+    middles + alternate-line value/arbs.
+    """
+    raw_markets = [
+        m for m in raw.get("markets", []) if m.get("status") == "active" and _market_volume_usd(m) >= min_volume_usd
+    ]
+    if not raw_markets:
+        return []
 
     rungs: list[tuple[float, dict]] = []
     for m in raw_markets:
@@ -867,26 +855,28 @@ def parse_total_event(
         if pt is None:
             continue
         rungs.append((pt, m))
+    rungs.sort(key=lambda r: r[0])
 
-    chosen = _pick_closest_rung(rungs, target_point)
-    if chosen is None:
-        return None
-    point, mkt = chosen
-    yes_price = _market_price_dollars(mkt)
-    if yes_price <= 0.0 or yes_price >= 1.0:
-        return None
-    over_odds = _price_to_odds(yes_price, fee_rate)
-    under_odds = _no_side_odds(mkt, fee_rate)
-    if under_odds <= 0.0:
-        return None
-    meta = {"ticker": mkt.get("ticker"), "volume": _market_volume_usd(mkt)}
-    return {
-        "type": "total",
-        "outcomes": [
-            {"name": "over", "odds": over_odds, "point": point, "provider_meta": meta},
-            {"name": "under", "odds": under_odds, "point": point, "provider_meta": meta},
-        ],
-    }
+    markets: list[dict] = []
+    for point, mkt in rungs:
+        yes_price = _market_price_dollars(mkt)
+        if yes_price <= 0.0 or yes_price >= 1.0:
+            continue
+        over_odds = _price_to_odds(yes_price, fee_rate)
+        under_odds = _no_side_odds(mkt, fee_rate)
+        if under_odds <= 0.0:
+            continue
+        meta = {"ticker": mkt.get("ticker"), "volume": _market_volume_usd(mkt)}
+        markets.append(
+            {
+                "type": "total",
+                "outcomes": [
+                    {"name": "over", "odds": over_odds, "point": point, "provider_meta": meta},
+                    {"name": "under", "odds": under_odds, "point": point, "provider_meta": meta},
+                ],
+            }
+        )
+    return markets
 
 
 # ── Pinnacle event-index loader ─────────────────────────────────────────────
@@ -894,59 +884,6 @@ def parse_total_event(
 # To honour the "only fetch what Pinnacle has" constraint, we load a snapshot
 # of Pinnacle events for the sport (plus their current spread/total main
 # lines) once per extract() run, then filter every Kalshi event against it.
-
-
-def _load_pinnacle_event_index(sport: str, lookahead_days: int = 14) -> dict:
-    """Return a dict keyed by (home_team, away_team, YYYYMMDD) → {spread_point, total_point}.
-
-    home_team and away_team are the canonical normalized aliases as stored on
-    `events.home_team` / `events.away_team` (already normalized by the matcher
-    at insertion time). spread_point and total_point are the most-recent
-    smallest-absolute-value lines for that event (the de-facto main line).
-    """
-    from sqlalchemy import text
-
-    from ..db.models import get_session
-
-    session = get_session()
-    try:
-        rows = session.execute(
-            text(
-                """
-                WITH pin AS (
-                    SELECT e.home_team, e.away_team, e.start_time,
-                           o.market, o.point,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY e.id, o.market
-                               ORDER BY ABS(o.point) ASC, o.updated_at DESC
-                           ) AS rn
-                    FROM events e
-                    JOIN odds o ON o.event_id = e.id
-                    WHERE o.provider_id = 'pinnacle'
-                      AND e.sport = :sport
-                      AND e.start_time BETWEEN NOW() AND NOW() + (:days || ' days')::INTERVAL
-                      AND o.market IN ('spread', 'total')
-                )
-                SELECT home_team, away_team, start_time, market, point
-                FROM pin
-                WHERE rn = 1
-                """
-            ),
-            {"sport": sport, "days": lookahead_days},
-        ).fetchall()
-    finally:
-        session.close()
-
-    index: dict[tuple[str, str, str], dict] = {}
-    for home_team, away_team, start_time, market, point in rows:
-        date_str = start_time.strftime("%Y%m%d")
-        key = (home_team, away_team, date_str)
-        entry = index.setdefault(key, {"spread_point": None, "total_point": None})
-        if market == "spread" and point is not None:
-            entry["spread_point"] = abs(float(point))
-        elif market == "total" and point is not None:
-            entry["total_point"] = float(point)
-    return index
 
 
 def _load_pinnacle_event_keys(sport: str, lookahead_days: int = 14) -> set[tuple[str, str, str]]:
@@ -1093,23 +1030,18 @@ class KalshiRetriever(Retriever):
 
         Three series families are queried per sport:
           1. ML series (KXNBAGAME, KXATPMATCH, …) → moneyline / 1x2 markets
-          2. SPREAD series (KXNBASPREAD, KXATPGAMESPREAD, …) → spread market
-          3. TOTAL series (KXNBATOTAL, KXATPGAMETOTAL, …) → total market
+          2. SPREAD series (KXNBASPREAD, KXATPGAMESPREAD, …) → spread ladder
+          3. TOTAL series (KXNBATOTAL, KXATPGAMETOTAL, …) → total ladder
 
-        All three are pre-filtered by querying Pinnacle's events for the
-        sport up front: events whose (normalized_home, normalized_away,
-        YYYYMMDD) tuple isn't in Pinnacle's set are dropped before parsing
-        further. For spread/total, the rung closest to Pinnacle's current
-        main line is picked (CLAUDE.md scope: main lines only). If Pinnacle
-        has no events for the sport, all Kalshi fetches are skipped — there
-        is no fair-odds baseline to compare against.
+        Events whose (normalized_home, normalized_away, YYYYMMDD) tuple isn't
+        in Pinnacle's set are dropped before parsing. For spread/total we now
+        emit every cleanly-quoted ladder rung (not just the one closest to
+        Pinnacle's mainline) so the scanner can compare each Kalshi rung
+        against Pinnacle's matching alternate and surface sharp middles.
+        If Pinnacle has no events for the sport, all Kalshi fetches are
+        skipped — there is no fair-odds baseline to compare against.
         """
-        # Load Pinnacle keys + spread/total line index in parallel (single DB
-        # connection each, indexed query, takes <50ms in production).
-        pin_keys, pin_index = await asyncio.gather(
-            asyncio.to_thread(_load_pinnacle_event_keys, sport),
-            asyncio.to_thread(_load_pinnacle_event_index, sport),
-        )
+        pin_keys = await asyncio.to_thread(_load_pinnacle_event_keys, sport)
         if not pin_keys:
             logger.info(f"[kalshi] no Pinnacle events for sport={sport}; skipping all Kalshi fetches")
             return []
@@ -1151,7 +1083,7 @@ class KalshiRetriever(Retriever):
                 async for raw in self._fetch_series_pages(session, series, delay_first=not first_request):
                     first_request = False
                     total_raw += 1
-                    ev = self._parse_line_event(raw, sport, market_kind="spread", pin_index=pin_index)
+                    ev = self._parse_line_event(raw, sport, market_kind="spread", pin_keys=pin_keys)
                     if ev is not None:
                         parsed.append(ev)
                         if limit and len(parsed) >= limit:
@@ -1164,7 +1096,7 @@ class KalshiRetriever(Retriever):
                 async for raw in self._fetch_series_pages(session, series, delay_first=not first_request):
                     first_request = False
                     total_raw += 1
-                    ev = self._parse_line_event(raw, sport, market_kind="total", pin_index=pin_index)
+                    ev = self._parse_line_event(raw, sport, market_kind="total", pin_keys=pin_keys)
                     if ev is not None:
                         parsed.append(ev)
                         if limit and len(parsed) >= limit:
@@ -1184,67 +1116,51 @@ class KalshiRetriever(Retriever):
         raw: dict,
         sport: str,
         market_kind: str,
-        pin_index: dict,
+        pin_keys: set[tuple[str, str, str]],
     ) -> StandardEvent | None:
-        """Parse a Kalshi spread or total event into a StandardEvent.
+        """Parse a Kalshi spread or total event into a StandardEvent with all
+        cleanly-quoted ladder rungs as separate markets.
 
         Returns None unless (a) we can extract home/away/date from the title,
-        (b) the canonical key is in Pinnacle's index, and (c) at least one
-        ladder rung parses cleanly. Picks the rung whose point is closest to
-        Pinnacle's current main line.
+        (b) the canonical key is in Pinnacle's coverage set, and (c) at least
+        one ladder rung parses cleanly.
         """
         title = raw.get("title", "") or ""
         clean = _strip_market_label(title)
         home, away = _extract_teams_from_title(clean)
         if not home or not away:
             return None
-        # Override with canonical aliases when ticker codes exist (NBA/NHL/MLB).
-        # spread/total events use the same {SERIES}-{YYMMMDD}{AWAYTEAM}{HOMETEAM}
-        # event_ticker convention as ML, so the series prefix maps via the
-        # same KALSHI_TICKER_CODES dict but keyed on the ML-series prefix.
-        # We can't reliably override here without knowing the ML prefix; fall
-        # back to the title strings — the normalizer + matcher handle the
-        # canonicalisation on lookup.
         start_time = next(
             (t for t in (_market_event_start(m) for m in raw.get("markets", [])) if t is not None),
             None,
         )
         key = _kalshi_event_key(home, away, start_time)
-        if key is None or key not in pin_index:
+        if key is None or key not in pin_keys:
             return None
-        pin_entry = pin_index[key]
         if market_kind == "spread":
-            target = pin_entry.get("spread_point")
-            if target is None:
-                return None
-            market = parse_spread_event(
+            markets = parse_spread_event(
                 raw,
                 home=home,
                 away=away,
-                target_abs_point=target,
                 min_volume_usd=self.min_volume_usd,
                 fee_rate=self.fee_rate,
             )
         elif market_kind == "total":
-            target = pin_entry.get("total_point")
-            if target is None:
-                return None
-            market = parse_total_event(
+            markets = parse_total_event(
                 raw,
-                target_point=target,
                 min_volume_usd=self.min_volume_usd,
                 fee_rate=self.fee_rate,
             )
         else:
             return None
-        if market is None:
+        if not markets:
             return None
         event_ticker = raw.get("event_ticker", "")
         return StandardEvent(
             id=f"kalshi_{event_ticker}",
             name=clean,
             sport=sport,
-            markets=[market],
+            markets=markets,
             provider="kalshi",
             url=f"https://kalshi.com/markets/{event_ticker}",
             home_team=home,

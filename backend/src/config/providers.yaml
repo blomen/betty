@@ -830,7 +830,11 @@ providers:
     currency: USD
     exchange_rate_sek: 10.5   # refresh periodically; rough 2026-04 FX
     params:
-      min_volume_usd: 100
+      # Lowered 100 → 25 (2026-05-28): Kalshi catalog has ~10k open series but
+      # only ~30 events/day cleared the $100 lifetime-volume bar. Most kalshi
+      # contracts are low-volume by design (binary YES/NO with shallow books);
+      # $25 still filters untraded chaff while unlocking 3-5× more events.
+      min_volume_usd: 25
     supported_sports:
       - football
       - basketball
