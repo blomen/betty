@@ -69,3 +69,30 @@ def equalise_payouts(stake_a_base: float, odds_a: float, odds_b: float) -> float
     if odds_a <= 0 or odds_b <= 0:
         return 0.0
     return stake_a_base * odds_a / odds_b
+
+
+def brackets_key_number(
+    point_a: float | None,
+    point_b: float | None,
+    keys: tuple[int, ...],
+) -> int | None:
+    """Return a key number that sits strictly between |point_a| and |point_b|.
+
+    For spreads, the opposite side's point has the opposite sign — we
+    compare absolute values to detect crossing. For totals, both points
+    are positive so abs() is a no-op. If multiple keys are bracketed,
+    return the one closest to the midpoint of the two lines (this gives
+    the most balanced middle window).
+
+    Returns None when either point is missing or the lines don't bracket
+    any key in `keys`.
+    """
+    if point_a is None or point_b is None:
+        return None
+    a, b = abs(point_a), abs(point_b)
+    lo, hi = (a, b) if a < b else (b, a)
+    bracketed = [k for k in keys if lo < k < hi]
+    if not bracketed:
+        return None
+    midpoint = (point_a + point_b) / 2.0
+    return min(bracketed, key=lambda k: abs(k - midpoint))
