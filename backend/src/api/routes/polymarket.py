@@ -67,8 +67,6 @@ def get_polymarket_value(
                 max_kelly=OPTIMAL_MAX_KELLY,
                 single_bet_cap_pct=OPTIMAL_SINGLE_BET_CAP,
                 min_edge=profile.min_edge_pct / 100.0,
-                db_session=db,
-                profile_id=profile.id,
             )
             bonus_status = profile_repo.get_bonus_status(profile.id, "polymarket")
         except Exception as e:
@@ -158,8 +156,6 @@ def get_polymarket_value(
                     event_id=opp.event_id,
                     provider_id="polymarket",
                     min_odds=min_odds,
-                    sport=event.sport,
-                    market=opp.market,
                 )
                 stake_sek = stake_rec.stake
                 stake_usdc = round(stake_sek / usdc_rate, 2) if usdc_rate > 0 else 0

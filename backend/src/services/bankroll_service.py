@@ -289,8 +289,6 @@ class BankrollService:
                 max_kelly=OPTIMAL_MAX_KELLY,
                 single_bet_cap_pct=OPTIMAL_SINGLE_BET_CAP,
                 min_edge=min_edge,
-                db_session=self.db,
-                profile_id=profile_id,
             )
 
         calc = _stake_calculators[profile_id]
@@ -300,10 +298,6 @@ class BankrollService:
         calc.max_kelly = OPTIMAL_MAX_KELLY
         calc.single_bet_cap_pct = OPTIMAL_SINGLE_BET_CAP
         calc.min_edge = min_edge
-        # Refresh DB session + profile — service can be instantiated with a
-        # different session per request than the one cached on the calculator.
-        calc.db_session = self.db
-        calc.profile_id = profile_id
 
         # Always reload bonus statuses from DB
         calc.bonus_tracker.bonuses.clear()
