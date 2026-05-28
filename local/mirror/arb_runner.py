@@ -21,7 +21,7 @@ from .arb_math import (
     recalc_profit_pct,
     should_update_stake,
 )
-from .currency import provider_currency
+from .currency import Money, provider_currency
 from .play_loop import (
     _AUTH_HEADER,
     _AUTH_VALUE,
@@ -538,10 +538,9 @@ class ArbRunner:
 
         anchor_odds = anchor_leg.get("odds", 0)
         anchor_currency = provider_currency(self.provider_id)
-        counter_stakes = recalc_counter_stakes(
-            anchor_stake,
+        counter_stakes_money = recalc_counter_stakes(
+            Money(anchor_stake, anchor_currency),
             anchor_odds,
-            anchor_currency,
             [
                 {
                     "odds": l.get("odds", 0),
@@ -550,6 +549,10 @@ class ArbRunner:
                 for l in counter_legs
             ],
         )
+        # Boundary: downstream (_prep_leg, update_slip_stake, SSE broadcast)
+        # all take stake as a float in the bookmaker's native currency. Money
+        # earns its keep in the math layer above; unwrap at the boundary.
+        counter_stakes = [m.amount for m in counter_stakes_money]
 
         self._anchor_stake = anchor_stake
         self._counter_legs = counter_legs
@@ -691,15 +694,17 @@ class ArbRunner:
             return
 
         # Update counter slip stakes if drift exceeds threshold
-        new_stakes = recalc_counter_stakes(
-            self._anchor_stake,
-            anchor_odds,
-            provider_currency(self.provider_id),
-            [
-                {"odds": o, "currency": provider_currency(l["provider"])}
-                for l, o in zip(self._counter_legs, counter_odds)
-            ],
-        )
+        new_stakes = [
+            m.amount
+            for m in recalc_counter_stakes(
+                Money(self._anchor_stake, provider_currency(self.provider_id)),
+                anchor_odds,
+                [
+                    {"odds": o, "currency": provider_currency(l["provider"])}
+                    for l, o in zip(self._counter_legs, counter_odds)
+                ],
+            )
+        ]
         for leg, new_stake in zip(self._counter_legs, new_stakes):
             cur = leg.get("_current_stake", new_stake)
             if should_update_stake(cur, new_stake):
@@ -851,15 +856,17 @@ class ArbRunner:
             self._latest_counter_odds.get(l["provider"], l.get("odds", 0))
             for l in self._counter_legs
         ]
-        new_stakes = recalc_counter_stakes(
-            anchor_actual_stake,
-            anchor_actual_odds,
-            provider_currency(self.provider_id),
-            [
-                {"odds": o, "currency": provider_currency(l["provider"])}
-                for l, o in zip(self._counter_legs, counter_odds)
-            ],
-        )
+        new_stakes = [
+            m.amount
+            for m in recalc_counter_stakes(
+                Money(anchor_actual_stake, provider_currency(self.provider_id)),
+                anchor_actual_odds,
+                [
+                    {"odds": o, "currency": provider_currency(l["provider"])}
+                    for l, o in zip(self._counter_legs, counter_odds)
+                ],
+            )
+        ]
 
         # Update slips in parallel
         async def _push_stake(leg: dict, stake: float) -> None:

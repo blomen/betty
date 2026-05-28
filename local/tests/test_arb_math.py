@@ -10,7 +10,7 @@ from local.mirror.arb_math import (
     recalc_profit_pct,
     should_update_stake,
 )
-from local.mirror.currency import _FX_SEK_PER_UNIT
+from local.mirror.currency import _FX_SEK_PER_UNIT, Money
 
 UNLIMITED = {"pinnacle", "polymarket", "cloudbet", "kalshi"}
 
@@ -71,81 +71,70 @@ def test_recalc_profit_pct_zero_odds_returns_none():
 def test_recalc_counter_stakes_two_way_same_currency():
     # Anchor 100 SEK @ 2.0 → total payout 200 SEK → counter SEK @ 2.0 → 100 SEK
     stakes = recalc_counter_stakes(
-        anchor_stake=100.0,
+        anchor_stake=Money(100.0, "SEK"),
         anchor_odds=2.0,
-        anchor_currency="SEK",
         counter_legs=[{"odds": 2.0, "currency": "SEK"}],
     )
-    assert stakes == [100.0]
+    assert stakes == [Money(100.0, "SEK")]
 
 
 def test_recalc_counter_stakes_uneven_odds_same_currency():
     # Anchor 100 SEK @ 2.0 → payout 200 → counter SEK @ 4.0 → 50 SEK
     stakes = recalc_counter_stakes(
-        anchor_stake=100.0,
+        anchor_stake=Money(100.0, "SEK"),
         anchor_odds=2.0,
-        anchor_currency="SEK",
         counter_legs=[{"odds": 4.0, "currency": "SEK"}],
     )
-    assert stakes == [50.0]
+    assert stakes == [Money(50.0, "SEK")]
 
 
 def test_recalc_counter_stakes_three_way_same_currency():
     # Anchor 100 SEK @ 3.0 → payout 300 → counters @ 3.0 each → 100 each
     stakes = recalc_counter_stakes(
-        anchor_stake=100.0,
+        anchor_stake=Money(100.0, "SEK"),
         anchor_odds=3.0,
-        anchor_currency="SEK",
         counter_legs=[
             {"odds": 3.0, "currency": "SEK"},
             {"odds": 3.0, "currency": "SEK"},
         ],
     )
-    assert stakes == [100.0, 100.0]
+    assert stakes == [Money(100.0, "SEK"), Money(100.0, "SEK")]
 
 
 def test_recalc_counter_stakes_rounded_to_cents():
     # 100 SEK @ 1.91 → payout 191 → counter SEK @ 2.13 → 89.67
     stakes = recalc_counter_stakes(
-        anchor_stake=100.0,
+        anchor_stake=Money(100.0, "SEK"),
         anchor_odds=1.91,
-        anchor_currency="SEK",
         counter_legs=[{"odds": 2.13, "currency": "SEK"}],
     )
-    assert stakes == [89.67]
+    assert stakes == [Money(89.67, "SEK")]
 
 
 def test_recalc_counter_stakes_sek_anchor_usdc_counter():
     """SEK anchor + USDC counter — without FX awareness, sizes ~10× too large.
 
     Anchor 1000 SEK @ 2.0 → payout 2000 SEK. With USD/SEK ≈ 10.5, counter
-    must wager ~2000 / 10.5 ≈ 190.48 USDC at 2.0 to match the SEK payout.
+    must wager ~2000 / 10.5 / 2.0 ≈ 95.24 USDC to match the SEK payout.
     Pre-fix this returned 1000 USDC (10× too large).
     """
     rate = _FX_SEK_PER_UNIT["USDC"]
     stakes = recalc_counter_stakes(
-        anchor_stake=1000.0,
+        anchor_stake=Money(1000.0, "SEK"),
         anchor_odds=2.0,
-        anchor_currency="SEK",
         counter_legs=[{"odds": 2.0, "currency": "USDC"}],
     )
-    expected = round(2000.0 / 2.0 / rate, 2)
+    expected = Money(round(2000.0 / rate / 2.0, 2), "USDC")
     assert stakes == [expected]
-    # Sanity: the bug shipped 1000 USDC — confirm we're nowhere near that.
-    assert stakes[0] < 200.0
+    assert stakes[0].amount < 200.0  # the bug shipped ~1000 USDC
 
 
 def test_recalc_counter_stakes_sek_anchor_mixed_counters():
-    """SEK anchor with one SEK (pinnacle) and one USDC (polymarket) counter.
-
-    The SEK leg sizes the same as the anchor; the USDC leg gets FX-converted.
-    This is the exact shape this stack sees in production.
-    """
+    """SEK anchor with one SEK (pinnacle) and one USDC (polymarket) counter."""
     rate = _FX_SEK_PER_UNIT["USDC"]
     stakes = recalc_counter_stakes(
-        anchor_stake=500.0,
+        anchor_stake=Money(500.0, "SEK"),
         anchor_odds=3.0,
-        anchor_currency="SEK",
         counter_legs=[
             {"odds": 3.0, "currency": "SEK"},
             {"odds": 3.0, "currency": "USDC"},
@@ -153,21 +142,20 @@ def test_recalc_counter_stakes_sek_anchor_mixed_counters():
     )
     # 500 SEK @ 3.0 → payout 1500 SEK → SEK leg @ 3.0 → 500 SEK,
     # USDC leg @ 3.0 → 1500/3 = 500 SEK = 500/10.5 ≈ 47.62 USDC
-    assert stakes[0] == 500.0
-    assert stakes[1] == round(500.0 / rate, 2)
+    assert stakes[0] == Money(500.0, "SEK")
+    assert stakes[1] == Money(round(500.0 / rate, 2), "USDC")
 
 
 def test_recalc_counter_stakes_zero_odds_leg_returns_zero():
     stakes = recalc_counter_stakes(
-        anchor_stake=100.0,
+        anchor_stake=Money(100.0, "SEK"),
         anchor_odds=2.0,
-        anchor_currency="SEK",
         counter_legs=[
             {"odds": 0.0, "currency": "SEK"},
             {"odds": 2.0, "currency": "SEK"},
         ],
     )
-    assert stakes == [0.0, 100.0]
+    assert stakes == [Money(0.0, "SEK"), Money(100.0, "SEK")]
 
 
 def test_should_update_stake_below_threshold():

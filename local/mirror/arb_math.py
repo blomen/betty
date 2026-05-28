@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .currency import from_sek, to_sek
+from .currency import Money
 
 
 def recalc_profit_pct(anchor_odds: float, counter_odds: list[float]) -> float | None:
@@ -22,35 +22,36 @@ def recalc_profit_pct(anchor_odds: float, counter_odds: list[float]) -> float | 
 
 
 def recalc_counter_stakes(
-    anchor_stake: float,
+    anchor_stake: Money,
     anchor_odds: float,
-    anchor_currency: str,
     counter_legs: list[dict],
-) -> list[float]:
+) -> list[Money]:
     """Per-counter stakes IN EACH COUNTER'S NATIVE CURRENCY for equal-payout.
 
-    Each counter leg must carry its own `odds` and `currency`. The anchor's
-    `total_payout = anchor_stake × anchor_odds` is in anchor's currency; the
-    counter must pay the SAME real-money amount from a stake in ITS currency,
-    so we route the payout through SEK before dividing by each counter's odds.
+    The anchor's `payout = anchor_stake × anchor_odds` is Money in the anchor's
+    currency. Each counter must pay the SAME real-money amount, so we convert
+    the payout into each counter's native currency before dividing by its odds.
+    Money's typed arithmetic refuses to silently cross currencies — the
+    conversion is explicit at `.to(currency)`.
 
-    Without this conversion a SEK anchor paired with a USDC counter sizes the
-    counter ~10× too large (USD/SEK ≈ 0.095). See CLAUDE.md "Currencies"
-    section — this is the first hypothesis when a sizing/hedge number looks
-    off by 5-10×.
+    Each counter leg dict must carry its own `odds` (float) and `currency`
+    (str). Returns Money values rounded to cents in each native currency.
 
-    Returns stakes rounded to 2 decimals (cents in each native currency).
+    Without this currency awareness a SEK anchor paired with a USDC counter
+    sizes the counter ~10× too large (USD/SEK ≈ 0.095). See CLAUDE.md
+    "Currencies" section — this is the first hypothesis when a sizing/hedge
+    number looks off by 5-10×.
     """
-    total_payout_sek = to_sek(anchor_stake * anchor_odds, anchor_currency)
-    out: list[float] = []
+    anchor_payout = anchor_stake * anchor_odds
+    out: list[Money] = []
     for leg in counter_legs:
         odds = float(leg.get("odds") or 0)
         currency = leg.get("currency") or "SEK"
         if odds <= 0:
-            out.append(0.0)
+            out.append(Money(0.0, currency))
             continue
-        stake_sek = total_payout_sek / odds
-        out.append(round(from_sek(stake_sek, currency), 2))
+        counter_payout = anchor_payout.to(currency)
+        out.append((counter_payout / odds).round())
     return out
 
 
