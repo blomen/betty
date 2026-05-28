@@ -17,7 +17,9 @@ def recalc_profit_pct(anchor_odds: float, counter_odds: list[float]) -> float | 
     return (1.0 / inv_sum - 1.0) * 100.0
 
 
-def recalc_counter_stakes(anchor_stake: float, anchor_odds: float, counter_odds: list[float]) -> list[float]:
+def recalc_counter_stakes(
+    anchor_stake: float, anchor_odds: float, counter_odds: list[float]
+) -> list[float]:
     """Per-counter stakes for equal-payout: counter_stake = total_payout / counter_odds.
 
     Total payout = anchor_stake × anchor_odds. Each counter sized so it pays the same.
@@ -55,3 +57,15 @@ def should_update_stake(old: float, new: float) -> bool:
     abs_threshold = 1.0
     pct_threshold = old * 0.01
     return delta >= min(abs_threshold, pct_threshold)
+
+
+def equalise_payouts(stake_a_base: float, odds_a: float, odds_b: float) -> float:
+    """Stake for side B that makes winning-outcome payouts equal in base currency.
+
+    Currency conversion to provider-B native currency happens at the
+    placement layer, not here. Returns 0.0 on non-positive odds — the
+    scanner treats that as "no candidate".
+    """
+    if odds_a <= 0 or odds_b <= 0:
+        return 0.0
+    return stake_a_base * odds_a / odds_b
