@@ -16,7 +16,7 @@ from src.db.models import Bet, Event, Odds, Provider
 def future_event(db_session):
     """A future NFL event suitable for rehedge tests."""
     # Provider rows required by FK constraints.
-    for pid in ["pinnacle", "unibet", "betsson"]:
+    for pid in ["pinnacle", "unibet", "betsson", "betinia"]:
         db_session.add(Provider(id=pid, name=pid.title()))
     event = Event(
         id="evt-test-1",
@@ -296,3 +296,56 @@ class TestCase1PostPlacementMiddle:
         from src.analysis.rehedge_scanner import scan_open_positions
 
         assert scan_open_positions(db_session) == []
+
+
+class TestSameBetDedup:
+    def test_multiple_providers_only_best_emitted(self, db_session, future_event):
+        from src.analysis.rehedge_scanner import scan_open_positions
+
+        # Add the bet (home -2.5)
+        db_session.add(
+            Bet(
+                id=1,
+                event_id=future_event.id,
+                provider_id="unibet",
+                market="spread",
+                outcome="home",
+                point=-2.5,
+                odds=1.91,
+                stake=100.0,
+                currency="SEK",
+                result="pending",
+                bet_type="value",
+                start_time=future_event.start_time,
+            )
+        )
+        # Two providers both offer the middle at different prices.
+        db_session.add(
+            Odds(
+                event_id=future_event.id,
+                provider_id="betsson",
+                market="spread",
+                outcome="away",
+                point=3.5,
+                odds=2.00,
+                scope="ft",
+            )
+        )
+        db_session.add(
+            Odds(
+                event_id=future_event.id,
+                provider_id="betinia",
+                market="spread",
+                outcome="away",
+                point=3.5,
+                odds=2.10,
+                scope="ft",
+            )
+        )
+        db_session.flush()
+
+        candidates = scan_open_positions(db_session)
+        # Only ONE candidate per bet, chosen for lowest wing loss
+        # (higher opp odds → smaller required stake_b → smaller wing loss).
+        assert len(candidates) == 1
+        assert candidates[0].hedge_provider == "betinia"
