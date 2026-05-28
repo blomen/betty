@@ -72,6 +72,7 @@ type ProviderBalanceInfo = {
   balance: number
   bonus_trigger?: number
   bonus_currency?: string
+  bonus_trigger_odds?: number
   // Native-currency balance (USDC for polymarket, SEK for everyone else).
   // Stored separately from `balance` because `balance` is normalised to SEK
   // for cross-provider sorting/comparison — the cluster header needs the
@@ -82,10 +83,10 @@ type ProviderBalanceInfo = {
 type ProviderBalanceLike = number | ProviderBalanceInfo
 const getBalance = (b: ProviderBalanceLike | undefined): number =>
   typeof b === 'number' ? b : (b?.balance ?? 0)
-const getTrigger = (b: ProviderBalanceLike | undefined): { amount: number; currency: string } | null => {
+const getTrigger = (b: ProviderBalanceLike | undefined): { amount: number; currency: string; odds?: number } | null => {
   if (b == null || typeof b === 'number') return null
   return b.bonus_trigger != null && b.bonus_trigger > 0
-    ? { amount: b.bonus_trigger, currency: b.bonus_currency ?? 'SEK' }
+    ? { amount: b.bonus_trigger, currency: b.bonus_currency ?? 'SEK', odds: b.bonus_trigger_odds }
     : null
 }
 // Providers whose balances + slip stakes are denominated in USD (USDC for
@@ -188,8 +189,14 @@ function BalanceCell({ pid, balances }: { pid: string; balances: Record<string, 
     <span>
       <span>{isUsd ? '$' : ''}{balDisplay.toFixed(2)}{!isUsd ? ' kr' : ''}</span>
       {trigger && balance < 1 && (
-        <span className="ml-2 text-xs text-orange-400/80" title="Deposit to unlock provider bonus">
+        <span
+          className="ml-2 text-xs text-orange-400/80"
+          title={trigger.odds
+            ? `Deposit ${trigger.amount.toFixed(0)} ${trigger.currency} and wager at odds ≥ ${trigger.odds.toFixed(2)} to unlock provider bonus`
+            : 'Deposit to unlock provider bonus'}
+        >
           · deposit {trigger.amount.toFixed(0)} {trigger.currency.toLowerCase()}
+          {trigger.odds != null && ` @ ${trigger.odds.toFixed(2)}+`}
         </span>
       )}
     </span>
@@ -753,6 +760,7 @@ export default function PlayPage() {
           currency: p.currency ?? 'SEK',
           bonus_trigger: p.bonus_trigger_amount ?? undefined,
           bonus_currency: p.bonus_currency ?? undefined,
+          bonus_trigger_odds: p.bonus_trigger_odds ?? undefined,
         }
       }
       setProviderBalances(balanceMap)
