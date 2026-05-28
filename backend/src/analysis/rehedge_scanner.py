@@ -43,7 +43,7 @@ class RehedgeCandidate:
     metadata: dict = field(default_factory=dict)
 
 
-def scan_open_positions(db) -> list[RehedgeCandidate]:
+def scan_open_positions(db: Session) -> list[RehedgeCandidate]:
     """Scan all open pending bets, return emit-able rehedge candidates.
 
     Stateless — caller owns the session and is responsible for upserting
