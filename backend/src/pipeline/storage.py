@@ -713,6 +713,7 @@ def store_polymarket_event(
                     ask=ask_value,
                     depth_usd=depth_value,
                     scope=scope,
+                    max_stake=outcome.get("max_stake"),
                 )
             else:
                 odds_new += upsert_odds(
@@ -728,6 +729,7 @@ def store_polymarket_event(
                     ask=ask_value,
                     depth_usd=depth_value,
                     scope=scope,
+                    max_stake=outcome.get("max_stake"),
                 )
 
     return is_new_event, odds_processed, odds_new
@@ -1327,6 +1329,7 @@ def store_provider_event(
                     ask=ask_value,
                     depth_usd=depth_value,
                     scope=scope,
+                    max_stake=outcome.get("max_stake"),
                 )
             else:
                 odds_new += upsert_odds(
@@ -1342,6 +1345,7 @@ def store_provider_event(
                     ask=ask_value,
                     depth_usd=depth_value,
                     scope=scope,
+                    max_stake=outcome.get("max_stake"),
                 )
 
     # When using batch processor, we don't know the new count until flush
@@ -1362,6 +1366,7 @@ def upsert_odds(
     ask: float = None,
     depth_usd: float = None,
     scope: str = "ft",
+    max_stake: float | None = None,
 ) -> int:
     """
     Insert or update odds record.
@@ -1403,6 +1408,7 @@ def upsert_odds(
         existing.bid = bid
         existing.ask = ask
         existing.depth_usd = depth_usd
+        existing.max_stake = max_stake
         return 0
     else:
         session.add(
@@ -1418,6 +1424,7 @@ def upsert_odds(
                 ask=ask,
                 depth_usd=depth_usd,
                 scope=scope,
+                max_stake=max_stake,
             )
         )
         return 1
@@ -1463,6 +1470,7 @@ class OddsBatchProcessor:
         ask: float = None,
         depth_usd: float = None,
         scope: str = "ft",
+        max_stake: float | None = None,
     ):
         """Add odds record to batch (will be processed on flush).
 
@@ -1486,6 +1494,7 @@ class OddsBatchProcessor:
             "ask": ask,
             "depth_usd": depth_usd,
             "scope": scope,
+            "max_stake": max_stake,
         }
         self._market_counts[market] = self._market_counts.get(market, 0) + 1
 
@@ -1573,6 +1582,7 @@ class OddsBatchProcessor:
                     "ask": r.get("ask"),
                     "depth_usd": r.get("depth_usd"),
                     "scope": r.get("scope", "ft"),
+                    "max_stake": r.get("max_stake"),
                     "updated_at": now,
                 }
                 for r in batch
@@ -1588,6 +1598,7 @@ class OddsBatchProcessor:
                     "bid": stmt.excluded.bid,
                     "ask": stmt.excluded.ask,
                     "depth_usd": stmt.excluded.depth_usd,
+                    "max_stake": stmt.excluded.max_stake,
                 },
             ).returning(
                 Odds.__table__.c.event_id,
