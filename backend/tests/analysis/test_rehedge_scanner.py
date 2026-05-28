@@ -437,3 +437,54 @@ class TestPersistence:
 
         row = db_session.query(Opportunity).filter(Opportunity.type == "rehedge").one()
         assert row.is_active is False
+
+
+class TestArbLegAnnotation:
+    """Verify on_arb_leg metadata flag distinguishes arb-leg bets from standalone bets."""
+
+    def _add_emit_setup(self, db_session, future_event, *, arb_group_id=None):
+        db_session.add(
+            Bet(
+                id=1,
+                event_id=future_event.id,
+                provider_id="unibet",
+                market="spread",
+                outcome="home",
+                point=-2.5,
+                odds=1.91,
+                stake=100.0,
+                currency="SEK",
+                result="pending",
+                bet_type="arb" if arb_group_id else "value",
+                arb_group_id=arb_group_id,
+                start_time=future_event.start_time,
+            )
+        )
+        db_session.add(
+            Odds(
+                event_id=future_event.id,
+                provider_id="betsson",
+                market="spread",
+                outcome="away",
+                point=3.5,
+                odds=2.00,
+                scope="ft",
+            )
+        )
+        db_session.flush()
+
+    def test_standalone_bet_marks_on_arb_leg_false(self, db_session, future_event):
+        from src.analysis.rehedge_scanner import scan_open_positions
+
+        self._add_emit_setup(db_session, future_event, arb_group_id=None)
+        candidates = scan_open_positions(db_session)
+        assert len(candidates) == 1
+        assert candidates[0].metadata["on_arb_leg"] is False
+
+    def test_arb_leg_bet_marks_on_arb_leg_true(self, db_session, future_event):
+        from src.analysis.rehedge_scanner import scan_open_positions
+
+        self._add_emit_setup(db_session, future_event, arb_group_id="arb-grp-abc")
+        candidates = scan_open_positions(db_session)
+        assert len(candidates) == 1
+        assert candidates[0].metadata["on_arb_leg"] is True

@@ -85,6 +85,7 @@ def rehedge_opp(db_session):
                 "wing_loss_pct": 0.01,
                 "base_currency": "SEK",
                 "recommended_stake_base": 95.0,
+                "on_arb_leg": False,
             },
         )
     )
@@ -107,13 +108,12 @@ class TestRehedgeEndpoint:
         assert opp["hedge_odds"] == 1.91
         assert opp["recommended_stake_sek"] == 95.0
         assert opp["key_number"] == 3
+        assert opp["on_arb_leg"] is False
         assert opp["event"]["home_team"] == "Pats"
 
     def test_excludes_inactive(self, client, rehedge_opp, db_session):
         # Mark the opportunity inactive
-        db_session.query(Opportunity).filter(Opportunity.type == "rehedge").update(
-            {"is_active": False}
-        )
+        db_session.query(Opportunity).filter(Opportunity.type == "rehedge").update({"is_active": False})
         db_session.commit()
 
         resp = client.get("/api/opportunities/rehedge")
