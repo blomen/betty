@@ -1363,6 +1363,7 @@ class OpportunityScanner:
                     "updated_at": odds.updated_at,
                     "bid": odds.bid,
                     "ask": odds.ask,
+                    "max_stake": odds.max_stake,
                 }
             )
 
