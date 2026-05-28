@@ -195,6 +195,12 @@ class Odds(Base):
     # Altenar typeId, Gecko market_template). Default 'ft' for backward compat.
     # The scanner only joins odds at matching scope — see SPORT_CANONICAL_SCOPE.
     scope = Column(String(16), nullable=False, server_default="ft", default="ft")
+    # Pinnacle exposes a per-market-line maxRiskStake in USD. Captured for
+    # the arb-table liquidity filter — soft books calibrate their per-account
+    # caps proportionally to this. Null for non-Pinnacle providers and for
+    # rows extracted before this column shipped (backfills naturally on the
+    # next Pinnacle cycle).
+    max_stake = Column(Float, nullable=True)
     bid = Column(Float, nullable=True)  # Best bid price (probability 0-1, CLOB only)
     ask = Column(Float, nullable=True)  # Best ask price (probability 0-1, CLOB only)
     depth_usd = Column(Float, nullable=True)  # Total ask-side depth in USD (CLOB only)
@@ -1826,6 +1832,9 @@ def _run_pg_migrations(engine) -> None:
         # F5/1H/Q1 opportunities can coexist with the full-game ft row on the
         # same event/market/provider. Unique-upsert index rebuilt below.
         ("opportunities", "scope", "VARCHAR(16) NOT NULL DEFAULT 'ft'"),
+        # 2026-05-28 — Pinnacle per-line max risk stake (USD). Null on
+        # non-Pinnacle rows and on any row predating this column.
+        ("odds", "max_stake", "DOUBLE PRECISION"),
     ]
 
     # Tables dropped during the 2026-05-25 strip-trading work. Idempotent —
