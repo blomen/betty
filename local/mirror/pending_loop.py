@@ -97,15 +97,27 @@ def _detect_settlements(db_pending: list[dict], history: list[dict]) -> list[dic
             if (
                 bet_norm
                 and h_norm
-                and (bet_norm in h_norm or h_norm in bet_norm or _token_overlap(bet_norm, h_norm) >= 0.5)
+                and (
+                    bet_norm in h_norm
+                    or h_norm in bet_norm
+                    or _token_overlap(bet_norm, h_norm) >= 0.5
+                )
             ):
                 h_odds = float(entry.get("odds", 0) or 0)
                 # If both have odds, check they're close; if history has no odds (lost bet), accept name match alone
-                if h_odds > 0 and bet_odds > 0 and abs(h_odds - bet_odds) / bet_odds > _NAME_ODDS_TOL:
+                if (
+                    h_odds > 0
+                    and bet_odds > 0
+                    and abs(h_odds - bet_odds) / bet_odds > _NAME_ODDS_TOL
+                ):
                     continue  # odds don't match, try next
                 # Also check stake is in the right ballpark (within 50%) to avoid false matches
                 h_stake = float(entry.get("stake", 0) or 0)
-                if h_stake > 0 and bet_stake > 0 and abs(h_stake - bet_stake) / bet_stake > 0.5:
+                if (
+                    h_stake > 0
+                    and bet_stake > 0
+                    and abs(h_stake - bet_stake) / bet_stake > 0.5
+                ):
                     continue
                 matched = (idx, entry)
                 method = "name"
@@ -131,7 +143,10 @@ def _detect_settlements(db_pending: list[dict], history: list[dict]) -> list[dic
             # Guard: if matched via fuzzy/name (not exact ID) and a bet with
             # the same odds is still open, this is likely a false positive —
             # the DB bet is the open one, not the settled one.
-            if method != "id" and (round(bet_odds, 2), round(bet_stake, 2)) in _open_sigs:
+            if (
+                method != "id"
+                and (round(bet_odds, 2), round(bet_stake, 2)) in _open_sigs
+            ):
                 logger.info(
                     f"[settle] Skipping false positive: bet {bet_id} ({bet_odds}@{bet_stake}) "
                     f"matched settled entry via {method} but an open bet with same odds exists"
@@ -304,14 +319,23 @@ class PendingLoop:
 
         try:
             client = tunnel_client()
-            resp = await client.get("/api/opportunities/play/pending-bets", timeout=30.0)
+            resp = await client.get(
+                "/api/opportunities/play/pending-bets", timeout=30.0
+            )
             resp.raise_for_status()
             data = resp.json()
-        except (httpx.ReadTimeout, httpx.ReadError, httpx.ConnectError, httpx.RemoteProtocolError) as e:
+        except (
+            httpx.ReadTimeout,
+            httpx.ReadError,
+            httpx.ConnectError,
+            httpx.RemoteProtocolError,
+        ) as e:
             # Tunnel/server transient — already logged elsewhere by the
             # tunnel watchdog. Single-line at debug level instead of a
             # multi-page traceback every cycle.
-            logger.debug(f"[PendingLoop] fetch failed (tunnel/server down): {e.__class__.__name__}")
+            logger.debug(
+                f"[PendingLoop] fetch failed (tunnel/server down): {e.__class__.__name__}"
+            )
             return {}
         except Exception:
             logger.exception("[PendingLoop] failed to fetch pending bets")
@@ -341,7 +365,9 @@ class PendingLoop:
         page = await workflow.find_tab(self._browser.context)
 
         if page is None:
-            logger.debug(f"[PendingLoop] no open tab for {pid}, skipping (user must open it)")
+            logger.debug(
+                f"[PendingLoop] no open tab for {pid}, skipping (user must open it)"
+            )
             return
 
         # Skip if the tab is on an event page — a play runner likely has the betslip
@@ -445,14 +471,18 @@ class PendingLoop:
         from local.http_client import tunnel_client
 
         batch = [
-            {"bet_id": s["bet_id"], "result": s["result"]} for s in settlements if s.get("bet_id") and s.get("result")
+            {"bet_id": s["bet_id"], "result": s["result"]}
+            for s in settlements
+            if s.get("bet_id") and s.get("result")
         ]
         if not batch:
             logger.info(f"[PendingLoop] no valid settlements to record for {pid}")
             return
         try:
             client = tunnel_client()
-            resp = await client.post("/api/opportunities/play/settle-batch", json=batch, timeout=30.0)
+            resp = await client.post(
+                "/api/opportunities/play/settle-batch", json=batch, timeout=30.0
+            )
             resp.raise_for_status()
             data = resp.json()
             logger.info(
@@ -466,7 +496,9 @@ class PendingLoop:
 
         try:
             client = tunnel_client()
-            resp = await client.post(f"/api/bankroll/set/{pid}", json={"balance": balance}, timeout=15.0)
+            resp = await client.post(
+                f"/api/bankroll/set/{pid}", json={"balance": balance}, timeout=15.0
+            )
             resp.raise_for_status()
             logger.info(f"[PendingLoop] balance posted for {pid}: {balance}")
         except Exception:
@@ -478,8 +510,11 @@ class PendingLoop:
 
     async def _record_unknown_open_bets(
         self, provider_id: str, history: list[dict], db_pending: list[dict] | None
-    ) -> None:
+    ) -> int:
         """Insert pending bets that exist on the provider but not in the DB.
+
+        Returns the count of newly-inserted rows so callers can broadcast an
+        accurate `recorded` field on `settling_done` (was always 0 pre-fix).
 
         Mirrors provider_runner._record_unknown_open_bets but runs from the
         passive PendingLoop so unknown bets surface even without an active
@@ -496,7 +531,7 @@ class PendingLoop:
                 f"[PendingLoop] _record_unknown_open_bets({provider_id}) aborted — "
                 "db_pending unknown (fetch failed); refusing to insert (would create duplicates)"
             )
-            return
+            return 0
         # Build dedup sets from existing DB rows + cluster siblings:
         # - known_pids: set of provider_bet_id strings already tracked
         # - known_sigs: count of (odds, stake) signatures in DB. We dedup
@@ -512,7 +547,10 @@ class PendingLoop:
         known_sigs: Counter[tuple[float, float]] = Counter()
 
         def _sig(b: dict) -> tuple[float, float]:
-            return (round(float(b.get("odds", 0) or 0), 2), round(float(b.get("stake", 0) or 0), 1))
+            return (
+                round(float(b.get("odds", 0) or 0), 2),
+                round(float(b.get("stake", 0) or 0), 1),
+            )
 
         for b in db_pending:
             pid_id = str(b.get("provider_bet_id") or "")
@@ -534,7 +572,7 @@ class PendingLoop:
                         f"[PendingLoop] _record_unknown_open_bets({provider_id}) aborted — "
                         f"sibling {sibling} fetch failed; refusing to insert"
                     )
-                    return
+                    return 0
                 for b in sibling_bets:
                     pid_id = str(b.get("provider_bet_id") or "")
                     if pid_id:
@@ -575,7 +613,9 @@ class PendingLoop:
             # this the manually-recovered bet has empty event_id (blacklist
             # can't match) and null start_time (pending row can't show
             # "starts HH:MM" or ready-to-settle pill).
-            picked = (getattr(self._browser, "_user_picked_opp", {}) or {}).get(provider_id) or {}
+            picked = (getattr(self._browser, "_user_picked_opp", {}) or {}).get(
+                provider_id
+            ) or {}
             picked_event_id = picked.get("event_id") or ""
             picked_market = picked.get("market") or ""
             picked_outcome = picked.get("outcome") or ""
@@ -587,7 +627,9 @@ class PendingLoop:
             # the user already accepted the price on the provider's site).
             # Without an explicit type these rows landed as NULL and dropped
             # out of every stats / arb-correlation view.
-            inferred_bet_type = "arb_counter" if provider_id in ("polymarket", "kalshi") else "mirror"
+            inferred_bet_type = (
+                "arb_counter" if provider_id in ("polymarket", "kalshi") else "mirror"
+            )
             payload = {
                 "event_id": picked_event_id,
                 "provider_id": provider_id,
@@ -611,7 +653,9 @@ class PendingLoop:
             try:
                 from local.http_client import tunnel_client
 
-                resp = await tunnel_client().post("/api/bets", json=payload, timeout=10.0)
+                resp = await tunnel_client().post(
+                    "/api/bets", json=payload, timeout=10.0
+                )
                 resp.raise_for_status()
                 data = resp.json()
                 logger.info(
@@ -646,6 +690,7 @@ class PendingLoop:
                 "unknown_bets_recorded",
                 {"provider_id": provider_id, "count": recorded},
             )
+        return recorded
 
     async def _fetch_pending_for_provider(self, provider_id: str) -> list[dict] | None:
         """Lookup currently-known pending bets for one provider.
@@ -660,11 +705,15 @@ class PendingLoop:
         from local.http_client import tunnel_client
 
         try:
-            resp = await tunnel_client().get("/api/opportunities/play/pending-bets", timeout=15.0)
+            resp = await tunnel_client().get(
+                "/api/opportunities/play/pending-bets", timeout=15.0
+            )
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
-            logger.warning(f"[PendingLoop] _fetch_pending_for_provider({provider_id}) failed: {e!r}")
+            logger.warning(
+                f"[PendingLoop] _fetch_pending_for_provider({provider_id}) failed: {e!r}"
+            )
             return None
         for prov in data.get("providers", []):
             if prov.get("provider_id") == provider_id:

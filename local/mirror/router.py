@@ -536,7 +536,7 @@ def create_mirror_router(
                         workflow=workflow,
                     )
                     # Insert pending entries that aren't in the DB yet
-                    await pending_loop._record_unknown_open_bets(
+                    recorded = await pending_loop._record_unknown_open_bets(
                         provider_id, history_dicts, db_pending
                     )
                 except Exception as exc:

@@ -115,15 +115,12 @@ async def lifespan(app: FastAPI):
 
     close_window()
 
-    # Kill orphaned browser processes from previous mirror session
-    import subprocess
-
-    with suppress(Exception):
-        subprocess.run(
-            ["taskkill", "/F", "/IM", "firefox.exe", "/T"],
-            capture_output=True,
-            timeout=5,
-        )
+    # (Previously: a `taskkill /F /IM firefox.exe` Windows stub ran here to
+    # clean up orphaned mirror browsers. The backend runs on Linux, where
+    # taskkill doesn't exist — it always raised FileNotFoundError, which was
+    # swallowed by suppress(Exception). The backend has no Playwright browser
+    # to clean up anyway after the env-guard on mirror_router; the local
+    # client owns all Playwright lifecycle. Removed 2026-05.)
 
     # Add extraction-specific log file (INFO level) alongside root handlers
     import logging.handlers

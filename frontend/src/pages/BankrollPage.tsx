@@ -27,12 +27,19 @@ export function BankrollPage() {
   const [setBalanceInput, setSetBalanceInput] = useState('');
 
   const fmtAmount = (providerId: string, amount: number) => {
+    // Balances are stored in each provider's NATIVE currency (set_balance
+    // forwards data.balance straight to profile_repo without conversion).
+    // Pre-fix this multiplied by exchange_rate_sek and labelled "kr" — so a
+    // user typing $100 for Polymarket saw "Balance set to 1050 kr". Show
+    // native units with a currency-appropriate label.
     const prov = exposure?.providers.find(p => p.provider_id === providerId);
-    if (prov?.currency && prov.currency !== 'SEK') {
-      const sek = amount * (prov.exchange_rate_sek ?? 1);
-      return `${sek.toFixed(0)} kr`;
-    }
-    return `${amount.toFixed(0)} kr`;
+    const currency = prov?.currency ?? 'SEK';
+    if (currency === 'SEK') return `${amount.toFixed(0)} kr`;
+    if (currency === 'USD') return `$${amount.toFixed(2)}`;
+    if (currency === 'USDC') return `${amount.toFixed(2)} USDC`;
+    if (currency === 'GBP') return `£${amount.toFixed(2)}`;
+    if (currency === 'EUR') return `€${amount.toFixed(2)}`;
+    return `${amount.toFixed(2)} ${currency}`;
   };
 
   const handleSetBalance = async (providerId: string) => {
