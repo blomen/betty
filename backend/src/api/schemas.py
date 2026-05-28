@@ -110,14 +110,23 @@ class BatchBetLeg(BaseModel):
     bonus_type: str | None = None
     utility_score: float | None = None
     selection_probability: float | None = None
-    bet_type: str | None = None  # "value", "arb", "reverse", "polymarket", "boost"
+    fair_odds_at_placement: float | None = None
+    bet_type: str | None = None  # "value", "arb_anchor", "arb_counter", "reverse", "polymarket", "boost"
     provider_bet_id: str | None = None  # Coupon/bet ref from placement response
+    boost_event: str | None = None  # Free-text event name when no Event row exists
+    start_time: str | None = None  # ISO datetime — for boost / no-event-row bets
+    external_placement: bool = False  # Skip balance-sufficiency check (user already placed on site)
 
 
 class BatchBetCreate(BaseModel):
     """Place multiple legs at once (arb bet)."""
 
     legs: list[BatchBetLeg]
+    # Shared group ID applied to every leg so the arb is link-grouped at
+    # insert-time (instead of relying on the after-the-fact correlate_arbs
+    # sweep). Frontend generates a UUID and passes it for a manual arb
+    # placement from the PlayPage calculator widget.
+    arb_group_id: str | None = None
 
 
 class BetUpdate(BaseModel):

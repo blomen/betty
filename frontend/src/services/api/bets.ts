@@ -85,6 +85,10 @@ export const betsApi = {
     });
   },
 
+  async deleteBet(betId: number): Promise<{ success: boolean; bet_id: number }> {
+    return fetchJson(`/bets/${betId}`, { method: 'DELETE' });
+  },
+
   async getAnalytics(
     providerId?: string,
     days = 90

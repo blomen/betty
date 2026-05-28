@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { Fragment, useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { usePersistedState } from '@/hooks/usePersistedState';
 import { useBetMutations } from '@/hooks/useBetMutations';
@@ -105,7 +105,7 @@ function polyChart(
   return { yLines, pathD };
 }
 
-function BankrollChart({ bets, netDeposited, totalStaked }: { bets: Bet[]; netDeposited: number; totalStaked?: number }) {
+function BankrollChart({ bets, currentBankroll, totalStaked }: { bets: Bet[]; currentBankroll: number; totalStaked?: number }) {
   const data = useMemo(() => {
     const settled = bets
       .filter(b => b.result !== 'pending')
@@ -114,10 +114,13 @@ function BankrollChart({ bets, netDeposited, totalStaked }: { bets: Bet[]; netDe
       .sort((a, b) => a.t - b.t);
     if (settled.length === 0) return [];
 
-    // One point per bet — no daily aggregation. Aggregating to daily buckets
-    // collapsed clusters of same-day bets into single steps, producing the
-    // flat-line-then-cliff shape. Per-bet points trace the actual equity walk.
-    let cumulative = netDeposited;
+    // Anchor the chart's END to the live bankroll (same source as the
+    // Bankroll tab). Deposits, bonus transfers, and bonus payouts aren't
+    // ROI — they collapse into a single y-axis shift at the baseline, so
+    // the headline % stays driven only by real-money bet P/L while the
+    // displayed total matches the actual cash on the books.
+    const cumulativeProfit = settled.reduce((s, x) => s + toSEK(x.bet.profit, x.bet.currency), 0);
+    let cumulative = currentBankroll - cumulativeProfit;
     const firstDate = new Date(settled[0].t);
     const points: { date: Date; value: number }[] = [{ date: firstDate, value: cumulative }];
     for (const { bet, t } of settled) {
@@ -125,7 +128,7 @@ function BankrollChart({ bets, netDeposited, totalStaked }: { bets: Bet[]; netDe
       points.push({ date: new Date(t), value: cumulative });
     }
     return points;
-  }, [bets, netDeposited]);
+  }, [bets, currentBankroll]);
 
   if (data.length < 2) return null;
 
@@ -422,6 +425,14 @@ export function BetsPage() {
     staleTime: 60_000,
   });
 
+  // Live bankroll total (sum of provider balances × FX), so the chart's
+  // end value matches what the Bankroll tab headlines.
+  const { data: bankrollInfo } = useQuery({
+    queryKey: ['bankroll', 'info'],
+    queryFn: () => api.getBankroll(),
+    staleTime: 30_000,
+  });
+
   const { data: analyticsAll } = useQuery({
     queryKey: ['bets', 'analytics', 'all', 90],
     queryFn: () => api.getAnalytics(undefined, 90),
@@ -658,8 +669,8 @@ export function BetsPage() {
       {/* Charts — side by side */}
       <div>
         <div className="grid grid-cols-2 gap-[1px] bg-[#161b22]">
-          {bets.length > 0 && bankrollStats && bankrollStats.net_deposited > 0 && (
-            <BankrollChart bets={bets.filter(b => !b.is_bonus)} netDeposited={bankrollStats.net_deposited} totalStaked={bankrollStats?.total_staked} />
+          {bets.length > 0 && bankrollInfo && bankrollInfo.total > 0 && (
+            <BankrollChart bets={bets.filter(b => !b.is_bonus)} currentBankroll={bankrollInfo.total} totalStaked={bankrollStats?.total_staked} />
           )}
           <CLVChart bets={bets.filter(b => !b.is_bonus)} />
         </div>
@@ -911,9 +922,12 @@ export function BetsPage() {
                 const ttk = getTTK(bet);
                 const tier = getTTKTier(ttk);
                 return (
-                  <>
+                  // Key on Fragment, not on <tr> — React requires the key on
+                  // the direct child of .map. With a keyless <>, an inline
+                  // edit's state could attach to the wrong row when the sort
+                  // order changes.
+                  <Fragment key={bet.id}>
                     <tr
-                      key={bet.id}
                       className={`cursor-pointer ${isExpanded ? 'expanded' : ''}`}
                       onClick={() => { if (!isEditing) setExpandedIdx(isExpanded ? null : bet.id); }}
                     >
@@ -1090,7 +1104,7 @@ export function BetsPage() {
                       </tr>
                       );
                     })()}
-                  </>
+                  </Fragment>
                 );
               })}
             </tbody>

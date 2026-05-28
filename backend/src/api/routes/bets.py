@@ -620,8 +620,13 @@ async def create_batch_bets(data: BatchBetCreate, db: Session = Depends(get_db_w
                 bonus_type=leg.bonus_type,
                 utility_score=leg.utility_score,
                 selection_probability=leg.selection_probability,
+                fair_odds_at_placement=leg.fair_odds_at_placement,
+                boost_event=leg.boost_event,
                 bet_type=leg.bet_type,
+                start_time_str=leg.start_time,
                 provider_bet_id=leg.provider_bet_id,
+                external_placement=leg.external_placement,
+                arb_group_id=data.arb_group_id,
             )
 
             if "error" in result:
