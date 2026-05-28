@@ -817,7 +817,7 @@ def get_mybets(
     if status:
         query = query.filter(Bet.result == status)
     if exclude_bonus:
-        query = query.filter(not Bet.is_bonus)
+        query = query.filter(~Bet.is_bonus)
 
     bets = query.order_by(Bet.placed_at.desc()).limit(limit).all()
 
@@ -878,7 +878,7 @@ def get_mybets(
         Bet.provider_id == "polymarket",
     )
     if exclude_bonus:
-        stats_query = stats_query.filter(not Bet.is_bonus)
+        stats_query = stats_query.filter(~Bet.is_bonus)
     all_bets = stats_query.all()
 
     settled = [b for b in all_bets if b.result in ("won", "lost", "void")]

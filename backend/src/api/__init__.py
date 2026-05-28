@@ -607,7 +607,16 @@ app.include_router(risk_router)
 # app.include_router(specials_router)  # DISABLED — boosts/specials turned off
 app.include_router(settings_router)
 app.include_router(limits_router)
-app.include_router(mirror_router)
+# mirror_router exposes 28 endpoints that spawn Playwright/Firefox (e.g. POST
+# /api/mirror/start, /place-bets, /fire-live). All betting actually happens
+# through the LOCAL mirror (local/mirror/*) — the server has no UI and no
+# legitimate consumer of these routes. Leaving them registered on the headless
+# Hetzner container means any authenticated misfire would crash or wedge memory
+# trying to launch a browser. Gate behind BETTY_ENABLE_BACKEND_MIRROR=1 (off by
+# default in production). mirror_state_router + mirror_stream_router stay
+# always-on — those are read-only state/SSE endpoints used by fire_window.
+if os.getenv("BETTY_ENABLE_BACKEND_MIRROR") == "1":
+    app.include_router(mirror_router)
 app.include_router(mirror_state_router)
 app.include_router(mirror_stream_router)
 app.include_router(fire_window_router)

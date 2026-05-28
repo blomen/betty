@@ -1002,7 +1002,7 @@ class ExtractionScheduler:
                 now = datetime.now(UTC)
 
                 # 1. Delete inactive opportunities
-                stats["inactive"] = session.query(Opportunity).filter(not Opportunity.is_active).delete()
+                stats["inactive"] = session.query(Opportunity).filter(~Opportunity.is_active).delete()
 
                 # 2. Delete orphaned opportunities (event doesn't exist)
                 valid_event_subq = session.query(Event.id).subquery()
