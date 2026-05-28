@@ -458,6 +458,13 @@ def get_analytics(
     def split_event_id(eid: str | None) -> str:
         return (eid or "unknown").split(":", 1)[0]
 
+    from ...config import get_exchange_rate
+
+    def to_sek(amount: float, provider_id: str, currency: str | None) -> float:
+        if (currency or "SEK") == "SEK":
+            return amount
+        return amount * get_exchange_rate(provider_id)
+
     def summarize(rows):
         n = len(rows)
         if n == 0:
@@ -466,8 +473,8 @@ def get_analytics(
         lost = sum(1 for r in rows if r.result == "lost")
         void = sum(1 for r in rows if r.result == "void")
         decided = won + lost
-        staked = sum(r.stake or 0 for r in rows)
-        profit = sum((r.payout or 0) - (r.stake or 0) for r in rows)
+        staked = sum(to_sek(r.stake or 0, r.provider_id, r.currency) for r in rows)
+        profit = sum(to_sek((r.payout or 0) - (r.stake or 0), r.provider_id, r.currency) for r in rows)
         edges = [edge_of(r) for r in rows]
         edges = [e for e in edges if e is not None]
         implied = [1.0 / r.odds for r in rows if r.odds > 0]

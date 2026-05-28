@@ -242,7 +242,7 @@ class PlaySessionService:
             text("""
             SELECT provider1_id, event_id, market, outcome1
             FROM opportunities
-            WHERE type = 'value' AND is_active = 1
+            WHERE type = 'value' AND is_active = TRUE
         """)
         )
 
