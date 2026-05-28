@@ -259,6 +259,42 @@ class OpportunityService:
         meta_cache = self._batch_lookup_provider_meta(rows)
         updated_at_cache = self._batch_lookup_odds_updated_at(rows)
 
+        # For arb opps, the legs returned by _get_arb_legs(opp.outcomes) carry
+        # only odds/edge — no provider_meta. Without it the polymarket leg has
+        # no event_slug (→ /event/ redirects to home) and altenar/kambi legs
+        # have no per-provider IDs (→ navigate_to_event returns False).
+        # Mirrors the per-leg map built by scan_arb_workflow.
+        arb_leg_meta_map: dict[tuple, dict] = {}
+        if type == "arb" and rows:
+            leg_lookup_pairs: set[tuple[str, str]] = set()
+            for opp, _ in rows:
+                for leg in _get_arb_legs(opp.outcomes):
+                    lp = leg.get("provider")
+                    if lp:
+                        leg_lookup_pairs.add((opp.event_id, PROVIDER_CANONICAL.get(lp, lp)))
+            if leg_lookup_pairs:
+                leg_event_ids = list({p[0] for p in leg_lookup_pairs})
+                leg_provider_ids = list({p[1] for p in leg_lookup_pairs})
+                odds_rows = (
+                    self.db.query(
+                        Odds.event_id,
+                        Odds.provider_id,
+                        Odds.market,
+                        Odds.outcome,
+                        Odds.point,
+                        Odds.provider_meta,
+                    )
+                    .filter(
+                        Odds.event_id.in_(leg_event_ids),
+                        Odds.provider_id.in_(leg_provider_ids),
+                        Odds.provider_meta.isnot(None),
+                    )
+                    .all()
+                )
+                for eid, pid, mkt, outcome, point, meta in odds_rows:
+                    if isinstance(meta, dict):
+                        arb_leg_meta_map[(eid, pid, mkt, outcome, point)] = meta
+
         # Provider-level last-checked timestamps (extraction recency, not data change)
         provider_ids_in_rows = list({opp.provider1_id for opp, _ in rows if opp.provider1_id})
         last_checked_cache = get_provider_last_checked(self.db, provider_ids_in_rows) if provider_ids_in_rows else {}
@@ -337,7 +373,7 @@ class OpportunityService:
 
             # Add arb/reverse-specific fields
             if type in ("arb", "reverse") and stake_calculator and profile:
-                self._add_arb_recommendation(result, opp, profile, stake_calculator)
+                self._add_arb_recommendation(result, opp, profile, stake_calculator, arb_leg_meta_map)
 
             # Add stake recommendations for reverse value bets (Pinnacle vs consensus)
             if type == "reverse_value" and stake_calculator and profile and opp.odds1 and opp.odds2:
@@ -811,11 +847,34 @@ class OpportunityService:
             result["bonus_amount"] = None
             result["min_odds_applied"] = None
 
-    def _add_arb_recommendation(self, result: dict, opp, profile, stake_calculator: StakeCalculator):
-        """Add arb stake recommendation fields to an opportunity result dict."""
+    def _add_arb_recommendation(
+        self,
+        result: dict,
+        opp,
+        profile,
+        stake_calculator: StakeCalculator,
+        arb_leg_meta_map: dict[tuple, dict] | None = None,
+    ):
+        """Add arb stake recommendation fields to an opportunity result dict.
+
+        `arb_leg_meta_map` keyed (event_id, provider, market, outcome, point) →
+        provider_meta. Used to enrich each leg with its own outcome's metadata
+        (Polymarket event_slug, Altenar/Kambi provider IDs) so mirror workflows
+        can navigate. Without it the polymarket leg has no event_slug and the
+        URL collapses to /event/ which redirects to the home page.
+        """
         try:
             legs_data = _get_arb_legs(opp.outcomes)
             arb_profit_pct, arb_legs = _get_arb_data(opp.outcomes)
+
+            def _attach_meta(leg: dict) -> dict:
+                if arb_leg_meta_map is None:
+                    return leg
+                return {
+                    **leg,
+                    "provider_meta": _resolve_leg_provider_meta(arb_leg_meta_map, opp.event_id, opp.market, leg),
+                }
+
             guaranteed_profit_pct = opp.profit_pct or 0
             total_stake = 0.0
 
@@ -874,19 +933,24 @@ class OpportunityService:
                     leg_stake = round(total_stake * (1.0 / leg["odds"]) / total_inv, 2)
                     leg_return = round(leg_stake * leg["odds"], 2)
                     legs_with_stakes.append(
-                        {
-                            **leg,
-                            "stake": leg_stake,
-                            "potential_return": leg_return,
-                        }
+                        _attach_meta(
+                            {
+                                **leg,
+                                "stake": leg_stake,
+                                "potential_return": leg_return,
+                            }
+                        )
                     )
+
+            enriched_legs_fallback = [_attach_meta(l) for l in legs_data]
+            enriched_arb_legs = [_attach_meta(l) for l in arb_legs] if arb_legs else arb_legs
 
             result["guaranteed_profit_pct"] = guaranteed_profit_pct
             result["total_stake"] = round(total_stake, 2)
-            result["legs"] = legs_with_stakes or legs_data
+            result["legs"] = legs_with_stakes or enriched_legs_fallback
             result["trigger_provider"] = trigger_provider
             result["arb_profit_pct"] = arb_profit_pct
-            result["arb_legs"] = arb_legs
+            result["arb_legs"] = enriched_arb_legs
         except Exception as e:
             logger.debug(f"Arb stake calculation failed for opp {opp.id}: {e}")
             result["guaranteed_profit_pct"] = opp.profit_pct or 0

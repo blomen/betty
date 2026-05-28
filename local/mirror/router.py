@@ -1963,6 +1963,32 @@ def create_mirror_router(
                 },
             )
             raise HTTPException(status_code=502, detail="navigate_to_event failed")
+
+        # Polymarket's SPA can land on `/` after a `/event/<slug>` goto when
+        # Vercel middleware throws (MIDDLEWARE_INVOCATION_FAILED) or the slug
+        # rotated. page.goto returns without exception, but the tab is on home.
+        # Without this guard the frontend sees status=nav_only, marks the leg
+        # green ("ALL GREEN — place each tab"), and the user clicks Place on a
+        # page that doesn't have the market. Verify the slug actually appears
+        # in the final URL.
+        if provider_id == "polymarket":
+            expected_slug = (
+                (anchor_leg.get("provider_meta") or {}).get("event_slug") or ""
+            ).lower()
+            if expected_slug and expected_slug not in (page.url or "").lower():
+                broadcaster.publish(
+                    "arb_leg_failed",
+                    {
+                        "provider_id": provider_id,
+                        "stage": "navigate",
+                        "reason": f"landed_off_event (url={page.url[:80]})",
+                    },
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"polymarket navigation landed off-event (slug '{expected_slug}' not in {page.url[:80]})",
+                )
+
         broadcaster.publish(
             "arb_leg_navigated",
             {
