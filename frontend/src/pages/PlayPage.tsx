@@ -909,8 +909,8 @@ export default function PlayPage() {
           return { ...prev, [b.event_id]: new Set([...cur, lk]) }
         })
         const msg = r.status === 'synced'
-          ? `synced @ ${r.planned_odds?.toFixed?.(2) ?? '?'} — click Place on tab`
-          : `tab on event — click outcome + Place`
+          ? `synced @ ${r.planned_odds?.toFixed?.(2) ?? '?'}`
+          : null
         setProviderStatusFor(b.provider_id, msg)
       } else if (r?.reason) {
         setProviderStatusFor(b.provider_id, `nav: ${r.reason}`)
@@ -4107,8 +4107,8 @@ export default function PlayPage() {
                                               return { ...prev, [eid]: next }
                                             })
                                             const msg = r.status === 'synced'
-                                              ? `synced @ ${r.planned_odds?.toFixed?.(2) ?? '?'} — click Place on tab`
-                                              : `tab on event — click outcome + Place`
+                                              ? `synced @ ${r.planned_odds?.toFixed?.(2) ?? '?'}`
+                                              : null
                                             setProviderStatusFor(legPid, msg)
                                           } else if (r?.status === 'prep_failed') {
                                             setProviderStatusFor(legPid, `prep failed: ${r.reason ?? 'unknown'}`)
