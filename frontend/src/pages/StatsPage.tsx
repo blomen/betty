@@ -9,7 +9,7 @@ import { ProviderName } from '@/components/ProviderName';
 import { TabIcon, TAB_COLORS } from '@/components/TabBar';
 import { BonusArbTracker } from '@/components/BonusArbTracker';
 import type { Bet } from '@/types';
-import type { OppSnapshotBreakdownRow, OppSnapshotHistoryPoint, OppSnapshotSummary } from '@/services/api/oppSnapshots';
+import type { OppSnapshotBreakdownRow, OppSnapshotHistoryPoint, OppSnapshotSummary, SportBlendComparisonRow } from '@/services/api/oppSnapshots';
 
 // ── Helpers (outside component to avoid re-creation) ─────────────────
 
@@ -1178,6 +1178,7 @@ function ShadowCLVView() {
       <ShadowSummary summary={data.summary} />
       <MultiLineCLVChart history={data.history} />
       <BreakdownTable rows={data.breakdown} />
+      <SportBlendTable rows={data.sport_blend_comparison} />
     </div>
   );
 }
@@ -1428,6 +1429,61 @@ function getShadowSortVal(r: OppSnapshotBreakdownRow, key: ShadowSortKey): numbe
     case 'prov_clv': return r.mean_provider_clv_pct;
     case 'edge': return r.mean_edge_at_detection;
   }
+}
+
+function SportBlendTable({ rows }: { rows: SportBlendComparisonRow[] }) {
+  if (!rows.length) {
+    return (
+      <div className="text-muted text-xs p-3">
+        No blended-vs-Pinnacle data yet — accumulating shadow CLV.
+      </div>
+    );
+  }
+  const fmt = (v: number | null) =>
+    v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+  return (
+    <div className="mt-4">
+      <h3 className="text-[10px] text-muted uppercase tracking-wider font-semibold mb-1">
+        Blended sharp line vs Pinnacle (per sport)
+      </h3>
+      <div className="border border-border overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="bg-panel2 border-b border-border">
+            <tr>
+              <th className="px-2 py-1.5 text-[10px] uppercase tracking-wider text-left text-muted">Sport</th>
+              <th className="px-2 py-1.5 text-[10px] uppercase tracking-wider text-right text-muted">n</th>
+              <th className="px-2 py-1.5 text-[10px] uppercase tracking-wider text-right text-muted">Pinnacle CLV</th>
+              <th className="px-2 py-1.5 text-[10px] uppercase tracking-wider text-right text-muted">Blended CLV</th>
+              <th className="px-2 py-1.5 text-[10px] uppercase tracking-wider text-right text-muted">Δ (blend − pin)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.sport} className="border-b border-border/40 hover:bg-panel2/50">
+                <td className="px-2 py-1 text-text">{r.sport}</td>
+                <td className="px-2 py-1 text-right text-text tabular-nums">{r.n}</td>
+                <td className="px-2 py-1 text-right tabular-nums">{
+                  r.mean_pinnacle_clv_pct == null
+                    ? <span className="text-muted2">-</span>
+                    : <span className={r.mean_pinnacle_clv_pct >= 0 ? 'text-success' : 'text-error'}>{fmt(r.mean_pinnacle_clv_pct)}</span>
+                }</td>
+                <td className="px-2 py-1 text-right tabular-nums">{
+                  r.mean_blended_clv_pct == null
+                    ? <span className="text-muted2">-</span>
+                    : <span className={r.mean_blended_clv_pct >= 0 ? 'text-success' : 'text-error'}>{fmt(r.mean_blended_clv_pct)}</span>
+                }</td>
+                <td className="px-2 py-1 text-right tabular-nums">{
+                  r.delta == null
+                    ? <span className="text-muted2">-</span>
+                    : <span className={r.delta > 0 ? 'text-success' : r.delta < 0 ? 'text-error' : 'text-muted'}>{fmt(r.delta)}</span>
+                }</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
 export { BetsPage as StatsPage };
