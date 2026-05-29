@@ -151,150 +151,165 @@ async def _sync_balance(page: Page, intel: dict | None) -> float:
         return -1.0
 
 
-_HISTORY_SCRAPE_JS = r"""() => {
-    // History row schema (verified 2026-04-27):
-    //   Loss  → bet lost, no payout. Row text: "Loss<market>0.0 shares-<time> ago..."
-    //   Redeemed → bet won + already redeemed. Row text: "Redeem<market>+$<value><time> ago..."
-    //   Lost / Claimed → legacy labels (older Polymarket UI), kept for back-compat
-    //   Bought → open position purchased (informational)
-    // Row container: width 600-1200, kids 2-4. Dedup by getBoundingClientRect().top.
-    // Value regex anchored to \d+\.\d{2} (USDC always shows 2 decimals) to avoid
-    // greedy-matching into adjacent time strings (e.g. "+$27.7515h ago").
-    const results = [];
-    const labels = ['Loss', 'Redeemed', 'Bought', 'Sold', 'Lost', 'Claimed'];
-    const seenTops = new Set();
-    for (const el of document.querySelectorAll('div, span, p')) {
-        const text = (el.textContent || '').trim();
-        if (!labels.includes(text)) continue;
-        if (el.children.length > 2) continue;
-        let row = el.parentElement;
-        let chosen = null;
-        for (let i = 0; i < 10 && row; i++) {
-            const w = row.offsetWidth;
-            const k = row.children.length;
-            if (w >= 600 && w <= 1200 && k >= 2 && k <= 4) { chosen = row; break; }
-            row = row.parentElement;
-        }
-        if (!chosen) continue;
-        const top = Math.round(chosen.getBoundingClientRect().top);
-        if (seenTops.has(top)) continue;
-        seenTops.add(top);
-        const rowText = (chosen.textContent || '').trim();
+_POLY_DATA_API = "https://data-api.polymarket.com/positions"
+_POLY_FEE_RATE = 0.02
+_POLY_WON_THRESHOLD = 0.98
+_POLY_LOST_THRESHOLD = 0.02
 
-        // Value: anchored to exactly 2 decimal places to avoid greedy match into trailing digits.
-        const valMatch = rowText.match(/([+-])\$(\d+\.\d{2})/);
-        let value = 0;
-        if (valMatch) {
-            value = parseFloat(valMatch[2]);
-            if (valMatch[1] === '-') value = -value;
-        }
-        const sharesMatch = rowText.match(/(\d+(?:\.\d+)?)\s*shares/);
-        const shares = sharesMatch ? parseFloat(sharesMatch[1]) : 0;
-        const outcomeMatch = rowText.match(/(Yes|No)\s+\d+¢/);
-        const outcomeTag = outcomeMatch ? outcomeMatch[1] : '';
 
-        // Market name: prefer link text, fallback to splitting row text on label tokens.
-        let market = '';
-        for (const a of chosen.querySelectorAll('a, [href]')) {
-            const t = (a.textContent || '').trim();
-            if (t.length > market.length && t.length > 10 && !labels.includes(t)) {
-                market = t;
-            }
-        }
-        if (!market) {
-            let body = rowText;
-            for (const lbl of labels) body = body.split(lbl).join('|');
-            const chunks = body.split(/\|/).map(s => s.trim()).filter(s =>
-                s.length > 15
-                && !s.match(/^[+-]?\$\d/)
-                && !s.match(/^\d+\s*shares/)
-                && !s.match(/^\d+[hmd]\s*ago$/)
-                && !s.includes('Position closedView'));
-            if (chunks.length > 0) market = chunks[0];
-        }
-        results.push({ activity: text, market: market.slice(0, 150), outcomeTag, shares, value });
-    }
-    return results;
-}"""
+def _poly_fee_adjusted_odds(price: float) -> float:
+    """Decimal odds from a cents-side price after the 2% fee.
+
+    Same formula as backend.providers.polymarket._price_to_odds and
+    backend.recorders.polymarket_api._fee_adjusted_odds so DB rows match
+    what the scanner / extractor computed at fill time.
+    """
+    if price <= 0.01 or price >= 0.99:
+        return 1.01
+    raw = 1.0 / price
+    return round(1 + (raw - 1) * (1 - _POLY_FEE_RATE), 4)
+
+
+async def _resolve_wallet(page: Page) -> str | None:
+    """Read the connected wallet address from polymarket's localStorage.
+
+    Multi-key fallback because Polymarket has shipped several auth flows
+    (magic.link, walletconnect, embedded wallet) and the address lives
+    under a different key each time. Accepts the first 0x-prefixed
+    42-char hex value found.
+    """
+    try:
+        wallet = await page.evaluate(
+            r"""() => {
+                const keys = [
+                    'wallet-address',
+                    'polymarket-nonce',
+                    'polymarket:auth',
+                    'magic-iframe-shown',
+                    'wagmi.store',
+                    'polymarket-session',
+                ];
+                const isAddr = (v) => typeof v === 'string'
+                    && /^0x[0-9a-fA-F]{40}$/.test(v.trim());
+                const scan = (obj, depth = 0) => {
+                    if (depth > 3 || obj == null) return null;
+                    if (typeof obj === 'string') return isAddr(obj) ? obj.trim() : null;
+                    if (typeof obj !== 'object') return null;
+                    for (const v of Object.values(obj)) {
+                        const found = scan(v, depth + 1);
+                        if (found) return found;
+                    }
+                    return null;
+                };
+                for (const k of keys) {
+                    const raw = localStorage.getItem(k);
+                    if (!raw) continue;
+                    if (isAddr(raw)) return raw.trim();
+                    try {
+                        const parsed = JSON.parse(raw);
+                        const found = scan(parsed);
+                        if (found) return found;
+                    } catch {}
+                }
+                return null;
+            }"""
+        )
+        return wallet if isinstance(wallet, str) and wallet else None
+    except Exception as e:
+        logger.debug(f"[polymarket] wallet resolution raised: {e}")
+        return None
 
 
 async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
-    """Navigate to history tab, scrape activity rows, return HistoryEntry list.
+    """API-only sync of open positions via data-api.polymarket.com/positions.
 
-    Activity → status mapping (current Polymarket DOM as of 2026-04-27):
-      Loss / Lost      → status="lost"   payout=0
-      Redeemed/Claimed → status="won"    payout=value
-      Bought           → status="pending" (open position)
-      Sold             → ignored (manual exit; not a settlement)
+    Pure page.evaluate(fetch(...)) — no DOM scrape, no /portfolio gate, safe
+    to background-poll regardless of where the tab is parked. Replaces the
+    DOM activity-row scraper after sync_history_is_passive was flagged
+    True; without this rewrite the flag was misleading (the DOM scraper
+    returned [] off /portfolio so PendingLoop ticks were no-ops).
 
-    Loss rows have value=0 (no payout) — must NOT be skipped on value≤0.
-    Redeemed rows carry the realized USDC payout in `value`.
-    Reconcile/_match_polymarket_settlements does the fuzzy match against pending DB bets.
+    Open positions emit as pending. Polymarket resolves YES/NO shares to
+    $1 / $0 at market resolution but the curPrice ticks to within a few
+    cents of certainty BEFORE auto-redeem. We treat curPrice ≥0.98 as won
+    and ≤0.02 as lost so reconcile settles the DB bet immediately instead
+    of waiting for the redeem button. Fully-redeemed positions disappear
+    from /positions; the early-threshold catch covers them while they're
+    still open.
+
+    Requires the connected wallet address — read from localStorage with a
+    multi-key fallback (Polymarket has shipped several auth flows). When
+    no wallet is found (user not logged in, or auth state cleared) we
+    return [] — same behavior as the prior /portfolio gate.
     """
-    current_url = page.url or ""
-    if "/portfolio" not in current_url:
+    wallet = await _resolve_wallet(page)
+    if not wallet:
         logger.debug(
-            f"[polymarket] sync_history: tab is on {current_url[:80]} (not /portfolio) — skipping; "
-            "user must navigate manually"
+            "[polymarket] sync_history: no wallet in localStorage — user must "
+            "be logged in for the data-api fetch to work; skipping tick"
         )
         return []
 
-    # Two surfaces:
-    #   /portfolio?tab=history   → activity rows (Bought/Sold/Loss/Redeemed)
-    #   /portfolio?tab=positions → open positions (Redeem/Sell buttons)
-    # When the user is on positions we emit each open position as a pending
-    # HistoryEntry so reactive sync can record it. Settlement matching still
-    # comes from the history tab when they switch.
-    if "tab=history" not in current_url:
+    url = f"{_POLY_DATA_API}?user={wallet}&sizeThreshold=0.1&limit=50"
+    try:
+        data = await page.evaluate(
+            r"""async (u) => {
+                try {
+                    const r = await fetch(u);
+                    return r.ok ? await r.json() : { __error: r.status };
+                } catch (e) {
+                    return { __error: String(e) };
+                }
+            }""",
+            url,
+        )
+    except Exception as e:
+        logger.warning(f"[polymarket] sync_history positions fetch raised: {e}")
+        return []
+
+    if isinstance(data, dict) and "__error" in data:
+        logger.warning(
+            f"[polymarket] sync_history positions API error: {data['__error']}"
+        )
+        return []
+    if not isinstance(data, list):
+        logger.warning(
+            f"[polymarket] sync_history positions: unexpected payload type "
+            f"{type(data).__name__}"
+        )
+        return []
+
+    entries: list[HistoryEntry] = []
+    won_count = lost_count = open_count = 0
+    for p in data:
         try:
-            positions = await _scrape_portfolio(page, intel)
-        except Exception as e:
-            logger.warning(f"[polymarket] sync_history (positions): {e}")
-            return []
-        out: list[HistoryEntry] = []
-        # Cent thresholds for early-settle detection. Polymarket resolves shares to
-        # $1.00 (won) or $0.00 (lost) at market resolution, but the now_price ticks
-        # to within a few cents of certainty BEFORE the UI swaps Sell → Redeem.
-        # Treating extremes as terminal lets reconcile_from_history settle the
-        # DB bet immediately on positions sync, instead of waiting for the user
-        # to redeem + nav to /portfolio?tab=history.
-        WON_THRESHOLD = 98.0
-        LOST_THRESHOLD = 2.0
-        won_count = lost_count = open_count = 0
-        for pos in positions:
-            raw_status = pos.get("status") or "open"
-            avg_cents = pos.get("avg_price") or 0
-            now_cents = pos.get("now_price")
-            shares = pos.get("shares") or 0
-            if avg_cents <= 0 or shares <= 0:
+            avg = float(p.get("avgPrice") or 0)
+            size = float(p.get("size") or 0)
+            if avg <= 0 or size <= 0:
                 continue
 
-            # Resolve final status: explicit WON/LOST text wins; otherwise read
-            # the now_price band. Open positions in [LOST..WON] stay pending.
-            if raw_status in ("won", "lost"):
-                status = raw_status
-            elif now_cents is not None and now_cents >= WON_THRESHOLD:
-                status = "won"
-            elif now_cents is not None and now_cents <= LOST_THRESHOLD:
-                status = "lost"
+            cur_raw = p.get("curPrice")
+            if cur_raw is not None:
+                cur = float(cur_raw)
+                if cur >= _POLY_WON_THRESHOLD:
+                    status, payout = "won", round(size, 2)
+                elif cur <= _POLY_LOST_THRESHOLD:
+                    status, payout = "lost", 0.0
+                else:
+                    status, payout = "pending", 0.0
             else:
-                status = "pending"
+                status, payout = "pending", 0.0
 
-            # Decimal odds = 100 / cents_price (entry-side). Stake (USD) = avg_cents/100 × shares.
-            odds = round(100.0 / float(avg_cents), 4)
-            stake = round(float(avg_cents) / 100.0 * float(shares), 2)
-            # Polymarket shares resolve to $1 each on win, $0 on loss. Payout for
-            # won = shares (USD). Lost = 0. Pending = 0 (filled at settlement).
-            payout = round(float(shares), 2) if status == "won" else 0.0
-
-            out.append(
+            entries.append(
                 HistoryEntry(
-                    provider_bet_id="",
-                    event_name=pos.get("market") or "",
-                    market="1x2",
-                    outcome="",
-                    odds=odds,
-                    stake=stake,
+                    # Full 66-char conditionId (0x + 64 hex). Reconcile_and_publish
+                    # tier-1 matches on this exact field against bet.provider_bet_id.
+                    provider_bet_id=str(p.get("conditionId") or ""),
+                    event_name=str(p.get("title") or "")[:120],
+                    market="moneyline",
+                    outcome=str(p.get("outcome") or ""),
+                    odds=_poly_fee_adjusted_odds(avg),
+                    stake=round(avg * size, 2),
                     status=status,
                     payout=payout,
                 )
@@ -305,99 +320,17 @@ async def _sync_history(page: Page, intel: dict | None) -> list[HistoryEntry]:
                 lost_count += 1
             else:
                 open_count += 1
-        logger.info(
-            f"[polymarket] sync_history (positions tab): {len(out)} positions "
-            f"({open_count} open, {won_count} won≥{WON_THRESHOLD}¢, {lost_count} lost≤{LOST_THRESHOLD}¢)"
-        )
-        return out
-
-    # Same React hydration race as positions tab — activity rows mount
-    # ~2-4s after domcontentloaded. Wait up to 8s for any of the row labels
-    # (Loss / Redeemed / Bought / Sold / Lost / Claimed) OR an explicit
-    # empty-state ("no activity / nothing here / no trades yet").
-    try:
-        await page.wait_for_function(
-            r"""() => {
-                const labels = ['Loss', 'Redeemed', 'Bought', 'Sold', 'Lost', 'Claimed'];
-                for (const el of document.querySelectorAll('div, span, p')) {
-                    const t = (el.textContent || '').trim();
-                    if (labels.includes(t)) return true;
-                }
-                const body = document.body.innerText || '';
-                if (/no\s+activity|no\s+trades\s+yet|nothing\s+here/i.test(body)) return true;
-                return false;
-            }""",
-            timeout=8000,
-        )
-    except Exception:
-        await asyncio.sleep(2.0)
-
-    try:
-        raw = await page.evaluate(_HISTORY_SCRAPE_JS)
-    except Exception as e:
-        logger.warning(f"[polymarket] history scrape failed: {e}")
-        return []
-
-    if not raw:
-        logger.warning(
-            f"[polymarket] history scrape returned 0 rows (url={current_url[:80]})"
-        )
-        return []
-
-    _STATUS_MAP = {
-        "Loss": ("lost", 0.0),
-        "Lost": ("lost", 0.0),
-        "Redeemed": ("won", None),  # payout = value
-        "Claimed": ("won", None),
-        "Bought": ("pending", 0.0),
-    }
-
-    entries: list[HistoryEntry] = []
-    for r in raw:
-        activity = r.get("activity", "")
-        market = r.get("market", "")
-        if not market or activity not in _STATUS_MAP:
+        except (TypeError, ValueError) as e:
+            logger.debug(
+                f"[polymarket] sync_history: skipping malformed position "
+                f"({p.get('title', '')[:40]}): {e}"
+            )
             continue
 
-        value = float(r.get("value", 0) or 0)
-        shares = float(r.get("shares", 0) or 0)
-        outcome = r.get("outcomeTag", "") or ""
-
-        status, payout_override = _STATUS_MAP[activity]
-        payout = round(abs(value), 2) if payout_override is None else payout_override
-
-        # Loss rows show "0.0 shares" — odds/stake aren't recoverable from the row alone.
-        # Bought rows give cost basis; downstream matching cares about market+status.
-        if activity == "Bought" and shares > 0 and value > 0:
-            odds = round(1.0 / (value / shares), 4)
-            stake = round(value, 2)
-        else:
-            odds, stake = 0.0, 0.0
-
-        # market="moneyline" by default — polymarket's binary YES/NO contracts
-        # are 2-way moneyline by structure, even when the underlying sport
-        # is 3-way (soccer 1x2). The scanner already handles polymarket↔
-        # pinnacle 2-way↔3-way via is_polymarket_mismatch. Previous code
-        # hardcoded "1x2" which broke per-bet market lookup downstream.
-        # outcome stays as raw "Yes"/"No" — downstream _user_picked_opp
-        # context (persisted across restarts) overrides with the correct
-        # home/away mapping when present. Bets placed outside betty get
-        # the raw value and won't analyze cleanly until manually corrected.
-        entries.append(
-            HistoryEntry(
-                provider_bet_id="",
-                event_name=market[:120],
-                market="moneyline",
-                outcome=outcome,
-                odds=odds,
-                stake=stake,
-                status=status,
-                payout=payout,
-            )
-        )
-
     logger.info(
-        f"[polymarket] sync_history: {len(entries)} entries (from {len(raw)} scraped)"
+        f"[polymarket] sync_history (API): {len(entries)} positions "
+        f"({open_count} open, {won_count} won≥{_POLY_WON_THRESHOLD}, "
+        f"{lost_count} lost≤{_POLY_LOST_THRESHOLD})"
     )
     return entries
 
