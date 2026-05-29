@@ -11,7 +11,7 @@ Betty compares odds across 40+ sportsbooks against sharp sources (Pinnacle) to f
 | Program | Where it runs | What it does | How to start |
 |---------|--------------|--------------|--------------|
 | **Server** | Hetzner 24/7 | Headless data engine: extraction, analysis, DB, API | `docker compose up -d` |
-| **Betty (local)** | Your PC | Betting client: Sports, Bankroll, Stats, Playwright mirror | `betty.bat` |
+| **Betty (local)** | Your PC | Betting client: Sports, Bankroll, Stats, Playwright mirror | `local\betty.bat` |
 
 **Server** is a pure compute/data engine — no UI. Extraction, analysis, opportunity scanning live here.
 
@@ -37,7 +37,7 @@ Hetzner Server (24/7, headless)              Your PC
                                              │       ├── BankrollPage.tsx
                                              │       └── StatsPage.tsx
                                              │
-                                             └── betty.bat  → SSH tunnel → server API (port 18000)
+                                             └── local/betty.bat → SSH tunnel → server API (port 18000)
 ```
 
 ### Frontend
@@ -173,9 +173,9 @@ Multiple Claude Code agents may work on this repo concurrently. **Follow these r
 
 | Currency | Providers |
 |---|---|
-| **USDC** | polymarket |
+| **USDC** | polymarket, cloudbet (crypto book — wallet/betslip settle in USDC; `/iam-balances` reports fiatAggregated USD; `providers.yaml` sets `currency: USDC, exchange_rate_sek: 10.5`. Listing it as SEK under-counts the bankroll ~10x) |
 | **USD** | kalshi |
-| **SEK** | every Swedish / EU softbook this user has: betinia, betsson, bethard, campobet, coolbet, dbet, leovegas, pinnacle (this account is SEK-funded), quickcasino, spelklubben, tipwin, unibet, vbet, 10bet, 888sport, comeon, hajper, marathon, stake, cloudbet |
+| **SEK** | every Swedish / EU softbook this user has: betinia, betsson, bethard, campobet, coolbet, dbet, leovegas, pinnacle (this account is SEK-funded), quickcasino, spelklubben, tipwin, unibet, vbet, 10bet, 888sport, comeon, hajper, marathon, stake |
 
 The `bets.currency` column is authoritative — query it (`SELECT provider_id, currency, COUNT(*) FROM bets GROUP BY 1,2`) when in doubt.
 
@@ -211,7 +211,7 @@ If the backend exceeds 48 GB, Docker kills the **container** (not the kernel) an
 
 ## Betty — Local Client
 
-**Run `betty.bat` (repo root) to start.** Opens SSH tunnel to server API + local FastAPI + Playwright browser.
+**Run `local\betty.bat` to start.** (Runs `kill.bat` for cleanup, then the venv Python on `local/launch.py` from inside `local/`.) Opens SSH tunnel to server API + local FastAPI + Playwright browser. Note: launch directly via `cd local && python launch.py` skips the single-instance lock + cleanup — prefer `betty.bat`.
 
 ### How It Works
 1. SSH tunnel to server API (port 18000 → Docker backend:8000)
@@ -289,7 +289,8 @@ local/
 └── data/                  # local cache (tunnel lock file, etc.)
 
 frontend/                  # React app (repo root) — served by local/server.py
-betty.bat                 # Windows launcher at repo root — invokes local/launch.py
+local/betty.bat            # Windows launcher (kill.bat + single-instance lock + venv python launch.py)
+local/kill.bat             # Port/zombie/Chromium-lock cleanup (called by betty.bat)
 ```
 
 ### Frontend (IMPORTANT)
