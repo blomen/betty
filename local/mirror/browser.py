@@ -1458,95 +1458,21 @@ class MirrorBrowser:
                 f"  RESP: {disc_resp}"
             )
 
-        # Polymarket placement-channel discovery. The CLOB order is documented
-        # to bypass our HTTP intercept (WebSocket / unintercepted path) — see
-        # CLAUDE.md. Most polymarket traffic is GET (data-api/gamma reads), so
-        # logging every unmatched polymarket POST/PUT is low-noise and reveals
-        # whether the order rides an HTTP endpoint we aren't keyworded for. (An
-        # HTTP POST to clob.polymarket.com/order is already caught above as a
-        # placement; this catches everything else.) Pair with the WS-frame
-        # discovery in _on_websocket. Remove once the channel + parser are known.
-        if provider_id == "polymarket" and request_method in ("POST", "PUT"):
-            try:
-                disc_req = response.request.post_data
-            except Exception:
-                disc_req = None
-            try:
-                disc_resp = (await response.text())[:1500]
-            except Exception:
-                disc_resp = ""
-            logger.warning(
-                f"[polymarket][discovery] unmatched {request_method} {url}\n"
-                f"  REQ: {disc_req[:1200] if disc_req else '(none)'}\n"
-                f"  RESP: {disc_resp}"
-            )
+        # NOTE: polymarket placement is NOT interceptable here. A 2026-05-29
+        # capture (real probe bet) showed the CLOB order rides a service-worker /
+        # embedded-wallet relayer path invisible to page.on("response") — no
+        # clob.polymarket.com HTTP, no WS order frame, only USDC balanceOf
+        # eth_call reads. Recording is handled by PendingLoop's fast
+        # positions-poll (_FAST_POLL_PROVIDERS) instead of placement intercept.
 
     def _on_websocket(self, ws: WebSocket, page: Page):
-        """Monitor WebSocket connections for bet placement frames.
-
-        Kambi places bets over WS (handled below). Polymarket's CLOB order
-        channel is unconfirmed — we attach a discovery logger to any
-        polymarket/clob WS to capture order/trade-ish frames on the next real
-        bet (see CLAUDE.md's CLOB-bypass caveat).
-        """
+        """Monitor WebSocket connections for Kambi bet placement frames."""
         url = ws.url
-        url_l = url.lower()
-        is_monitored = any(kw in url_l for kw in _WS_MONITOR_KEYWORDS)
-        is_poly_discovery = "polymarket" in url_l or "clob" in url_l
-        if not is_monitored and not is_poly_discovery:
+        if not any(kw in url.lower() for kw in _WS_MONITOR_KEYWORDS):
             return
 
         provider_id = self._detect_provider(page.url)
         logger.info(f"[browser] WS connected: {url[:80]} (provider={provider_id})")
-
-        # Polymarket CLOB order-channel discovery: log order/trade-ish frames in
-        # BOTH directions (filtered to skip the high-volume market-data/book
-        # subscription frames) so a real placement reveals whether the order
-        # rides this socket and its payload shape. Remove once confirmed.
-        if is_poly_discovery:
-            # ONLY order-submission fields (EIP-712 signed CLOB order). Generic
-            # price/size/side match the high-volume market-data `price_changes`
-            # feed — explicitly skip those so the real order frame isn't buried.
-            _POLY_WS_ORDER_HINTS = (
-                "makeramount",
-                "takeramount",
-                "signaturetype",
-                '"signature"',
-                "feeratebps",
-                '"salt"',
-                "ordertype",
-            )
-            _POLY_WS_SKIP = (
-                "price_changes",
-                "event_type",
-                "tick_size",
-                "last_trade_price",
-                '"book"',
-            )
-
-            def _poly_ws_logger(direction: str):
-                def _handler(payload):
-                    try:
-                        if not isinstance(payload, str) or len(payload) < 2:
-                            return
-                        low = payload.lower()
-                        if any(s in low for s in _POLY_WS_SKIP):
-                            return
-                        if not any(k in low for k in _POLY_WS_ORDER_HINTS):
-                            return
-                        logger.warning(
-                            f"[polymarket][ws-discovery] {direction} {len(payload)}b "
-                            f"on {url[:60]}: {payload[:800]}"
-                        )
-                    except Exception:
-                        pass
-
-                return _handler
-
-            ws.on("framesent", _poly_ws_logger("SENT"))
-            ws.on("framereceived", _poly_ws_logger("RECV"))
-            if not is_monitored:
-                return  # discovery-only socket; no Kambi placement handling below
 
         def _on_frame_received(payload: str | bytes):
             try:
