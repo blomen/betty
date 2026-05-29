@@ -4,11 +4,12 @@ The frontend's useSharpRefresh hook reads these fields to know which
 provider to live-fetch (and, for Pinnacle, which matchup_id to query)
 when the user clicks an opportunity row.
 
-We exercise BatchBuilder._make_candidate directly — it's the unit that
-constructs the BatchBet from an Opportunity, and going through the full
-.build() orchestration would require a Profile + balances + repos. The
-production path (build → _collect_candidates → _make_candidate) calls
-this same function, so the baseline fields surface end-to-end.
+We exercise BatchBuilder._make_candidate + _populate_baseline_meta
+directly — they're the units that wire the baseline onto a BatchBet,
+and going through the full .build() orchestration would require a
+Profile + balances + repos. The production path
+(build → _collect_candidates → _make_candidate → _populate_baseline_meta)
+calls the same functions, so the baseline fields surface end-to-end.
 """
 
 from __future__ import annotations
@@ -97,10 +98,16 @@ def linette_value_setup(db_session):
 
 
 def _build_candidate(db_session, opp, event):
-    """Invoke _make_candidate with bankroll big enough that stake/edge gates pass."""
+    """Invoke _make_candidate + _populate_baseline_meta.
+
+    _make_candidate sets baseline_provider_id but leaves baseline_meta=None
+    so the per-opp query is avoided; baseline_meta is wired in by the
+    bulk-lookup pass that build() runs after candidate construction. We
+    call both here to mirror the production path.
+    """
     builder = BatchBuilder(db_session)
     total_bankroll = 100_000.0  # large SEK bankroll so Kelly produces a non-zero stake
-    return builder._make_candidate(
+    bet = builder._make_candidate(
         opp=opp,
         event=event,
         opp_type="value",
@@ -111,6 +118,9 @@ def _build_candidate(db_session, opp, event):
         provider_bankroll_sek={"unibet": total_bankroll},
         cluster_bankroll_sek={},
     )
+    if bet is not None:
+        builder._populate_baseline_meta([bet])
+    return bet
 
 
 def test_value_bet_carries_baseline_provider_id(db_session, linette_value_setup):
