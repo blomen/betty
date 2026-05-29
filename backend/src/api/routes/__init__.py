@@ -13,6 +13,7 @@ from .mirror import router as mirror_router
 from .mirror_state import router as mirror_state_router
 from .mirror_stream import router as mirror_stream_router
 from .monitoring import router as monitoring_router
+from .opp_snapshots import router as opp_snapshots_router
 from .opportunities import router as opportunities_router
 from .polymarket import router as polymarket_router
 from .profiles import router as profiles_router
@@ -26,6 +27,7 @@ __all__ = [
     "providers_router",
     "bankroll_router",
     "events_router",
+    "opp_snapshots_router",
     "opportunities_router",
     "bets_router",
     "bonus_arbs_router",

@@ -45,6 +45,7 @@ from .routes import (
     mirror_state_router,
     mirror_stream_router,
     monitoring_router,
+    opp_snapshots_router,
     opportunities_router,
     polymarket_router,
     profiles_router,
@@ -592,6 +593,7 @@ app.include_router(providers_router)
 app.include_router(bankroll_router)
 app.include_router(events_router)
 app.include_router(opportunities_router)
+app.include_router(opp_snapshots_router)
 app.include_router(bets_router)
 app.include_router(bonus_arbs_router)
 app.include_router(profiles_router)

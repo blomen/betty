@@ -6,6 +6,7 @@ export type { SpecialItem, SpecialsFilters, LlmHealth, SpecialsResponse, StakePr
 import { providersApi } from './providers';
 import { bankrollApi } from './bankroll';
 import { opportunitiesApi } from './opportunities';
+import { oppSnapshotsApi } from './oppSnapshots';
 import { betsApi } from './bets';
 import { riskApi } from './risk';
 import { specialsApi } from './specials';
@@ -19,6 +20,7 @@ export const api = {
   ...providersApi,
   ...bankrollApi,
   ...opportunitiesApi,
+  ...oppSnapshotsApi,
   ...betsApi,
   ...riskApi,
   ...specialsApi,
