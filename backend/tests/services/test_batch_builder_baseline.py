@@ -189,3 +189,24 @@ def test_baseline_meta_is_none_when_no_sharp_odds_row(db_session):
         pytest.skip("candidate filtered upstream — out of scope for this test")
     assert bet.baseline_provider_id == "pinnacle"
     assert bet.baseline_meta is None
+
+
+def test_bet_to_dict_serializes_baseline_fields(db_session, linette_value_setup):
+    """The /api/opportunities/play/batch route returns whatever
+    BatchBuilder.build() emits, and build() runs every bet through
+    BatchBuilder._bet_to_dict for serialization. This test verifies the
+    JSON payload exposes baseline_provider_id + baseline_meta so the
+    frontend's useSharpRefresh hook can route the live-fetch.
+
+    We invoke _bet_to_dict on a candidate built through the same
+    production path (_make_candidate + _populate_baseline_meta) rather
+    than spinning up TestClient — the full route requires Profile +
+    balances + capital-plan setup that's orthogonal to JSON shape.
+    """
+    event, opp = linette_value_setup
+    bet = _build_candidate(db_session, opp, event)
+    assert bet is not None, "candidate was filtered before assertions could run"
+
+    payload = BatchBuilder._bet_to_dict(bet)
+    assert payload["baseline_provider_id"] == "pinnacle"
+    assert payload["baseline_meta"] == {"matchup_id": "1234567"}

@@ -1187,6 +1187,8 @@ class BatchBuilder:
             "skip_reason": bet.skip_reason,
             "bankroll_needed": round(bet.bankroll_needed, 2) if bet.bankroll_needed else 0.0,
             "provider_meta": bet.provider_meta,
+            "baseline_provider_id": bet.baseline_provider_id,
+            "baseline_meta": bet.baseline_meta,
         }
 
     @staticmethod
