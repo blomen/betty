@@ -7,7 +7,7 @@ Loads providers.yaml and sports.json with schema validation.
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -232,7 +232,7 @@ class ConfigLoader:
         self._sport_aliases: dict[str, list[str]] = {}  # Sport key -> list of aliases
         self._loaded = False
         self.orchestrator_config: OrchestratorConfig | None = None
-        self._sharp_blend: dict = {}
+        self._sharp_blend: dict[str, Any] = {}
 
     @classmethod
     def get_instance(cls) -> "ConfigLoader":
@@ -376,7 +376,7 @@ class ConfigLoader:
             raise ValueError("Configuration not loaded")
         return self.orchestrator_config
 
-    def get_sharp_blend(self) -> dict:
+    def get_sharp_blend(self) -> dict[str, Any]:
         """Return the raw sharp_blend config block (empty dict if unset)."""
         return self._sharp_blend
 
