@@ -1112,7 +1112,7 @@ class ExtractionScheduler:
                 break
 
     def _run_settlement(self) -> dict:
-        """Snapshot closing odds for CLV tracking — bets first, then unplayed opps."""
+        """Snapshot closing odds for CLV tracking — bets and unplayed opps."""
         from src.db.models import get_session
         from src.services.bet_service import BetService
         from src.services.opp_snapshot_service import OppSnapshotService

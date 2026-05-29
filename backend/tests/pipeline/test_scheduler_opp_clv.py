@@ -26,7 +26,8 @@ def test_run_settlement_calls_opp_clv_backfill(db_session):
 
     assert bet_mock.called, "bet CLV must still be invoked"
     assert opp_mock.called, "opp CLV backfill must be invoked"
-    # Bet CLV first, then opp CLV (so opp CLV can use any odds bet CLV touched)
+    # Both calls are commutative on the current data model (neither mutates Odds),
+    # so we only assert each fires exactly once per tick.
     assert bet_mock.call_count == 1
     assert opp_mock.call_count == 1
     assert "bet_clv" in result
