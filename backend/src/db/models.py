@@ -956,6 +956,13 @@ class OppSnapshot(Base):
     was_arb_at_close = Column(Boolean, nullable=True)  # arbs only
     clv_computed_at = Column(DateTime, nullable=True)
 
+    # ---- Multi-book sharp blend (shadow). Frozen at detection / backfilled at close. ----
+    blended_fair1_at_detection = Column(Float, nullable=True)
+    blend_n_sources_at_detection = Column(Integer, nullable=True)
+    blend_sources = Column(JSON, nullable=True)  # list[str] of contributing providers
+    blended_closing_fair = Column(Float, nullable=True)
+    blended_clv_pct = Column(Float, nullable=True)
+
     event = relationship("Event")
 
 
@@ -1908,6 +1915,14 @@ def _run_pg_migrations(engine) -> None:
         # 2026-05-28 — Pinnacle per-line max risk stake (USD). Null on
         # non-Pinnacle rows and on any row predating this column.
         ("odds", "max_stake", "DOUBLE PRECISION"),
+        # 2026-05-29 — multi-book sharp blend shadow columns on opp_snapshots.
+        # All nullable; frozen at detection / backfilled at close by
+        # OppSnapshotService. Edge math unaffected (shadow only).
+        ("opp_snapshots", "blended_fair1_at_detection", "DOUBLE PRECISION"),
+        ("opp_snapshots", "blend_n_sources_at_detection", "INTEGER"),
+        ("opp_snapshots", "blend_sources", "JSON"),
+        ("opp_snapshots", "blended_closing_fair", "DOUBLE PRECISION"),
+        ("opp_snapshots", "blended_clv_pct", "DOUBLE PRECISION"),
     ]
 
     # Tables dropped during the 2026-05-25 strip-trading work. Idempotent —
