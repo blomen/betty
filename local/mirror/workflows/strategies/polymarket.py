@@ -1344,10 +1344,81 @@ async def restore_amount_if_cleared(page: Page, stake: float) -> bool:
     return False
 
 
+async def _navigate_to_event(page: Page, bet, intel: dict | None) -> bool | str:
+    """Navigate to a Polymarket event page.
+
+    Polymarket changed its routing (~2026-05): the legacy `/event/{slug}` URL
+    now 307-redirects to a categorized path,
+    `/{tag}/{series}/{tournament}/{slug}` (e.g.
+    `/esports/valorant/esports-world-cup/val-geng-t1-2026-05-30`). A direct
+    page.goto("/event/{slug}") lands on the HOME page in headed Chromium —
+    the Vercel middleware / SPA hydration race the router's post-nav guard
+    already flags as `landed_off_event`. A goto straight to the categorized
+    path, however, sticks.
+
+    We don't know the tournament segment from the bet, but the 307 itself
+    yields the canonical URL. Resolve it with a redirect-following HTTP
+    request (page.context.request shares the session cookies but runs no SPA
+    JS, so it lands on the real 200 page, not home), then page.goto that.
+    Falls back to the legacy URL if resolution fails — no worse than before.
+    Returns True on success, or a str failure reason (GenericWorkflow maps a
+    str to False + last_nav_error for the 502 detail).
+    """
+
+    def _g(attr: str) -> str:
+        if isinstance(bet, dict):
+            val = bet.get(attr)
+            if val is None:
+                val = (bet.get("provider_meta") or {}).get(attr)
+            return str(val or "")
+        val = getattr(bet, attr, None)
+        if val is None:
+            meta = getattr(bet, "provider_meta", None) or {}
+            if isinstance(meta, dict):
+                val = meta.get(attr)
+        return str(val or "")
+
+    slug = _g("event_slug")
+    if not slug:
+        return "no event_slug stamped on bet"
+
+    legacy = f"https://polymarket.com/event/{slug}"
+    target = legacy
+    # Resolve the 307 → canonical categorized path. context.request follows
+    # redirects and exposes the final URL without running the SPA that bounces
+    # /event/ to home. Guard that the resolved URL still carries our slug.
+    try:
+        resp = await page.context.request.get(legacy, timeout=12000)
+        final = resp.url or ""
+        if slug.lower() in final.lower():
+            target = final
+            logger.info(f"[polymarket] resolved canonical event URL: {final}")
+        else:
+            logger.warning(
+                f"[polymarket] redirect resolve lost slug (got {final[:80]}) — using legacy"
+            )
+    except Exception as e:
+        logger.warning(f"[polymarket] canonical URL resolve failed: {e} — using legacy")
+
+    try:
+        await page.goto(target, wait_until="domcontentloaded", timeout=15000)
+    except Exception as e:
+        logger.warning(f"[polymarket] navigate to {target} failed: {e}")
+        return f"goto failed: {type(e).__name__}"
+
+    # Confirm the slug actually rendered (catches a late SPA bounce to home).
+    if slug.lower() not in (page.url or "").lower():
+        return f"landed off-event (url={(page.url or '')[:80]})"
+
+    logger.info(f"[polymarket] Navigated to {page.url}")
+    return True
+
+
 strategy = Strategy(
     check_login=_check_login,
     sync_balance=_sync_balance,
     sync_history=_sync_history,
+    navigate_to_event=_navigate_to_event,
     prep_betslip=_prep_betslip,
     check_live_price=_check_live_price,
     scrape_portfolio=_scrape_portfolio,
