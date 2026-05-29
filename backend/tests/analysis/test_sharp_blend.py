@@ -165,3 +165,37 @@ def test_loader_exposes_sharp_blend_block():
     assert set(blend["liquidity_gated"]) == {"kalshi", "polymarket"}
     assert blend["liquidity_min_usd"] == 500
     assert "default" in blend["per_sport"]
+
+
+def test_resolve_weights_falls_back_to_default():
+    from src.analysis.sharp_blend import resolve_weights
+
+    w = resolve_weights("some_unknown_sport")
+    assert w["pinnacle"] == 1.0
+    assert "max_dev_pct" in w
+
+
+def test_blended_fair_from_rows():
+    from src.analysis.sharp_blend import blended_fair_from_rows
+
+    # rows mimic Odds: objects with provider_id, outcome, odds, depth_usd.
+    class Row:
+        def __init__(self, provider_id, outcome, odds, depth_usd=None):
+            self.provider_id = provider_id
+            self.outcome = outcome
+            self.odds = odds
+            self.depth_usd = depth_usd
+
+    rows = [
+        Row("pinnacle", "home", 1.91),
+        Row("pinnacle", "away", 1.91),
+        Row("cloudbet", "home", 1.80),
+        Row("cloudbet", "away", 2.20),
+        Row("betsson", "home", 1.95),
+        Row("betsson", "away", 1.95),  # non-member ignored
+    ]
+    result = blended_fair_from_rows(outcome="home", rows=rows, sport="soccer_epl")
+    assert result is not None
+    assert "pinnacle" in result.sources
+    assert "cloudbet" in result.sources
+    assert "betsson" not in result.sources
