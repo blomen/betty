@@ -98,7 +98,31 @@ _BET_PLACEMENT_KEYWORDS = (
     # match this substring — the placement handler gates on
     # response.request.method == "POST" so reads aren't mistaken for placements.
     "api.elections.kalshi.com/v1/users/",
+    # Cloudbet: inferred POST /sports-betting/v4/bets (placement to the same
+    # collection the positions READ — GET .../bets/positions — lives under).
+    # Safe because (a) _HISTORY_KEYWORDS matches the positions read FIRST and
+    # returns before placement, and (b) the POST/PUT method-gate excludes the
+    # GET read. If the real endpoint differs, the cloudbet discovery logger in
+    # _on_response surfaces it on the first real bet. (gap closed 2026-05-29)
+    "sports-betting/v4/bets",
 )
+
+
+def _is_bet_placement(url: str, method: str) -> bool:
+    """True when a response is a bet placement: a POST/PUT to a placement URL.
+
+    Method-gated so keyword patterns that also match GET reads (Kalshi's
+    /v1/users/<U>/orders?status=resting, Cloudbet's .../bets/positions) aren't
+    misclassified. Relies on _on_response checking balance/history BEFORE
+    placement, so Cloudbet's positions GET is consumed as history first and the
+    'sports-betting/v4/bets' keyword only ever sees the real bets POST.
+    """
+    if (method or "GET").upper() not in ("POST", "PUT"):
+        return False
+    u = url.lower()
+    return any(kw in u for kw in _BET_PLACEMENT_KEYWORDS)
+
+
 # Third-party tracker / analytics hosts. Their URLs often embed the provider's
 # page URL (containing "bethistory" / "balance" / etc.) as a query param,
 # which used to spuriously trigger our keyword interceptors. Skip them.
@@ -1356,18 +1380,14 @@ class MirrorBrowser:
                 print(f"[OddsStates] {provider_id} parse failed: {e!r}", flush=True)
             return
 
-        # Bet placement
-        if any(kw in url_lower for kw in _BET_PLACEMENT_KEYWORDS):
-            # Method gate — only POST/PUT count as placement. Some keyword
-            # patterns (e.g. Kalshi's /v1/users/<U>/orders) match GET reads
-            # too (resting orders, fills) which would otherwise be misclassified
-            # as placements and broadcast bet_intercepted.
-            try:
-                request_method = (response.request.method or "GET").upper()
-            except Exception:
-                request_method = "GET"
-            if request_method not in ("POST", "PUT"):
-                return
+        # Bet placement. Method gate (POST/PUT) lives in _is_bet_placement so
+        # keyword patterns that also match GET reads (Kalshi /orders?status=resting,
+        # Cloudbet .../bets/positions) aren't misclassified as placements.
+        try:
+            request_method = (response.request.method or "GET").upper()
+        except Exception:
+            request_method = "GET"
+        if _is_bet_placement(url, request_method):
             try:
                 # Capture request body — contains the actual stake submitted by the browser
                 # (may differ from requested stake if WSDK/site capped it)
@@ -1388,10 +1408,15 @@ class MirrorBrowser:
 
                 body_text = await response.text()
                 body_parsed = json.loads(body_text)
+                # Log request AND response bodies — the response shape is what a
+                # provider's parse_placement_response/status needs, and is the
+                # only way to author those parsers for a not-yet-captured book
+                # (e.g. cloudbet) from the first real placement.
                 logger.warning(
                     f"[browser] {provider_id} BET PLACED\n  URL: {url}\n"
                     f"  HEADERS: {json.dumps(request_headers, indent=2)[:2000]}\n"
-                    f"  BODY: {json.dumps(request_body, indent=2)[:1200] if request_body else '(none)'}"
+                    f"  REQ BODY: {json.dumps(request_body, indent=2)[:1200] if request_body else '(none)'}\n"
+                    f"  RESP BODY: {json.dumps(body_parsed, indent=2)[:1500]}"
                 )
                 if self._on_event:
                     self._on_event(
@@ -1410,6 +1435,28 @@ class MirrorBrowser:
             except Exception:
                 pass
             return
+
+        # Cloudbet placement-endpoint discovery (safety net). The placement URL
+        # is inferred ('sports-betting/v4/bets'); if a real bet uses a different
+        # endpoint the keyword above won't match, so log every unmatched cloudbet
+        # POST/PUT with request+response to reveal the true shape on the first
+        # real placement. balance (/iam-balances) and history (.../positions) are
+        # consumed earlier and never reach here. Remove once the endpoint + a
+        # parse_placement_response are confirmed from a capture.
+        if provider_id == "cloudbet" and request_method in ("POST", "PUT"):
+            try:
+                disc_req = response.request.post_data
+            except Exception:
+                disc_req = None
+            try:
+                disc_resp = (await response.text())[:1500]
+            except Exception:
+                disc_resp = ""
+            logger.warning(
+                f"[cloudbet][discovery] unmatched {request_method} {url}\n"
+                f"  REQ: {disc_req[:1200] if disc_req else '(none)'}\n"
+                f"  RESP: {disc_resp}"
+            )
 
     def _on_websocket(self, ws: WebSocket, page: Page):
         """Monitor WebSocket connections for Kambi bet placement frames."""

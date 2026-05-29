@@ -429,10 +429,16 @@ async def _is_cloudbet_404(page: Page) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Placement — TODO: capture endpoint + request/response via probe bet, then
-# implement parse_placement_response / parse_placement_status. Until then
-# cloudbet runs in MANUAL mode (user clicks Place on the site, the
-# interceptor catches it via _BET_PLACEMENT_KEYWORDS in browser.py).
+# Placement — interception is now WIRED: browser.py:_BET_PLACEMENT_KEYWORDS
+# includes the inferred 'sports-betting/v4/bets' (POST), so a placed bet fires
+# bet_intercepted → _record_manual_bet. Cloudbet defines no parse_placement_*
+# yet, so _record_manual_bet defers (actual_stake unknown) and the DB write
+# happens via the reactive /positions sync — same deferral contract as
+# pinnacle/polymarket. TODO once a real bet is captured (browser logs both REQ
+# and RESP bodies on 'BET PLACED', and the [cloudbet][discovery] logger catches
+# the endpoint if the inference is wrong): confirm the URL, then add
+# parse_placement_response (provider_bet_id) + parse_placement_status from the
+# verified response shape.
 # ---------------------------------------------------------------------------
 
 
