@@ -232,6 +232,7 @@ class ConfigLoader:
         self._sport_aliases: dict[str, list[str]] = {}  # Sport key -> list of aliases
         self._loaded = False
         self.orchestrator_config: OrchestratorConfig | None = None
+        self._sharp_blend: dict = {}
 
     @classmethod
     def get_instance(cls) -> "ConfigLoader":
@@ -311,6 +312,11 @@ class ConfigLoader:
         with open(providers_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
+        # Multi-book sharp blend config (see analysis/sharp_blend.py). Stored raw
+        # — validation is light because keys are sport-dependent. Defaults to an
+        # empty/Pinnacle-only blend if the block is missing.
+        self._sharp_blend = config.get("sharp_blend", {}) or {}
+
         # Load orchestrator config
         if "orchestrator" in config:
             try:
@@ -369,6 +375,10 @@ class ConfigLoader:
         if self.orchestrator_config is None:
             raise ValueError("Configuration not loaded")
         return self.orchestrator_config
+
+    def get_sharp_blend(self) -> dict:
+        """Return the raw sharp_blend config block (empty dict if unset)."""
+        return self._sharp_blend
 
     def get_sport_aliases(self, sport_key: str) -> list[str]:
         """Get aliases for a sport (e.g., football -> ['soccer', 'fotboll'])."""

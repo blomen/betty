@@ -154,3 +154,14 @@ def test_incomplete_member_market_skipped():
     )
     assert result.n_sources == 1
     assert result.sources == ["pinnacle"]
+
+
+def test_loader_exposes_sharp_blend_block():
+    from src.config.loader import load_config
+
+    cfg = load_config()
+    blend = cfg.get_sharp_blend()
+    assert "pinnacle" in blend["members"]
+    assert set(blend["liquidity_gated"]) == {"kalshi", "polymarket"}
+    assert blend["liquidity_min_usd"] == 500
+    assert "default" in blend["per_sport"]
