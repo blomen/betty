@@ -92,3 +92,176 @@ class OppSnapshotService:
         self.db.add(snap)
         self.db.flush()  # populate PK so caller has it
         return snap
+
+    def compute_closing_clv(self, batch_size: int = 500) -> dict:
+        """
+        For every opp_snapshots row where clv_computed_at IS NULL and the
+        event has started, backfill provider/pinnacle closing odds + CLV +
+        (for arbs) closing prob sum. Mark clv_computed_at = now() even if
+        no closing data was available, to avoid reprocessing.
+
+        Mirrors BetService.snapshot_closing_odds() (bet_service.py:568).
+
+        Returns: {"processed": int, "updated": int}
+                 - processed: rows where we ran the backfill (incl. data-less)
+                 - updated:   rows where we wrote at least one CLV value
+        """
+        now = datetime.now(UTC)
+
+        rows = (
+            self.db.query(OppSnapshot)
+            .join(Event, Event.id == OppSnapshot.event_id)
+            .filter(
+                OppSnapshot.clv_computed_at.is_(None),
+                Event.start_time.isnot(None),
+                Event.start_time <= now,
+            )
+            .limit(batch_size)
+            .all()
+        )
+
+        processed = 0
+        updated = 0
+
+        for snap in rows:
+            processed += 1
+            did_update = False
+            event = self.db.query(Event).filter(Event.id == snap.event_id).first()
+            start_time = event.start_time if event else None
+            # SQLite strips tzinfo on round-trip; coerce to UTC-aware so
+            # datetime arithmetic with tz-aware Odds.updated_at succeeds.
+            if start_time is not None and start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=UTC)
+
+            # ---- Leg 1: same-provider closing odds ----
+            p1_odds = self._latest_odds(
+                event_id=snap.event_id,
+                provider_id=snap.provider1_id,
+                market=snap.market,
+                outcome=snap.outcome1,
+                point=snap.point,
+                scope=snap.scope,
+            )
+            if p1_odds is not None and p1_odds.odds > 1.0:
+                snap.provider1_closing_odds = p1_odds.odds
+                if start_time and p1_odds.updated_at:
+                    upd = p1_odds.updated_at
+                    if upd.tzinfo is None:
+                        upd = upd.replace(tzinfo=UTC)
+                    snap.provider1_closing_age_minutes = (start_time - upd).total_seconds() / 60.0
+                snap.provider_clv_pct = round((snap.odds1_at_detection / p1_odds.odds - 1) * 100, 2)
+                did_update = True
+
+            # ---- Pinnacle closing fair odds (devigged) ----
+            pinnacle_fair, pinnacle_age = self._pinnacle_closing_fair(
+                event_id=snap.event_id,
+                market=snap.market,
+                outcome=snap.outcome1,
+                point=snap.point,
+                scope=snap.scope,
+                start_time=start_time,
+            )
+            if pinnacle_fair is not None:
+                snap.pinnacle_closing_fair = pinnacle_fair
+                snap.pinnacle_closing_age_minutes = pinnacle_age
+                snap.pinnacle_clv_pct = round((snap.odds1_at_detection / pinnacle_fair - 1) * 100, 2)
+                did_update = True
+
+            # ---- Arb leg 2 + closing prob sum ----
+            if snap.type == "arb" and snap.provider2_id and snap.outcome2:
+                p2_odds = self._latest_odds(
+                    event_id=snap.event_id,
+                    provider_id=snap.provider2_id,
+                    market=snap.market,
+                    outcome=snap.outcome2,
+                    point=snap.point,
+                    scope=snap.scope,
+                )
+                if p2_odds is not None and p2_odds.odds > 1.0:
+                    snap.provider2_closing_odds = p2_odds.odds
+                    if start_time and p2_odds.updated_at:
+                        upd2 = p2_odds.updated_at
+                        if upd2.tzinfo is None:
+                            upd2 = upd2.replace(tzinfo=UTC)
+                        snap.provider2_closing_age_minutes = (start_time - upd2).total_seconds() / 60.0
+                    did_update = True
+
+                if snap.provider1_closing_odds and snap.provider2_closing_odds:
+                    prob_sum = 1.0 / snap.provider1_closing_odds + 1.0 / snap.provider2_closing_odds
+                    snap.closing_prob_sum = prob_sum
+                    snap.was_arb_at_close = prob_sum < 1.0
+
+            # Always mark done — even when no closing data was available —
+            # so the row isn't reprocessed every cycle.
+            snap.clv_computed_at = now
+            if did_update:
+                updated += 1
+
+        return {"processed": processed, "updated": updated}
+
+    def _latest_odds(
+        self,
+        event_id: str,
+        provider_id: str,
+        market: str,
+        outcome: str,
+        point: float | None,
+        scope: str,
+    ):
+        """Latest odds row for the given key. Returns Odds or None."""
+        from ..db.models import Odds
+
+        q = self.db.query(Odds).filter(
+            Odds.event_id == event_id,
+            Odds.provider_id == provider_id,
+            Odds.market == market,
+            Odds.outcome == outcome,
+            Odds.scope == scope,
+        )
+        if market in ("spread", "total") and point is not None:
+            q = q.filter(Odds.point == point)
+        return q.order_by(Odds.updated_at.desc().nullslast()).first()
+
+    def _pinnacle_closing_fair(
+        self,
+        event_id: str,
+        market: str,
+        outcome: str,
+        point: float | None,
+        scope: str,
+        start_time,
+    ):
+        """Pinnacle's odds devigged against sibling outcomes for the same
+        (market, point, scope). Returns (fair_odds, age_minutes) or (None, None).
+        """
+        from ..db.models import Odds
+
+        q = self.db.query(Odds).filter(
+            Odds.event_id == event_id,
+            Odds.provider_id == "pinnacle",
+            Odds.market == market,
+            Odds.scope == scope,
+        )
+        if market in ("spread", "total") and point is not None:
+            q = q.filter(Odds.point == point)
+        siblings = q.all()
+        if not siblings:
+            return None, None
+
+        # Devig: prob_i = (1/odds_i) / sum(1/odds_j) → fair_i = 1/prob_i
+        inv_sum = sum(1.0 / o.odds for o in siblings if o.odds > 1.0)
+        if inv_sum <= 0:
+            return None, None
+
+        target = next((o for o in siblings if o.outcome == outcome), None)
+        if target is None or target.odds <= 1.0:
+            return None, None
+
+        fair = 1.0 / ((1.0 / target.odds) / inv_sum)
+        age = None
+        if start_time and target.updated_at:
+            upd = target.updated_at
+            if upd.tzinfo is None:
+                upd = upd.replace(tzinfo=UTC)
+            age = (start_time - upd).total_seconds() / 60.0
+        return fair, age
