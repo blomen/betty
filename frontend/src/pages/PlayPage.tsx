@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import type { ReactNode } from 'react'
 import { api } from '../hooks/useApi'
 import { useMirrorStream } from '../hooks/useMirrorStream'
 import { useMirrorState } from '../hooks/useMirrorState'
+import { useSharpRefresh } from '../hooks/useSharpRefresh'
 import { migratedLocalStorageGet } from '../utils/localStorageMigration'
 import { RehedgeSection } from './play/RehedgeSection'
 
@@ -372,6 +374,8 @@ interface BatchBet {
   // Provider-specific routing data (event_slug, matchup_id, token_id, etc.).
   // Needed for navigate-to-event when the URL template requires a slug.
   provider_meta?: Record<string, unknown>
+  baseline_provider_id?: string | null
+  baseline_meta?: Record<string, unknown> | null
 }
 
 interface SettleToast {
@@ -397,6 +401,158 @@ type ArbLeg = {
   slip_state: 'loading' | 'green' | 'red'
   placed?: boolean
   failed_reason?: string
+}
+
+// Build a leg-identity key. Outcome + point uniquely identifies a leg
+// within (event_id, provider_id), so this is what the picking/synced
+// sets store. Pure → hoisted to module scope so useCallback hooks that
+// depend on it can keep stable identity across PlayPage re-renders.
+const legKey = (pid: string, outcome: string | null | undefined, point: number | null | undefined): string =>
+  `${pid}|${outcome ?? ''}|${point ?? ''}`
+
+// Value-bet row — owns its own sharp-refresh hook so clicking the row
+// re-queries Pinnacle, recomputes edge from the devigged refresh, and
+// shows "refreshing…" in the edge column while in flight. Auto-skips
+// (one-shot per row) when the refreshed edge flips non-positive.
+//
+// Defined at MODULE SCOPE so React sees a stable component type across
+// PlayPage re-renders. PlayPage re-renders multiple times per second
+// from live-price streams; if this lived inside PlayPage, every parent
+// render would create a new function identity, React would unmount +
+// remount the row, and useSharpRefresh's state would reset to 'idle'
+// on every render — killing the "refreshing…" pill and the post-refresh
+// edge update. Formatters that close over PlayPage state are passed in
+// as props instead.
+interface ValueBetRowProps {
+  b: BatchBet
+  livePrices: Record<string, { odds: number; edge: number | null }>
+  syncedLegs: Record<string, Set<string>>
+  currentBetReady: { event_id?: string; outcome?: string } | null
+  onClick: (b: BatchBet) => void | Promise<void>
+  onAutoSkip: (b: BatchBet, oldEdge: number, newEdge: number) => void
+  fmtMarket: (b: BatchBet) => string
+  fmtOddsWithCents: (odds: number, isCents: boolean) => string
+  resolveOutcome: (b: BatchBet) => string
+  renderAnnotationBadges: (b: BatchBet) => ReactNode
+  fmtStake: (b: BatchBet) => string
+  fmtEv: (b: BatchBet) => string
+  fmtTtk: (b: BatchBet) => string
+  isCentsMarket: (providerId: string | undefined | null) => boolean
+  legKey: (pid: string, outcome: string | null | undefined, point: number | null | undefined) => string
+}
+function ValueBetRow({
+  b,
+  livePrices,
+  syncedLegs,
+  currentBetReady,
+  onClick,
+  onAutoSkip,
+  fmtMarket,
+  fmtOddsWithCents,
+  resolveOutcome,
+  renderAnnotationBadges,
+  fmtStake,
+  fmtEv,
+  fmtTtk,
+  isCentsMarket,
+  legKey,
+}: ValueBetRowProps) {
+  const baselineProviderId =
+    (b.baseline_provider_id as string | null | undefined) ?? null
+  const matchupId =
+    (b.baseline_meta as Record<string, unknown> | null | undefined)?.matchup_id
+      ? String((b.baseline_meta as Record<string, unknown>).matchup_id)
+      : null
+  const eventKey = `${b.event_id}:${b.market}:${b.point ?? ''}`
+  const sharp = useSharpRefresh({
+    eventKey,
+    baselineProviderId,
+    matchupId,
+    market: b.market,
+    point: b.point,
+    outcome: b.outcome,
+    eventId: b.event_id,
+  })
+
+  const handleClick = useCallback(() => {
+    sharp.refresh().catch(() => { /* state already 'stale' */ })
+    onClick(b)
+  }, [b, onClick, sharp])
+
+  const liveKey = `${b.event_id}:${b.market}:${b.outcome}`
+  const live = livePrices[liveKey]
+  const displayOdds = live?.odds ?? b.odds
+
+  // Edge precedence: sharp refresh > live mirror price > batch row.
+  let displayFair = b.fair_odds
+  let displayEdge = live?.edge ?? b.edge_pct
+  if (sharp.state === 'fresh' && sharp.freshFair?.[b.outcome] != null) {
+    displayFair = sharp.freshFair[b.outcome]
+    displayEdge = (b.odds / displayFair - 1) * 100
+  }
+
+  // Auto-skip when refresh flips edge non-positive — fires once per row.
+  const skipFiredRef = useRef(false)
+  useEffect(() => {
+    if (sharp.state !== 'fresh') return
+    if (skipFiredRef.current) return
+    if (displayEdge > 0) return
+    skipFiredRef.current = true
+    onAutoSkip(b, b.edge_pct, displayEdge)
+  }, [sharp.state, displayEdge, b, onAutoSkip])
+
+  const isCurrent = currentBetReady?.event_id === b.event_id
+    && currentBetReady?.outcome === b.outcome
+  const isSynced = (syncedLegs[b.event_id] ?? new Set<string>()).has(
+    legKey(b.provider_id, b.outcome, b.point),
+  )
+
+  return (
+    <tr
+      onClick={handleClick}
+      title={`Open ${b.provider_id.toUpperCase()} event page`}
+      className={`border-b border-zinc-800/30 hover:bg-zinc-800/40 cursor-pointer transition-colors ${
+        isSynced ? 'bg-emerald-900/30 ring-1 ring-emerald-500/40'
+          : isCurrent ? 'bg-amber-900/20' : ''
+      } ${sharp.state === 'refreshing' ? 'opacity-80' : ''}`}
+    >
+      <td className="pl-6 pr-2 py-1 text-[10px] text-zinc-500 uppercase w-[80px]">
+        {b.cluster && b.cluster !== b.provider_id
+          ? b.cluster.replace('_main', '').replace('_group', '').replace('gecko_', '')
+          : b.provider_id}
+      </td>
+      <td className="px-2 py-1 text-zinc-200 max-w-[220px] truncate">
+        {b.display_home} v {b.display_away}
+      </td>
+      <td className="px-2 py-1 text-cyan-400/80 font-mono text-[10px] uppercase">
+        {fmtMarket(b)}
+      </td>
+      <td className="px-2 py-1 text-amber-400 font-medium">{resolveOutcome(b)}</td>
+      <td className={`px-2 py-1 text-right font-mono ${live ? 'text-sky-400' : 'text-zinc-200'}`}>
+        {fmtOddsWithCents(displayOdds, isCentsMarket(b.provider_id))}
+      </td>
+      <td className={`px-2 py-1 text-right font-mono ${
+        sharp.state === 'fresh' ? 'text-sky-400' : 'text-zinc-500'
+      }`}>
+        {fmtOddsWithCents(displayFair, isCentsMarket(b.provider_id))}
+      </td>
+      <td className={`px-2 py-1 text-right font-mono ${
+        sharp.state === 'refreshing'
+          ? 'text-zinc-400 italic'
+          : displayEdge >= 0 ? 'text-green-400' : 'text-red-400'
+      }`}>
+        {sharp.state === 'refreshing'
+          ? 'refreshing…'
+          : `${displayEdge >= 0 ? '+' : ''}${displayEdge.toFixed(1)}%`}
+      </td>
+      <td className="px-1 py-1 text-center whitespace-nowrap">
+        {renderAnnotationBadges(b)}
+      </td>
+      <td className="px-2 py-1 text-right font-mono text-zinc-300">{fmtStake(b)}</td>
+      <td className="px-2 py-1 text-right font-mono text-green-400">{fmtEv(b)}</td>
+      <td className="px-2 py-1 text-right font-mono text-zinc-500">{fmtTtk(b)}</td>
+    </tr>
+  )
 }
 
 export default function PlayPage() {
@@ -585,11 +741,6 @@ export default function PlayPage() {
   // have been synced (nav ok + not closed + odds streaming). When ALL legs
   // of an opp are in this set, the row is "all green" and ready to place.
   const [syncedLegs, setSyncedLegs] = useState<Record<string, Set<string>>>({})
-  // Build a leg-identity key. Outcome + point uniquely identifies a leg
-  // within (event_id, provider_id), so this is what the picking/synced
-  // sets store.
-  const legKey = (pid: string, outcome: string | null | undefined, point: number | null | undefined): string =>
-    `${pid}|${outcome ?? ''}|${point ?? ''}`
   // Provider → most recently user-picked event_id. Drives the per-provider
   // arb widget below the cluster row, follows the row the user clicks.
   const [pickedEventByProvider, setPickedEventByProvider] = useState<Record<string, string>>({})
@@ -872,7 +1023,11 @@ export default function PlayPage() {
   // user see live odds on the bookmaker site and place manually OR via the
   // auto-runner. The /mirror/navigate endpoint just calls
   // workflow.navigate_to_event — no slip-stream / runner side-effects.
-  const handleValueBetClick = async (b: BatchBet) => {
+  // Memoized so ValueBetRow's onClick prop identity is stable across
+  // parent re-renders. ValueBetRow's handleClick useCallback depends on
+  // onClick — if this were re-created every render, every row would
+  // re-run its memoized handler and downstream useEffects would thrash.
+  const handleValueBetClick = useCallback(async (b: BatchBet) => {
     // Route through the same /mirror/arb/navigate-opp endpoint as Section A.
     // For a value bet this is a degenerate 1-leg opp — backend resolves the
     // single leg as the anchor, then nav + prep + slip-stream runs the same
@@ -919,7 +1074,26 @@ export default function PlayPage() {
       console.warn(`[value-bet-click] navigate failed for ${b.provider_id}:`, e)
       setProviderStatusFor(b.provider_id, 'nav failed — see console')
     }
-  }
+  }, [setProviderStatusFor])
+
+  // Memoized so ValueBetRow's onAutoSkip prop identity is stable.
+  // The auto-skip effect inside ValueBetRow has onAutoSkip in its deps;
+  // an inline arrow would re-fire the effect on every parent render.
+  // (skipFiredRef gates duplicate fires, but stable deps avoid wasted
+  // effect work entirely.)
+  // Surfaces the auto-skip via the existing per-provider status banner —
+  // PlayPage renders providerStatus messages under each provider card,
+  // so the user sees the edge-collapse note in the same place as other
+  // workflow-driven messages.
+  const handleValueBetAutoSkip = useCallback(
+    (bet: BatchBet, oldEdge: number, newEdge: number) => {
+      setProviderStatusFor(
+        bet.provider_id,
+        `auto-skip ${bet.outcome}: edge ${oldEdge.toFixed(1)}% → ${newEdge.toFixed(1)}%`,
+      )
+    },
+    [setProviderStatusFor],
+  )
 
   const handleCardClick = async (pid: string) => {
     // Manual-control workflow — NO auto-runner. Click only ensures the
@@ -4206,6 +4380,17 @@ export default function PlayPage() {
                                         // so the row's profit % updates to reflect what Pinnacle is
                                         // actually offering RIGHT NOW (extraction-time data is often
                                         // 2-5 min stale and can flip a "+0.5%" arb to negative).
+                                        // TODO(2026-Q3): cut over arb leg refresh from refreshPinnacleMatchup
+                                        // (legacy /mirror/pinnacle/refresh-matchup) to the unified useSharpRefresh
+                                        // path. Today the legacy fetch populates liveLegOdds (per-leg overrides
+                                        // for the arb leg display); useSharpRefresh exposes freshRaw which can
+                                        // replace it. Keeping both during transition is harmless — same data,
+                                        // same persistence path via /api/odds/live-update. The reason this isn't
+                                        // already migrated: liveLegOdds is per-LEG with team-perspective points,
+                                        // while useSharpRefresh returns a per-MARKET map keyed by Pinnacle's
+                                        // home-perspective designation. A freshRaw → liveLegOdds bridge needs to
+                                        // flip the point for away spread legs (the bridge logic mirrors
+                                        // _select_pinnacle_market's sign-flip from the backend).
                                         const pinnacleLegs = (opp.legs ?? []).filter((l: any) =>
                                           (l.provider ?? l.provider_id) === 'pinnacle',
                                         )
@@ -4723,44 +4908,25 @@ export default function PlayPage() {
                       return bEdge - aEdge
                     }).map(b => {
                     const key = `${b.event_id}:${b.market}:${b.outcome}:${b.provider_id}`
-                    const liveKey = `${b.event_id}:${b.market}:${b.outcome}`
-                    const live = livePrices[liveKey]
-                    const isCurrent = currentBetReady?.event_id === b.event_id && currentBetReady?.outcome === b.outcome
-                    const displayOdds = live?.odds ?? b.odds
-                    const displayEdge = live?.edge ?? b.edge_pct
-                    const isSynced = (syncedLegs[b.event_id] ?? new Set<string>()).has(
-                      legKey(b.provider_id, b.outcome, b.point),
-                    )
                     return (
-                      <tr key={key}
-                        onClick={() => handleValueBetClick(b)}
-                        title={`Open ${b.provider_id.toUpperCase()} event page`}
-                        className={`border-b border-zinc-800/30 hover:bg-zinc-800/40 cursor-pointer transition-colors ${
-                          isSynced ? 'bg-emerald-900/30 ring-1 ring-emerald-500/40' : isCurrent ? 'bg-amber-900/20' : ''
-                        }`}
-                      >
-                        <td className="pl-6 pr-2 py-1 text-[10px] text-zinc-500 uppercase w-[80px]">{b.cluster && b.cluster !== b.provider_id ? b.cluster.replace('_main', '').replace('_group', '').replace('gecko_', '') : b.provider_id}</td>
-                        <td className="px-2 py-1 text-zinc-200 max-w-[220px] truncate">{b.display_home} v {b.display_away}</td>
-                        <td className="px-2 py-1 text-cyan-400/80 font-mono text-[10px] uppercase">{fmtMarket(b)}</td>
-                        <td className="px-2 py-1 text-amber-400 font-medium">{resolveOutcome(b)}</td>
-                        <td className={`px-2 py-1 text-right font-mono ${live ? 'text-sky-400' : 'text-zinc-200'}`}>
-                          {fmtOddsWithCents(displayOdds, isCentsMarket(b.provider_id))}
-                          {/* Sky color = streaming live from the provider tab.
-                              Drift direction is intentionally not shown — the
-                              edge column already conveys whether the live odds
-                              still leave us +EV. */}
-                        </td>
-                        <td className="px-2 py-1 text-right font-mono text-zinc-500">{fmtOddsWithCents(b.fair_odds, isCentsMarket(b.provider_id))}</td>
-                        <td className={`px-2 py-1 text-right font-mono ${displayEdge >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                          {displayEdge >= 0 ? '+' : ''}{displayEdge.toFixed(1)}%
-                        </td>
-                        <td className="px-1 py-1 text-center whitespace-nowrap">
-                          {renderAnnotationBadges(b)}
-                        </td>
-                        <td className="px-2 py-1 text-right font-mono text-zinc-300">{fmtStake(b)}</td>
-                        <td className="px-2 py-1 text-right font-mono text-green-400">{fmtEv(b)}</td>
-                        <td className="px-2 py-1 text-right font-mono text-zinc-500">{fmtTtk(b)}</td>
-                      </tr>
+                      <ValueBetRow
+                        key={key}
+                        b={b}
+                        livePrices={livePrices}
+                        syncedLegs={syncedLegs}
+                        currentBetReady={currentBetReady}
+                        onClick={handleValueBetClick}
+                        onAutoSkip={handleValueBetAutoSkip}
+                        fmtMarket={fmtMarket}
+                        fmtOddsWithCents={fmtOddsWithCents}
+                        resolveOutcome={resolveOutcome}
+                        renderAnnotationBadges={renderAnnotationBadges}
+                        fmtStake={fmtStake}
+                        fmtEv={fmtEv}
+                        fmtTtk={fmtTtk}
+                        isCentsMarket={isCentsMarket}
+                        legKey={legKey}
+                      />
                     )
                   })}
                 </tbody>

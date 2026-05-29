@@ -188,6 +188,301 @@ def _persist_live_odds(
 
 
 # ---------------------------------------------------------------------------
+# Sharp on-click refresh: per-event live odds re-fetch
+# ---------------------------------------------------------------------------
+# These helpers are module-level (rather than scoped inside
+# create_mirror_router) so the dispatch route + tests can patch them by name
+# (`local.mirror.router._persist_sharp_outcomes` etc.). The route inside the
+# closure calls them directly — Python resolves names module-level when the
+# unqualified lookup misses the closure scope.
+
+
+async def _pinnacle_fetch_markets_for_router(browser: Any, matchup_id: int) -> dict:
+    """Fetch raw markets for a Pinnacle matchup via the user's Playwright tab.
+
+    Hits api.arcadia.pinnacle.se with the public X-API-Key (extracted from
+    the SPA's appConfig) via Playwright's page.request — bypasses CORS,
+    uses the tab's session cookies. Returns all markets for the matchup
+    with American prices converted to decimal so the frontend can apply
+    them as liveLegOdds overrides without a per-leg click.
+
+    Auto-follows the pre-match → live successor chain: if the requested
+    matchup has gone live, returns markets for the live matchup_id
+    (frontend keys overrides on the original matchup_id that's stored in
+    betty's DB, so it doesn't care).
+
+    Returns shape:
+      {
+        "matchup_id": int,            # the ID we read markets from
+        "requested_id": int,          # what frontend asked for
+        "league": str | None,
+        "sport": str | None,
+        "participants": [str, str],
+        "is_live": bool,
+        "status": str | None,
+        "markets": [
+          {
+            "key": "s;0;m" | "s;6;m" | "s;0;s;-1.5" | "s;0;ou;2.5" | ...,
+            "period": int,
+            "prices": [
+              {"designation": "home"|"away"|"draw"|"over"|"under",
+               "american": int, "decimal": float, "points": float|null}
+            ]
+          }, ...
+        ]
+      }
+    Or {"error": "<reason>", ...} on failure.
+    """
+    from .workflows.strategies.pinnacle import (
+        _PINNACLE_API_BASE,
+        _PINNACLE_FRONTEND_API_KEY,
+        _american_to_decimal,
+    )
+
+    if not browser.running or not browser.context:
+        return {"error": "browser not running"}
+    workflow = get_workflow("pinnacle")
+    page = await workflow.find_tab(browser.context)
+    if not page:
+        return {"error": "no pinnacle tab"}
+    headers = {"X-API-Key": _PINNACLE_FRONTEND_API_KEY}
+
+    async def _fetch_json(url: str):
+        try:
+            resp = await page.request.get(url, headers=headers, timeout=8_000)
+            if not resp.ok:
+                return None
+            return await resp.json()
+        except Exception as e:
+            logger.debug(f"[refresh-matchup] {url} failed: {e!r}")
+            return None
+
+    # Step 1: matchup info — also tells us if there's a live successor.
+    m = await _fetch_json(f"{_PINNACLE_API_BASE}/matchups/{matchup_id}")
+    if not isinstance(m, dict) or not m.get("league"):
+        return {"error": "matchup_not_found", "requested_id": matchup_id}
+
+    target_id = matchup_id
+    # If pre-match has gone live, fetch markets from the live successor.
+    if m.get("hasLive") and m.get("status") == "pending":
+        league_id = m["league"]["id"]
+        league_matchups = await _fetch_json(
+            f"{_PINNACLE_API_BASE}/leagues/{league_id}/matchups"
+        )
+        if isinstance(league_matchups, list):
+            live = next(
+                (
+                    x
+                    for x in league_matchups
+                    if x.get("parentId") == int(matchup_id)
+                    and x.get("type") == "matchup"
+                    and x.get("isLive") is True
+                    and x.get("status") == "started"
+                    and (x.get("league") or {}).get("id") == league_id
+                    and any(p.get("period") == 0 for p in (x.get("periods") or []))
+                ),
+                None,
+            )
+            if live:
+                target_id = live["id"]
+                m = live  # use the live matchup's metadata too
+
+    # Step 2: markets/straight for the (live) matchup.
+    markets_raw = await _fetch_json(
+        f"{_PINNACLE_API_BASE}/matchups/{target_id}/markets/straight"
+    )
+    if not isinstance(markets_raw, list):
+        return {"error": "markets_not_found", "matchup_id": target_id}
+
+    markets = []
+    for mk in markets_raw:
+        if mk.get("isAlternate"):
+            continue
+        prices_out = []
+        for p in mk.get("prices") or []:
+            price = p.get("price")
+            if price is None:
+                continue
+            try:
+                decimal = _american_to_decimal(float(price))
+            except Exception:
+                continue
+            prices_out.append(
+                {
+                    "designation": p.get("designation"),
+                    "american": price,
+                    "decimal": round(decimal, 4),
+                    "points": p.get("points"),
+                }
+            )
+        if prices_out:
+            markets.append(
+                {
+                    "key": mk.get("key"),
+                    "period": mk.get("period"),
+                    "prices": prices_out,
+                }
+            )
+
+    parts = m.get("participants") or []
+    return {
+        "matchup_id": target_id,
+        "requested_id": matchup_id,
+        "league": (m.get("league") or {}).get("name"),
+        "sport": ((m.get("league") or {}).get("sport") or {}).get("name"),
+        "participants": [p.get("name") if isinstance(p, dict) else p for p in parts],
+        "is_live": bool(m.get("isLive")),
+        "status": m.get("status"),
+        "markets": markets,
+    }
+
+
+def _select_pinnacle_market(
+    markets: list, market: str, point, outcome: str | None = None
+) -> dict | None:
+    """Match a betty market+point to a Pinnacle market entry.
+
+    moneyline -> 's;0;m', spread -> 's;0;s;<HOME-perspective point>', total
+    -> 's;0;ou;<point>'. Period 0 only (full match / regulation).
+
+    Two correctness notes that the naive `f"s;0;s;{point}"` literal-key
+    lookup gets wrong (mirrors `_find_market` in
+    `local/mirror/workflows/strategies/pinnacle.py`):
+
+    1. **Float tolerance.** Pinnacle keys spread/total lines as floats
+       (`s;0;s;-2.0`) while betty's JSON may carry the same line as an int
+       (`-2`). Match by parsing the suffix and comparing
+       `abs(parsed - target) < 0.01`.
+
+    2. **Sign flip for away-spread legs.** Pinnacle keys spread markets by
+       the HOME-perspective LINE: one market `s;0;s;1.5` carries
+       home@+1.5 AND away@-1.5. Betty's `point` is team-perspective
+       (away@-1.5 for the same line), so when `outcome="away"` for a
+       spread bet we must look up `+point`, not `-point`.
+    """
+    if market == "moneyline":
+        for mk in markets:
+            if mk.get("key") == "s;0;m" and mk.get("period") == 0:
+                return mk
+        return None
+
+    if market == "spread":
+        if point is None:
+            return None
+        # Pinnacle keys spreads home-perspective; away rows flip sign.
+        lookup_point = -point if outcome == "away" else point
+        for mk in markets:
+            key = mk.get("key", "")
+            if mk.get("period") != 0 or not key.startswith("s;0;s;"):
+                continue
+            try:
+                if abs(float(key.split(";")[-1]) - lookup_point) < 0.01:
+                    return mk
+            except ValueError:
+                continue
+        return None
+
+    if market == "total":
+        if point is None:
+            return None
+        for mk in markets:
+            key = mk.get("key", "")
+            if mk.get("period") != 0 or not key.startswith("s;0;ou;"):
+                continue
+            try:
+                if abs(float(key.split(";")[-1]) - point) < 0.01:
+                    return mk
+            except ValueError:
+                continue
+        return None
+
+    return None
+
+
+def _designation_to_outcome(designation) -> str | None:
+    return {
+        "home": "home",
+        "away": "away",
+        "draw": "draw",
+        "over": "over",
+        "under": "under",
+    }.get(designation)
+
+
+async def _persist_sharp_outcomes(
+    *,
+    provider_id: str,
+    event_id: str,
+    market: str,
+    point,
+    outcome: str | None = None,
+    result: dict,
+) -> None:
+    """Fire-and-forget per-outcome upserts to /api/odds/live-update.
+
+    Map the requested betty market ('moneyline' | 'spread' | 'total') to
+    Pinnacle's market key, find the matching prices entry, and POST one
+    live-update per outcome (N legs — home/away or over/under). Errors
+    logged, never raised — refresh response should not block on
+    persistence.
+
+    `outcome` is the BET's outcome (home/away/over/under) from the
+    request body. Only used by `_select_pinnacle_market` to flip the
+    sign on away-spread lookups (Pinnacle keys spreads home-perspective).
+    """
+    target = _select_pinnacle_market(
+        result.get("markets") or [], market, point, outcome=outcome
+    )
+    if not target:
+        logger.debug(
+            "[sharp-refresh] no Pinnacle market for market=%s point=%s outcome=%s",
+            market,
+            point,
+            outcome,
+        )
+        return
+    payloads = []
+    for p in target.get("prices") or []:
+        outcome_str = _designation_to_outcome(p.get("designation"))
+        if outcome_str is None or p.get("decimal") is None:
+            continue
+        # Use the per-price team-perspective `points`, not the request body's
+        # `point`. For spread/total, Pinnacle's two prices carry opposite-sign
+        # points (e.g. home@+1.5 / away@-1.5); using the body's point would
+        # cause the opposite-side row's UPDATE to silently no-op at
+        # /api/odds/live-update because the SQL filter (event_id, provider_id,
+        # market, outcome, point) wouldn't match the stored row.
+        price_point_raw = p.get("points")
+        price_point = float(price_point_raw) if price_point_raw is not None else None
+        payloads.append(
+            {
+                "provider_id": provider_id,
+                "event_id": event_id,
+                "market": market,
+                "outcome": outcome_str,
+                "point": price_point,
+                "odds": p["decimal"],
+                "source": "mirror",
+            }
+        )
+    if not payloads:
+        return
+
+    from local.http_client import tunnel_client
+
+    client = tunnel_client()
+    for payload in payloads:
+        try:
+            await client.post(
+                "/api/odds/live-update",
+                json=payload,
+                timeout=5.0,
+            )
+        except Exception as e:
+            logger.debug(f"[sharp-refresh] persist failed: {e!r}")
+
+
+# ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
 
@@ -1072,144 +1367,74 @@ def create_mirror_router(
         except Exception as e:
             return {"error": str(e)}
 
+    @router.post("/sharp/refresh-event")
+    async def sharp_refresh_event(body: dict):
+        """Targeted live-odds refresh for the row's sharp baseline.
+
+        Frontend (useSharpRefresh hook) reads provider_id + matchup_id from
+        BatchBet.baseline_provider_id / baseline_meta and POSTs them here on
+        row click. We dispatch by provider_id, fetch live raw odds, persist
+        each price to the odds table (so the next scanner cycle picks it
+        up), and return the raw markets — the frontend devigs in TS and
+        recomputes edge inline.
+
+        Request body fields:
+          - provider_id: required (currently only "pinnacle" is supported)
+          - matchup_id:  required for pinnacle
+          - event_id:    required (betty's event_id)
+          - market:      required ('moneyline' | 'spread' | 'total')
+          - point:       optional, line value (spread/total)
+          - outcome:     optional, the row's outcome ('home'/'away'/'over'/
+                         'under'). Used only to flip the sign on
+                         away-spread lookups so we hit the right Pinnacle
+                         market key (which is keyed home-perspective).
+
+        Polymarket / Kalshi have no per-event refresh path today; we
+        respond 501 and let the frontend's hook surface an "unsupported"
+        affordance.
+        """
+        provider_id = body.get("provider_id")
+        matchup_id = body.get("matchup_id")
+        event_id = body.get("event_id")
+        market = body.get("market")
+        point = body.get("point")
+        outcome = body.get("outcome")  # optional; used for spread sign-flip
+        if not provider_id or not event_id or not market:
+            raise HTTPException(400, "missing required fields")
+
+        if provider_id == "pinnacle":
+            if not matchup_id:
+                raise HTTPException(400, "pinnacle refresh requires matchup_id")
+            try:
+                mid = int(matchup_id)
+            except (TypeError, ValueError):
+                raise HTTPException(400, "matchup_id must be int-coercible")
+            result = await _pinnacle_fetch_markets_for_router(browser, mid)
+            if result.get("error"):
+                # Surface 200 with error key so the frontend can show a soft
+                # "refresh failed" toast rather than a hard 5xx in console.
+                return {"provider_id": provider_id, **result}
+            await _persist_sharp_outcomes(
+                provider_id=provider_id,
+                event_id=event_id,
+                market=market,
+                point=point,
+                outcome=outcome,
+                result=result,
+            )
+            return {"provider_id": provider_id, **result}
+
+        if provider_id in ("polymarket", "kalshi"):
+            raise HTTPException(501, f"no per-event refresh for {provider_id}")
+
+        raise HTTPException(400, f"unknown provider_id: {provider_id}")
+
     @router.get("/pinnacle/refresh-matchup/{matchup_id}")
     async def refresh_pinnacle_matchup(matchup_id: int):
-        """Targeted live-odds refresh for one Pinnacle matchup.
-
-        Hits api.arcadia.pinnacle.se with the public X-API-Key (extracted
-        from the SPA's appConfig) via Playwright's page.request — bypasses
-        CORS, uses the tab's session cookies. Returns all markets for the
-        matchup with American prices converted to decimal so the frontend
-        can apply them as liveLegOdds overrides without a per-leg click.
-
-        Auto-follows the pre-match → live successor chain: if the
-        requested matchup has gone live, returns markets for the live
-        matchup_id (frontend keys overrides on the original matchup_id
-        that's stored in betty's DB, so it doesn't care).
-
-        Returns shape:
-          {
-            "matchup_id": int,            # the ID we read markets from
-            "requested_id": int,          # what frontend asked for
-            "league": str | None,
-            "sport": str | None,
-            "participants": [str, str],
-            "markets": [
-              {
-                "key": "s;0;m" | "s;6;m" | "s;0;s;-1.5" | "s;0;ou;2.5" | ...,
-                "period": int,
-                "prices": [
-                  {"designation": "home"|"away"|"draw"|"over"|"under",
-                   "american": int, "decimal": float, "points": float|null}
-                ]
-              }, ...
-            ]
-          }
+        """Targeted live-odds refresh for one Pinnacle matchup. Legacy route —
+        new code should call POST /mirror/sharp/refresh-event.
         """
-        from .workflows.strategies.pinnacle import (
-            _PINNACLE_API_BASE,
-            _PINNACLE_FRONTEND_API_KEY,
-            _american_to_decimal,
-        )
-
-        if not browser.running or not browser.context:
-            return {"error": "browser not running"}
-        workflow = get_workflow("pinnacle")
-        page = await workflow.find_tab(browser.context)
-        if not page:
-            return {"error": "no pinnacle tab"}
-        headers = {"X-API-Key": _PINNACLE_FRONTEND_API_KEY}
-
-        async def _fetch_json(url: str):
-            try:
-                resp = await page.request.get(url, headers=headers, timeout=8_000)
-                if not resp.ok:
-                    return None
-                return await resp.json()
-            except Exception as e:
-                logger.debug(f"[refresh-matchup] {url} failed: {e!r}")
-                return None
-
-        # Step 1: matchup info — also tells us if there's a live successor.
-        m = await _fetch_json(f"{_PINNACLE_API_BASE}/matchups/{matchup_id}")
-        if not isinstance(m, dict) or not m.get("league"):
-            return {"error": "matchup_not_found", "requested_id": matchup_id}
-
-        target_id = matchup_id
-        # If pre-match has gone live, fetch markets from the live successor.
-        if m.get("hasLive") and m.get("status") == "pending":
-            league_id = m["league"]["id"]
-            league_matchups = await _fetch_json(
-                f"{_PINNACLE_API_BASE}/leagues/{league_id}/matchups"
-            )
-            if isinstance(league_matchups, list):
-                live = next(
-                    (
-                        x
-                        for x in league_matchups
-                        if x.get("parentId") == int(matchup_id)
-                        and x.get("type") == "matchup"
-                        and x.get("isLive") is True
-                        and x.get("status") == "started"
-                        and (x.get("league") or {}).get("id") == league_id
-                        and any(p.get("period") == 0 for p in (x.get("periods") or []))
-                    ),
-                    None,
-                )
-                if live:
-                    target_id = live["id"]
-                    m = live  # use the live matchup's metadata too
-
-        # Step 2: markets/straight for the (live) matchup.
-        markets_raw = await _fetch_json(
-            f"{_PINNACLE_API_BASE}/matchups/{target_id}/markets/straight"
-        )
-        if not isinstance(markets_raw, list):
-            return {"error": "markets_not_found", "matchup_id": target_id}
-
-        markets = []
-        for mk in markets_raw:
-            if mk.get("isAlternate"):
-                continue
-            prices_out = []
-            for p in mk.get("prices") or []:
-                price = p.get("price")
-                if price is None:
-                    continue
-                try:
-                    decimal = _american_to_decimal(float(price))
-                except Exception:
-                    continue
-                prices_out.append(
-                    {
-                        "designation": p.get("designation"),
-                        "american": price,
-                        "decimal": round(decimal, 4),
-                        "points": p.get("points"),
-                    }
-                )
-            if prices_out:
-                markets.append(
-                    {
-                        "key": mk.get("key"),
-                        "period": mk.get("period"),
-                        "prices": prices_out,
-                    }
-                )
-
-        parts = m.get("participants") or []
-        return {
-            "matchup_id": target_id,
-            "requested_id": matchup_id,
-            "league": (m.get("league") or {}).get("name"),
-            "sport": ((m.get("league") or {}).get("sport") or {}).get("name"),
-            "participants": [
-                p.get("name") if isinstance(p, dict) else p for p in parts
-            ],
-            "is_live": bool(m.get("isLive")),
-            "status": m.get("status"),
-            "markets": markets,
-        }
+        return await _pinnacle_fetch_markets_for_router(browser, matchup_id)
 
     @router.get("/browser/eval-on-tab")
     async def eval_on_tab(url_contains: str, js: str = "document.title"):

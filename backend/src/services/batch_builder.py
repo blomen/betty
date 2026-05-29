@@ -132,6 +132,12 @@ class BatchBet:
     # Provider metadata (for navigation — altenar event IDs, kambi matchup IDs, etc.)
     provider_meta: dict | None = None
 
+    # Sharp baseline used to compute fair_odds — surfaced so the frontend's
+    # useSharpRefresh hook can live-fetch the baseline on row click. None for
+    # consensus-derived value bets (no single provider responsible).
+    baseline_provider_id: str | None = None
+    baseline_meta: dict | None = None
+
 
 @dataclass
 class ProviderBalance:
@@ -239,6 +245,16 @@ class BatchBuilder:
         self.db = db
         self.opp_repo = OpportunityRepo(db)
         self.profile_repo = ProfileRepo(db)
+
+    @staticmethod
+    def _baseline_for_opp(opp) -> str | None:
+        """Return baseline_provider_id for an opportunity.
+
+        baseline_provider_id is opp.provider2_id (the sharp/devig source).
+        baseline_meta is populated separately via a bulk lookup in
+        _populate_baseline_meta() to avoid an N+1 query per opportunity.
+        """
+        return opp.provider2_id
 
     def build(self, profile_id: int, exclude: list[str] | None = None, priority_provider: str | None = None) -> dict:
         """
@@ -350,6 +366,9 @@ class BatchBuilder:
 
         # Bulk-populate provider_meta for navigation (altenar IDs, etc.)
         self._populate_provider_meta(batch)
+
+        # Bulk-populate baseline_meta for sharp-baseline live refresh
+        self._populate_baseline_meta(batch)
 
         # Count opportunity volume per cluster (from ALL candidates, not just batch)
         cluster_opp_stats = self._compute_cluster_opp_stats(candidates)
@@ -526,6 +545,8 @@ class BatchBuilder:
         fair_odds = opp.odds2 or 0.0
         edge_raw = (opp.edge_pct or 0.0) / 100.0
 
+        baseline_provider_id = self._baseline_for_opp(opp)
+
         # Per-provider min-edge filter — skip outright before Kelly. Polymarket
         # has ~$0.07 Polygon gas per trade, so sub-5% edge bets at the $1 min
         # are net-EV-negative after gas (gas-aware MC showed median bankroll
@@ -662,6 +683,8 @@ class BatchBuilder:
             funded=False,  # allocation will flip to True if there's balance
             skip_reason=skip_reason,
             bankroll_needed=getattr(result, "bankroll_needed", 0.0) or 0.0,
+            baseline_provider_id=baseline_provider_id,
+            baseline_meta=None,
         )
 
     @staticmethod
@@ -761,6 +784,52 @@ class BatchBuilder:
             if meta:
                 b.provider_meta = meta
 
+    def _populate_baseline_meta(self, batch: list[BatchBet]) -> None:
+        """Bulk-lookup Odds.provider_meta for the sharp baseline used to compute
+        each bet's fair_odds. Surfaced so the frontend's useSharpRefresh hook
+        can live-fetch the baseline on row click (e.g. Pinnacle's matchup_id).
+        """
+        if not batch:
+            return
+        from ..db.models import Odds
+
+        # Collect (event_id, baseline_provider_id, market) keys we need.
+        # Skip bets with no baseline provider — nothing to look up.
+        keys = {(b.event_id, b.baseline_provider_id, b.market) for b in batch if b.baseline_provider_id is not None}
+        if not keys:
+            return
+
+        event_ids = list({k[0] for k in keys})
+        provider_ids = list({k[1] for k in keys})
+
+        rows = (
+            self.db.query(Odds.event_id, Odds.provider_id, Odds.market, Odds.provider_meta)
+            .filter(
+                Odds.event_id.in_(event_ids),
+                Odds.provider_id.in_(provider_ids),
+                Odds.provider_meta.isnot(None),
+            )
+            .all()
+        )
+        lookup: dict[tuple[str, str, str], dict] = {}
+        for r in rows:
+            if not r.provider_meta:
+                continue
+            key = (r.event_id, r.provider_id, r.market)
+            # Keep the first non-empty meta we see for the (event, provider,
+            # market) triple — multiple outcome rows on the same market all
+            # carry the same baseline navigation IDs (matchup_id etc.).
+            if key not in lookup:
+                lookup[key] = dict(r.provider_meta)
+
+        for b in batch:
+            if b.baseline_provider_id is None:
+                continue
+            meta = lookup.get((b.event_id, b.baseline_provider_id, b.market))
+            # Defensive copy so BatchBet mutations don't leak into the
+            # tracked Odds row's JSONB column.
+            b.baseline_meta = dict(meta) if meta else None
+
     # Daily placement cap per provider (enforced in play loop, not here).
     # Batch returns ALL +EV bets so the UI shows the full picture.
     BETS_PER_PROVIDER = 10
@@ -816,6 +885,8 @@ class BatchBuilder:
             lifecycle=pb.lifecycle,
             cluster=bet.cluster,
             provider_meta=bet.provider_meta,
+            baseline_provider_id=bet.baseline_provider_id,
+            baseline_meta=bet.baseline_meta,
         )
 
     def _allocate_batch(
@@ -1116,6 +1187,8 @@ class BatchBuilder:
             "skip_reason": bet.skip_reason,
             "bankroll_needed": round(bet.bankroll_needed, 2) if bet.bankroll_needed else 0.0,
             "provider_meta": bet.provider_meta,
+            "baseline_provider_id": bet.baseline_provider_id,
+            "baseline_meta": bet.baseline_meta,
         }
 
     @staticmethod
