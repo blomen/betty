@@ -1215,7 +1215,21 @@ def store_provider_event(
     # Track if we need an odds inversion swap (separate from team order swap)
     odds_inverted = False
 
-    if matched_id and home_odds and away_odds:
+    # The sharp source defines canonical home/away — its own API alignment IS the
+    # reference everything else is checked against. Running it through
+    # detect_and_fix_inversion compares Pinnacle against its OWN previously-stored
+    # odds, which is circular: once any inversion seeds the DB, Signal 1
+    # (ratio > threshold AND favored sides disagree) re-detects it every run and
+    # re-applies the swap, locking the sharp's home/away permanently inverted.
+    # Post-swap validation then "agrees" with the stale inverted value, so
+    # home_away_validated stays True and the corruption is invisible. Observed
+    # 2026-05-29 on baseball:houston astros:milwaukee brewers — stored
+    # home=1.862/away=2.07, the exact reverse of Pinnacle's own page. Never swap
+    # the sharp; trust its designations. Faithful stores then self-heal the lock-in
+    # on the next extraction.
+    if provider in SHARP_PROVIDERS:
+        db_event.home_away_validated = True
+    elif matched_id and home_odds and away_odds:
         # If teams were already swapped, the extracted odds are in the provider's order.
         # To check inversion against canonical (Pinnacle), we need to map to canonical order.
         if fuzzy_swapped:
