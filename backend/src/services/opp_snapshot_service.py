@@ -143,6 +143,7 @@ class OppSnapshotService:
             did_update = False
             event = self.db.query(Event).filter(Event.id == snap.event_id).first()
             start_time = event.start_time if event else None
+            sport = event.sport if event else None  # reused by the blend block below
             # SQLite strips tzinfo on round-trip; coerce to UTC-aware so
             # datetime arithmetic with tz-aware Odds.updated_at succeeds.
             if start_time is not None and start_time.tzinfo is None:
@@ -210,7 +211,7 @@ class OppSnapshotService:
             blend = blended_fair_from_rows(
                 outcome=snap.outcome1,
                 rows=self._blend_member_rows(snap, snap.market, snap.point, snap.scope),
-                sport=self._event_sport(snap.event_id),
+                sport=sport,
             )
             if blend is not None and blend.fair_odds > 1.0:
                 snap.blended_closing_fair = blend.fair_odds
