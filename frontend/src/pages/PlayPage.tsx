@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { api } from '../hooks/useApi'
 import { useMirrorStream } from '../hooks/useMirrorStream'
 import { useMirrorState } from '../hooks/useMirrorState'
+import { useSharpRefresh } from '../hooks/useSharpRefresh'
 import { migratedLocalStorageGet } from '../utils/localStorageMigration'
 import { RehedgeSection } from './play/RehedgeSection'
 
@@ -2606,6 +2607,120 @@ export default function PlayPage() {
     return b.outcome
   }
 
+  // Value-bet row — owns its own sharp-refresh hook so clicking the row
+  // re-queries Pinnacle, recomputes edge from the devigged refresh, and
+  // shows "refreshing…" in the edge column while in flight. Auto-skips
+  // (one-shot per row) when the refreshed edge flips non-positive.
+  //
+  // Defined inside PlayPage so it can close over the formatter helpers
+  // (fmtMarket, fmtOddsWithCents, resolveOutcome, renderAnnotationBadges,
+  // fmtStake, fmtEv, fmtTtk, isCentsMarket, legKey) which are themselves
+  // closures over component-local state and would need a heavier refactor
+  // to lift to module scope.
+  interface ValueBetRowProps {
+    b: BatchBet
+    onClick: (b: BatchBet) => void | Promise<void>
+    onAutoSkip: (b: BatchBet, oldEdge: number, newEdge: number) => void
+  }
+  function ValueBetRow({ b, onClick, onAutoSkip }: ValueBetRowProps) {
+    const baselineProviderId =
+      (b.baseline_provider_id as string | null | undefined) ?? null
+    const matchupId =
+      (b.baseline_meta as Record<string, unknown> | null | undefined)?.matchup_id
+        ? String((b.baseline_meta as Record<string, unknown>).matchup_id)
+        : null
+    const eventKey = `${b.event_id}:${b.market}:${b.point ?? ''}`
+    const sharp = useSharpRefresh({
+      eventKey,
+      baselineProviderId,
+      matchupId,
+      market: b.market,
+      point: b.point,
+      outcome: b.outcome,
+      eventId: b.event_id,
+    })
+
+    const handleClick = useCallback(() => {
+      sharp.refresh().catch(() => { /* state already 'stale' */ })
+      onClick(b)
+    }, [b, onClick, sharp])
+
+    const liveKey = `${b.event_id}:${b.market}:${b.outcome}`
+    const live = livePrices[liveKey]
+    const displayOdds = live?.odds ?? b.odds
+
+    // Edge precedence: sharp refresh > live mirror price > batch row.
+    let displayFair = b.fair_odds
+    let displayEdge = live?.edge ?? b.edge_pct
+    if (sharp.state === 'fresh' && sharp.freshFair?.[b.outcome] != null) {
+      displayFair = sharp.freshFair[b.outcome]
+      displayEdge = (b.odds / displayFair - 1) * 100
+    }
+
+    // Auto-skip when refresh flips edge non-positive — fires once per row.
+    const skipFiredRef = useRef(false)
+    useEffect(() => {
+      if (sharp.state !== 'fresh') return
+      if (skipFiredRef.current) return
+      if (displayEdge > 0) return
+      skipFiredRef.current = true
+      onAutoSkip(b, b.edge_pct, displayEdge)
+    }, [sharp.state, displayEdge, b, onAutoSkip])
+
+    const isCurrent = currentBetReady?.event_id === b.event_id
+      && currentBetReady?.outcome === b.outcome
+    const isSynced = (syncedLegs[b.event_id] ?? new Set<string>()).has(
+      legKey(b.provider_id, b.outcome, b.point),
+    )
+
+    return (
+      <tr
+        onClick={handleClick}
+        title={`Open ${b.provider_id.toUpperCase()} event page`}
+        className={`border-b border-zinc-800/30 hover:bg-zinc-800/40 cursor-pointer transition-colors ${
+          isSynced ? 'bg-emerald-900/30 ring-1 ring-emerald-500/40'
+            : isCurrent ? 'bg-amber-900/20' : ''
+        } ${sharp.state === 'refreshing' ? 'opacity-80' : ''}`}
+      >
+        <td className="pl-6 pr-2 py-1 text-[10px] text-zinc-500 uppercase w-[80px]">
+          {b.cluster && b.cluster !== b.provider_id
+            ? b.cluster.replace('_main', '').replace('_group', '').replace('gecko_', '')
+            : b.provider_id}
+        </td>
+        <td className="px-2 py-1 text-zinc-200 max-w-[220px] truncate">
+          {b.display_home} v {b.display_away}
+        </td>
+        <td className="px-2 py-1 text-cyan-400/80 font-mono text-[10px] uppercase">
+          {fmtMarket(b)}
+        </td>
+        <td className="px-2 py-1 text-amber-400 font-medium">{resolveOutcome(b)}</td>
+        <td className={`px-2 py-1 text-right font-mono ${live ? 'text-sky-400' : 'text-zinc-200'}`}>
+          {fmtOddsWithCents(displayOdds, isCentsMarket(b.provider_id))}
+        </td>
+        <td className={`px-2 py-1 text-right font-mono ${
+          sharp.state === 'fresh' ? 'text-sky-400' : 'text-zinc-500'
+        }`}>
+          {fmtOddsWithCents(displayFair, isCentsMarket(b.provider_id))}
+        </td>
+        <td className={`px-2 py-1 text-right font-mono ${
+          sharp.state === 'refreshing'
+            ? 'text-zinc-400 italic'
+            : displayEdge >= 0 ? 'text-green-400' : 'text-red-400'
+        }`}>
+          {sharp.state === 'refreshing'
+            ? 'refreshing…'
+            : `${displayEdge >= 0 ? '+' : ''}${displayEdge.toFixed(1)}%`}
+        </td>
+        <td className="px-1 py-1 text-center whitespace-nowrap">
+          {renderAnnotationBadges(b)}
+        </td>
+        <td className="px-2 py-1 text-right font-mono text-zinc-300">{fmtStake(b)}</td>
+        <td className="px-2 py-1 text-right font-mono text-green-400">{fmtEv(b)}</td>
+        <td className="px-2 py-1 text-right font-mono text-zinc-500">{fmtTtk(b)}</td>
+      </tr>
+    )
+  }
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Sub-tab bar — top level, directly under main nav */}
@@ -4725,44 +4840,22 @@ export default function PlayPage() {
                       return bEdge - aEdge
                     }).map(b => {
                     const key = `${b.event_id}:${b.market}:${b.outcome}:${b.provider_id}`
-                    const liveKey = `${b.event_id}:${b.market}:${b.outcome}`
-                    const live = livePrices[liveKey]
-                    const isCurrent = currentBetReady?.event_id === b.event_id && currentBetReady?.outcome === b.outcome
-                    const displayOdds = live?.odds ?? b.odds
-                    const displayEdge = live?.edge ?? b.edge_pct
-                    const isSynced = (syncedLegs[b.event_id] ?? new Set<string>()).has(
-                      legKey(b.provider_id, b.outcome, b.point),
-                    )
                     return (
-                      <tr key={key}
-                        onClick={() => handleValueBetClick(b)}
-                        title={`Open ${b.provider_id.toUpperCase()} event page`}
-                        className={`border-b border-zinc-800/30 hover:bg-zinc-800/40 cursor-pointer transition-colors ${
-                          isSynced ? 'bg-emerald-900/30 ring-1 ring-emerald-500/40' : isCurrent ? 'bg-amber-900/20' : ''
-                        }`}
-                      >
-                        <td className="pl-6 pr-2 py-1 text-[10px] text-zinc-500 uppercase w-[80px]">{b.cluster && b.cluster !== b.provider_id ? b.cluster.replace('_main', '').replace('_group', '').replace('gecko_', '') : b.provider_id}</td>
-                        <td className="px-2 py-1 text-zinc-200 max-w-[220px] truncate">{b.display_home} v {b.display_away}</td>
-                        <td className="px-2 py-1 text-cyan-400/80 font-mono text-[10px] uppercase">{fmtMarket(b)}</td>
-                        <td className="px-2 py-1 text-amber-400 font-medium">{resolveOutcome(b)}</td>
-                        <td className={`px-2 py-1 text-right font-mono ${live ? 'text-sky-400' : 'text-zinc-200'}`}>
-                          {fmtOddsWithCents(displayOdds, isCentsMarket(b.provider_id))}
-                          {/* Sky color = streaming live from the provider tab.
-                              Drift direction is intentionally not shown — the
-                              edge column already conveys whether the live odds
-                              still leave us +EV. */}
-                        </td>
-                        <td className="px-2 py-1 text-right font-mono text-zinc-500">{fmtOddsWithCents(b.fair_odds, isCentsMarket(b.provider_id))}</td>
-                        <td className={`px-2 py-1 text-right font-mono ${displayEdge >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                          {displayEdge >= 0 ? '+' : ''}{displayEdge.toFixed(1)}%
-                        </td>
-                        <td className="px-1 py-1 text-center whitespace-nowrap">
-                          {renderAnnotationBadges(b)}
-                        </td>
-                        <td className="px-2 py-1 text-right font-mono text-zinc-300">{fmtStake(b)}</td>
-                        <td className="px-2 py-1 text-right font-mono text-green-400">{fmtEv(b)}</td>
-                        <td className="px-2 py-1 text-right font-mono text-zinc-500">{fmtTtk(b)}</td>
-                      </tr>
+                      <ValueBetRow
+                        key={key}
+                        b={b}
+                        onClick={handleValueBetClick}
+                        onAutoSkip={(bet, oldEdge, newEdge) => {
+                          // Surface auto-skip via the existing per-provider status banner —
+                          // PlayPage already renders providerStatus messages under each
+                          // provider card, so the user sees the edge-collapse note in the
+                          // same place as other workflow-driven messages.
+                          setProviderStatusFor(
+                            bet.provider_id,
+                            `auto-skip ${bet.outcome}: edge ${oldEdge.toFixed(1)}% → ${newEdge.toFixed(1)}%`,
+                          )
+                        }}
+                      />
                     )
                   })}
                 </tbody>
