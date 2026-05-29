@@ -58,9 +58,9 @@ class OppSnapshotService:
 
         # Leg 1 fair-odds benchmark:
         # - value: odds2 is Pinnacle fair (devigged at detect)
-        # - arb: leg-1 fair is leg-1's own fair_odds (carried in outcomes JSON);
-        #        for the snapshot we leave fair_odds1 as opp.odds2 too — repo
-        #        callers can override via _fair_odds1_override if needed
+        # - arb: leg-1 fair is leg-1's own fair_odds carried in outcomes JSON;
+        #        opp.odds2 is the secondary leg's odds, so fair_odds1 here is a
+        #        best-effort proxy rather than the true devigged fair for leg 1
         # - reverse_value: leg-1 is Pinnacle raw, opp.odds2 is consensus fair
         fair_odds1 = opp.odds2 if opp.odds2 and opp.odds2 > 1.0 else None
 
