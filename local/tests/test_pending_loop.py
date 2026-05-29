@@ -314,3 +314,81 @@ async def test_refresh_balances_proceeds_on_event_page_for_passive(monkeypatch):
 
     workflow.sync_balance.assert_called_once()
     loop._post_balance.assert_called_once_with("pinnacle", 2506.0)
+
+
+# ---------------------------------------------------------------------------
+# Fast positions-poll (polymarket near-instant recording)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fast_poll_syncs_polymarket_when_tab_open(monkeypatch):
+    """_fast_poll runs the per-provider sync for polymarket when its tab is open."""
+    from unittest.mock import AsyncMock
+    import local.mirror.workflows as wfmod
+
+    page = MagicMock()
+    page.url = "https://polymarket.com/event/foo"
+    workflow = MagicMock()
+    workflow.find_tab = AsyncMock(return_value=page)
+    monkeypatch.setattr(wfmod, "get_workflow", lambda pid: workflow)
+
+    loop = PendingLoop(
+        browser=_make_browser(running=True),
+        broadcaster=_make_broadcaster(),
+        proxy_url="http://localhost:8000",
+    )
+    loop._fetch_pending = AsyncMock(return_value={"polymarket": []})
+    loop._sync_provider = AsyncMock(return_value=None)
+
+    await loop._fast_poll()
+
+    loop._sync_provider.assert_called_once()
+    assert loop._sync_provider.call_args[0][0] == "polymarket"
+
+
+@pytest.mark.asyncio
+async def test_fast_poll_noop_when_no_tab(monkeypatch):
+    """No polymarket tab → no DB fetch and no sync (lazy, cheap idle tick)."""
+    from unittest.mock import AsyncMock
+    import local.mirror.workflows as wfmod
+
+    workflow = MagicMock()
+    workflow.find_tab = AsyncMock(return_value=None)
+    monkeypatch.setattr(wfmod, "get_workflow", lambda pid: workflow)
+
+    loop = PendingLoop(
+        browser=_make_browser(running=True),
+        broadcaster=_make_broadcaster(),
+        proxy_url="http://localhost:8000",
+    )
+    loop._fetch_pending = AsyncMock(return_value={})
+    loop._sync_provider = AsyncMock(return_value=None)
+
+    await loop._fast_poll()
+
+    loop._fetch_pending.assert_not_called()
+    loop._sync_provider.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sync_provider_skips_when_locked():
+    """Per-pid lock: a second concurrent sync for the same provider is skipped."""
+    import asyncio as _aio
+    from unittest.mock import AsyncMock
+
+    loop = PendingLoop(
+        browser=_make_browser(running=True),
+        broadcaster=_make_broadcaster(),
+        proxy_url="http://localhost:8000",
+    )
+    loop._sync_provider_locked = AsyncMock(return_value=None)
+    # Simulate an in-flight sync by pre-acquiring the provider's lock.
+    lock = _aio.Lock()
+    await lock.acquire()
+    loop._sync_locks["polymarket"] = lock
+
+    await loop._sync_provider("polymarket", [])
+
+    loop._sync_provider_locked.assert_not_called()
+    lock.release()

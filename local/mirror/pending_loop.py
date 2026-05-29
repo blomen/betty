@@ -18,6 +18,15 @@ logger = logging.getLogger(__name__)
 _AUTH_HEADER = "X-Nginx-Authenticated"
 _AUTH_VALUE = "arnoldsports"
 _POLL_INTERVAL = 60  # seconds
+# Fast positions-poll: polymarket's CLOB order submission is invisible to our
+# network interceptor (service-worker / embedded-wallet relayer — see CLAUDE.md),
+# so a placed bet can't be caught at placement. Instead we poll its passive,
+# wallet-keyed data-api/positions sync on a short cadence so a new bet records
+# within ~_FAST_POLL_INTERVAL s instead of waiting for the 60s tick or a
+# /portfolio navigation. The fetch is pure page.evaluate(fetch(...)) — no DOM,
+# can't clobber a betslip — so it's safe even while the user is on an event page.
+_FAST_POLL_INTERVAL = 10  # seconds
+_FAST_POLL_PROVIDERS = ("polymarket",)
 _CONFIRM_TIMEOUT = 300  # seconds
 _ODDS_TOL = 0.10  # 10% tolerance
 _STAKE_TOL = 0.30  # 30% tolerance
@@ -184,9 +193,13 @@ class PendingLoop:
         self._broadcaster = broadcaster
         self._proxy_url = proxy_url.rstrip("/")
         self._task: asyncio.Task | None = None
+        self._fast_task: asyncio.Task | None = None
         self._running = False
         self._confirm_events: dict[str, asyncio.Event] = {}
         self._status: dict[str, dict] = {}  # pid -> {last_sync, pending, settlements}
+        # Per-provider lock so the fast poll and the 60s loop never sync the
+        # same provider concurrently (would double-fetch + race reconcile).
+        self._sync_locks: dict[str, asyncio.Lock] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -197,12 +210,17 @@ class PendingLoop:
             return
         self._running = True
         self._task = asyncio.create_task(self._run(), name="pending_loop")
+        self._fast_task = asyncio.create_task(
+            self._fast_run(), name="pending_loop_fast"
+        )
         logger.info("[PendingLoop] started")
 
     def stop(self) -> None:
         self._running = False
         if self._task and not self._task.done():
             self._task.cancel()
+        if self._fast_task and not self._fast_task.done():
+            self._fast_task.cancel()
         logger.info("[PendingLoop] stopped")
 
     def confirm(self, provider_id: str) -> None:
@@ -229,6 +247,40 @@ class PendingLoop:
             except Exception:
                 logger.exception("[PendingLoop] error in _sync_all")
             await asyncio.sleep(_POLL_INTERVAL)
+
+    async def _fast_run(self) -> None:
+        """Fast positions-poll for providers whose placement can't be intercepted
+        (polymarket). Records a freshly-placed bet within ~_FAST_POLL_INTERVAL s
+        by re-running the same per-provider sync the 60s loop uses."""
+        while self._running:
+            await asyncio.sleep(_FAST_POLL_INTERVAL)
+            try:
+                await self._fast_poll()
+            except Exception:
+                logger.exception("[PendingLoop] error in _fast_poll")
+
+    async def _fast_poll(self) -> None:
+        if not (self._browser.running and self._browser.context):
+            return
+        from .workflows import get_workflow
+
+        pending: dict[str, list[dict]] | None = None
+        for pid in _FAST_POLL_PROVIDERS:
+            try:
+                workflow = get_workflow(pid)
+            except Exception:
+                continue
+            page = await workflow.find_tab(self._browser.context)
+            if page is None:
+                continue  # tab not open — nothing to poll
+            # Lazily fetch DB pending bets only when there's actually a tab to
+            # poll (avoids a tunnel round-trip every tick when no poly tab is up).
+            if pending is None:
+                pending = await self._fetch_pending()
+            # _sync_provider records unknown open positions (the new bet) even
+            # when db_bets is empty, and is per-pid lock-guarded against the 60s
+            # loop. sync_history is passive, so it runs on event pages too.
+            await self._sync_provider(pid, pending.get(pid, []))
 
     # ------------------------------------------------------------------
     # Sync all providers
@@ -358,6 +410,21 @@ class PendingLoop:
     # ------------------------------------------------------------------
 
     async def _sync_provider(self, pid: str, db_bets: list[dict]) -> None:
+        # Per-pid lock: the 60s loop and the fast poll both call this; if one is
+        # already syncing this provider, skip rather than queue (the in-flight
+        # sync already covers it). Prevents double data-api fetches + reconcile
+        # races on the same provider.
+        lock = self._sync_locks.get(pid)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._sync_locks[pid] = lock
+        if lock.locked():
+            logger.debug(f"[PendingLoop] {pid} sync already in progress — skipping")
+            return
+        async with lock:
+            await self._sync_provider_locked(pid, db_bets)
+
+    async def _sync_provider_locked(self, pid: str, db_bets: list[dict]) -> None:
         # _sync_all already guarantees the browser is up; no need to re-check.
         logger.info(f"[PendingLoop] syncing {pid} ({len(db_bets)} pending bets)")
         self._status.setdefault(pid, {})["pending"] = len(db_bets)
