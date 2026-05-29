@@ -130,6 +130,10 @@ def _tokens(s: str) -> set[str]:
     return {t for t in s.split() if t and len(t) >= 3 and t not in _STOP}
 
 
+def _norm_title(s: str | None) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+
 def _match_outcome(outcome_name: str, home: str, away: str) -> str | None:
     """Map outcome_name to 'home' or 'away' based on team-name substring."""
     on = (outcome_name or "").lower()
@@ -149,6 +153,28 @@ def _match_outcome(outcome_name: str, home: str, away: str) -> str | None:
     if ta and ton & ta:
         return "away"
     return None
+
+
+def _entry_matches_bet_side(entry_outcome_name: str | None, bet: dict) -> bool:
+    """True when a trade/position entry's outcome belongs to the bet's side.
+
+    Lenient: returns True (don't filter) when the bet's side is unknown, the
+    entry omits an outcome, or the outcome can't be mapped to home/away — so we
+    fall back to cid-only matching and never regress single-side settlements.
+    Used to stop an OPPOSITE-side trade/position from settling the wrong leg of
+    a two-sided conditionId. (The REDEEM signal carries no side data —
+    outcomeIndex=999, outcome="" — so it is intentionally not guarded.)
+    """
+    bet_outcome = (bet.get("outcome") or "").strip().lower()
+    if bet_outcome not in ("home", "away"):
+        return True
+    name = (entry_outcome_name or "").strip()
+    if not name:
+        return True
+    side = _match_outcome(name, bet.get("home_team") or "", bet.get("away_team") or "")
+    if side is None:
+        return True
+    return side == bet_outcome
 
 
 def match_event_and_outcome(
@@ -236,11 +262,60 @@ async def sync(
         (b.get("event_id"), b.get("outcome")): b for b in db_pending if b.get("event_id") and b.get("outcome")
     }
 
+    # Pending bets recorded WITHOUT a usable conditionId — typically arb_counter
+    # legs placed via Polymarket CLOB, which bypasses the placement intercept so
+    # provider_bet_id is null, and for un-extracted markets event_id/outcome are
+    # blank too. Neither the cid dedup nor the (event_id, outcome) dedup can see
+    # them, so the recovery sync re-inserts the position as a fresh row (live
+    # bug: poly bet 627 → 810 re-record 9 days later). Index by normalized title
+    # so an incoming position backfills its cid onto the existing row instead.
+    # Only unambiguous (single-bet) titles are eligible — a shared title can't
+    # tell us which leg the position belongs to.
+    cidless_by_title: dict[str, list[dict]] = {}
+    for b in db_pending:
+        if not _is_condition_id(b.get("provider_bet_id")):
+            t = _norm_title(b.get("event_name") or b.get("boost_event"))
+            if t:
+                cidless_by_title.setdefault(t, []).append(b)
+
     for pos in positions:
         # Dedup by conditionId (preferred — stable provider id)
         if pos.provider_bet_id and _cid_key(pos.provider_bet_id) in known_ids:
             result.skipped_dup += 1
             continue
+
+        # Backfill the conditionId onto a cidless pending row instead of letting
+        # the insert paths below create a duplicate. Only when EXACTLY one
+        # cidless bet shares this title (else we can't disambiguate the leg).
+        if pos.provider_bet_id and api_patch is not None:
+            t = _norm_title(pos.event_name)
+            matches = cidless_by_title.get(t) or []
+            if len(matches) == 1:
+                existing = matches[0]
+                bet_id = existing.get("id") or existing.get("bet_id")
+                if bet_id:
+                    # Claim this row regardless of PATCH outcome so we never
+                    # re-insert a dup; a failed PATCH just retries next sync.
+                    cidless_by_title.pop(t, None)
+                    known_ids.add(_cid_key(pos.provider_bet_id))
+                    result.skipped_dup += 1
+                    try:
+                        resp = await api_patch(int(bet_id), {"provider_bet_id": pos.provider_bet_id})
+                        if resp.status_code in (200, 201):
+                            logger.info(
+                                f"[polymarket_api] backfilled cid {pos.provider_bet_id[:14]}… onto "
+                                f"cidless bet {bet_id} ({pos.event_name[:40]}) — no re-insert"
+                            )
+                        else:
+                            logger.warning(
+                                f"[polymarket_api] cidless backfill PATCH bet {bet_id} → "
+                                f"{resp.status_code}: {(resp.text or '')[:120]}"
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"[polymarket_api] cidless backfill bet {bet_id} raised: {type(e).__name__}: {e}"
+                        )
+                    continue
 
         event_id, outcome = match_event_and_outcome(pos, events)
         if not event_id or not outcome:
@@ -533,7 +608,10 @@ async def settle(
     # from the /positions payload we already fetch. {cid: curPrice}
     open_cids: set[str] = set()
     cid_by_title: dict[str, str] = {}
-    resolved_by_cid: dict[str, float] = {}
+    # cid -> [(outcome_name, curPrice)] — a two-sided hold resolves to two
+    # entries (winning + losing side); keep both so the per-bet side guard can
+    # pick the one matching the bet rather than whichever wrote last.
+    resolved_by_cid: dict[str, list[tuple[str, float]]] = {}
     for pos in positions:
         full_cid = (pos.provider_bet_id or "").strip()
         k = _cid_key(full_cid)
@@ -545,7 +623,7 @@ async def settle(
             raw = pos.raw if isinstance(pos.raw, dict) else {}
             if raw.get("redeemable") is True:
                 with contextlib.suppress(ValueError, TypeError):
-                    resolved_by_cid[k] = float(raw.get("curPrice") or 0)
+                    resolved_by_cid.setdefault(k, []).append((pos.outcome_name or "", float(raw.get("curPrice") or 0)))
 
     # Won/redeemed positions drop out of the open-positions list (size→0 after
     # SELL at ~0.999), so a bet that already resolved would have no title→cid
@@ -626,23 +704,35 @@ async def settle(
         # /markets does not index them. Without it those bets pend forever
         # (bets 608/610/612 were stuck this way).
         if result is None and _cid_key(cid) in resolved_by_cid:
-            cur_price = resolved_by_cid[_cid_key(cid)]
-            if cur_price <= REDEEM_LOST_THRESHOLD:
-                result = "lost"
-                payout = 0.0
-            elif cur_price >= REDEEM_WON_THRESHOLD:
-                # Won but not yet redeemed — record at face value (shares × $1).
-                # A later REDEEM activity pass will refine to the exact usdcSize.
-                result = "won"
-                payout = round(shares * 1.0, 2)
-            # Mid-price resolved (retirement/void split) → leave pending; the
-            # REDEEM activity entry will carry the exact half-credit payout.
+            # Pick the resolved position on the bet's OWN side — a two-sided hold
+            # has both a won (~1) and lost (~0) entry under the same cid, and the
+            # losing side's curPrice must not settle the winning leg (or vice
+            # versa). Lenient: if the bet side is unknown the guard passes any.
+            for oc_name, cur_price in resolved_by_cid[_cid_key(cid)]:
+                if not _entry_matches_bet_side(oc_name, bet):
+                    continue
+                if cur_price <= REDEEM_LOST_THRESHOLD:
+                    result = "lost"
+                    payout = 0.0
+                    break
+                elif cur_price >= REDEEM_WON_THRESHOLD:
+                    # Won but not yet redeemed — record at face value (shares × $1).
+                    # A later REDEEM activity pass refines to the exact usdcSize.
+                    result = "won"
+                    payout = round(shares * 1.0, 2)
+                    break
+                # Mid-price resolved (retirement/void split) → leave pending; the
+                # REDEEM activity entry will carry the exact half-credit payout.
 
         # TERTIARY signal: SELL trades. Only used when no REDEEM exists yet —
         # covers manual cashouts (mid-price SELLs that never trigger a redeem)
         # and any auto-redeems where the activity feed is lagging behind trades.
         if result is None:
-            sells = [t for t in cid_trades if t.get("side") == "SELL"]
+            # Only the bet's OWN side — a SELL of the opposite token on the same
+            # cid must not settle this leg (lenient when side data is missing).
+            sells = [
+                t for t in cid_trades if t.get("side") == "SELL" and _entry_matches_bet_side(t.get("outcome"), bet)
+            ]
             won_trade = next((t for t in sells if float(t.get("price") or 0) >= REDEEM_WON_THRESHOLD), None)
             lost_trade = next((t for t in sells if float(t.get("price") or 0) <= REDEEM_LOST_THRESHOLD), None)
             cashout_trade = next(
