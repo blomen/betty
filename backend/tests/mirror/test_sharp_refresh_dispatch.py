@@ -71,7 +71,7 @@ def test_pinnacle_dispatch_returns_markets(client):
             new=AsyncMock(return_value=FAKE_RESP),
         ),
         patch(
-            "local.mirror.router._persist_sharp_market",
+            "local.mirror.router._persist_sharp_outcomes",
             new=AsyncMock(return_value=None),
         ),
     ):
@@ -165,13 +165,14 @@ def test_missing_event_id_returns_400(client):
 def test_pinnacle_persists_each_leg_to_live_update(client):
     posts: list[dict] = []
 
-    async def fake_persist(*, provider_id, event_id, market, point, result):
+    async def fake_persist(*, provider_id, event_id, market, point, result, outcome=None):
         posts.append(
             {
                 "provider_id": provider_id,
                 "event_id": event_id,
                 "market": market,
                 "point": point,
+                "outcome": outcome,
                 "n_outcomes": sum(len(mk.get("prices", [])) for mk in result.get("markets", [])),
             }
         )
@@ -181,7 +182,7 @@ def test_pinnacle_persists_each_leg_to_live_update(client):
             "local.mirror.router._pinnacle_fetch_markets_for_router",
             new=AsyncMock(return_value=FAKE_RESP),
         ),
-        patch("local.mirror.router._persist_sharp_market", new=fake_persist),
+        patch("local.mirror.router._persist_sharp_outcomes", new=fake_persist),
     ):
         client.post(
             "/mirror/sharp/refresh-event",
@@ -198,3 +199,81 @@ def test_pinnacle_persists_each_leg_to_live_update(client):
     assert posts[0]["event_id"] == "evt-x"
     assert posts[0]["market"] == "moneyline"
     assert posts[0]["n_outcomes"] == 2
+
+
+def test_select_pinnacle_market_moneyline():
+    from local.mirror.router import _select_pinnacle_market
+
+    markets = [
+        {"key": "s;0;m", "period": 0, "prices": [{"designation": "home"}]},
+        {"key": "s;1;m", "period": 1, "prices": []},
+    ]
+    assert _select_pinnacle_market(markets, "moneyline", None) is not None
+    assert _select_pinnacle_market(markets, "moneyline", None)["key"] == "s;0;m"
+
+
+def test_select_pinnacle_market_spread_home():
+    from local.mirror.router import _select_pinnacle_market
+
+    markets = [
+        {
+            "key": "s;0;s;1.5",
+            "period": 0,
+            "prices": [
+                {"designation": "home", "points": 1.5},
+                {"designation": "away", "points": -1.5},
+            ],
+        },
+    ]
+    m = _select_pinnacle_market(markets, "spread", 1.5, outcome="home")
+    assert m is not None
+    assert m["key"] == "s;0;s;1.5"
+
+
+def test_select_pinnacle_market_spread_away_sign_flip():
+    """Betty stores team-perspective: away@-1.5. Pinnacle keys home-perspective.
+    Refresh of an away row with point=-1.5 must find the home-perspective market `s;0;s;1.5`."""
+    from local.mirror.router import _select_pinnacle_market
+
+    markets = [
+        {
+            "key": "s;0;s;1.5",
+            "period": 0,
+            "prices": [
+                {"designation": "home", "points": 1.5},
+                {"designation": "away", "points": -1.5},
+            ],
+        },
+    ]
+    m = _select_pinnacle_market(markets, "spread", -1.5, outcome="away")
+    assert m is not None, "away-spread sign-flip not handled"
+    assert m["key"] == "s;0;s;1.5"
+
+
+def test_select_pinnacle_market_total():
+    from local.mirror.router import _select_pinnacle_market
+
+    markets = [
+        {
+            "key": "s;0;ou;2.5",
+            "period": 0,
+            "prices": [
+                {"designation": "over", "points": 2.5},
+                {"designation": "under", "points": 2.5},
+            ],
+        },
+    ]
+    m = _select_pinnacle_market(markets, "total", 2.5)
+    assert m is not None
+    assert m["key"] == "s;0;ou;2.5"
+
+
+def test_select_pinnacle_market_float_tolerance():
+    """Pinnacle may key as 's;0;s;-2.0' while betty stores -2.0 as int -2 in JSON."""
+    from local.mirror.router import _select_pinnacle_market
+
+    markets = [
+        {"key": "s;0;s;-2.0", "period": 0, "prices": [{"designation": "home", "points": -2.0}]},
+    ]
+    m = _select_pinnacle_market(markets, "spread", -2, outcome="home")
+    assert m is not None, "float-tolerant matching failed (-2 vs -2.0)"

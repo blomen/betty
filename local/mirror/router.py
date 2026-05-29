@@ -192,7 +192,7 @@ def _persist_live_odds(
 # ---------------------------------------------------------------------------
 # These helpers are module-level (rather than scoped inside
 # create_mirror_router) so the dispatch route + tests can patch them by name
-# (`local.mirror.router._persist_sharp_market` etc.). The route inside the
+# (`local.mirror.router._persist_sharp_outcomes` etc.). The route inside the
 # closure calls them directly — Python resolves names module-level when the
 # unqualified lookup misses the closure scope.
 
@@ -337,25 +337,65 @@ async def _pinnacle_fetch_markets_for_router(browser: Any, matchup_id: int) -> d
     }
 
 
-def _select_pinnacle_market(markets: list, market: str, point) -> dict | None:
+def _select_pinnacle_market(
+    markets: list, market: str, point, outcome: str | None = None
+) -> dict | None:
     """Match a betty market+point to a Pinnacle market entry.
 
-    moneyline -> 's;0;m', spread -> 's;0;s;<point>', total -> 's;0;ou;<point>'.
-    Period 0 only (full match / regulation).
+    moneyline -> 's;0;m', spread -> 's;0;s;<HOME-perspective point>', total
+    -> 's;0;ou;<point>'. Period 0 only (full match / regulation).
+
+    Two correctness notes that the naive `f"s;0;s;{point}"` literal-key
+    lookup gets wrong (mirrors `_find_market` in
+    `local/mirror/workflows/strategies/pinnacle.py`):
+
+    1. **Float tolerance.** Pinnacle keys spread/total lines as floats
+       (`s;0;s;-2.0`) while betty's JSON may carry the same line as an int
+       (`-2`). Match by parsing the suffix and comparing
+       `abs(parsed - target) < 0.01`.
+
+    2. **Sign flip for away-spread legs.** Pinnacle keys spread markets by
+       the HOME-perspective LINE: one market `s;0;s;1.5` carries
+       home@+1.5 AND away@-1.5. Betty's `point` is team-perspective
+       (away@-1.5 for the same line), so when `outcome="away"` for a
+       spread bet we must look up `+point`, not `-point`.
     """
     if market == "moneyline":
-        wanted = "s;0;m"
-    elif market == "spread":
-        wanted = f"s;0;s;{point}" if point is not None else None
-    elif market == "total":
-        wanted = f"s;0;ou;{point}" if point is not None else None
-    else:
+        for mk in markets:
+            if mk.get("key") == "s;0;m" and mk.get("period") == 0:
+                return mk
         return None
-    if wanted is None:
+
+    if market == "spread":
+        if point is None:
+            return None
+        # Pinnacle keys spreads home-perspective; away rows flip sign.
+        lookup_point = -point if outcome == "away" else point
+        for mk in markets:
+            key = mk.get("key", "")
+            if mk.get("period") != 0 or not key.startswith("s;0;s;"):
+                continue
+            try:
+                if abs(float(key.split(";")[-1]) - lookup_point) < 0.01:
+                    return mk
+            except ValueError:
+                continue
         return None
-    for mk in markets:
-        if mk.get("key") == wanted and mk.get("period") == 0:
-            return mk
+
+    if market == "total":
+        if point is None:
+            return None
+        for mk in markets:
+            key = mk.get("key", "")
+            if mk.get("period") != 0 or not key.startswith("s;0;ou;"):
+                continue
+            try:
+                if abs(float(key.split(";")[-1]) - point) < 0.01:
+                    return mk
+            except ValueError:
+                continue
+        return None
+
     return None
 
 
@@ -369,23 +409,37 @@ def _designation_to_outcome(designation) -> str | None:
     }.get(designation)
 
 
-async def _persist_sharp_market(
+async def _persist_sharp_outcomes(
     *,
     provider_id: str,
     event_id: str,
     market: str,
     point,
+    outcome: str | None = None,
     result: dict,
 ) -> None:
     """Fire-and-forget per-outcome upserts to /api/odds/live-update.
 
     Map the requested betty market ('moneyline' | 'spread' | 'total') to
     Pinnacle's market key, find the matching prices entry, and POST one
-    live-update per outcome. Errors logged, never raised — refresh
-    response should not block on persistence.
+    live-update per outcome (N legs — home/away or over/under). Errors
+    logged, never raised — refresh response should not block on
+    persistence.
+
+    `outcome` is the BET's outcome (home/away/over/under) from the
+    request body. Only used by `_select_pinnacle_market` to flip the
+    sign on away-spread lookups (Pinnacle keys spreads home-perspective).
     """
-    target = _select_pinnacle_market(result.get("markets") or [], market, point)
+    target = _select_pinnacle_market(
+        result.get("markets") or [], market, point, outcome=outcome
+    )
     if not target:
+        logger.debug(
+            "[sharp-refresh] no Pinnacle market for market=%s point=%s outcome=%s",
+            market,
+            point,
+            outcome,
+        )
         return
     payloads = []
     for p in target.get("prices") or []:
@@ -1316,6 +1370,17 @@ def create_mirror_router(
         up), and return the raw markets — the frontend devigs in TS and
         recomputes edge inline.
 
+        Request body fields:
+          - provider_id: required (currently only "pinnacle" is supported)
+          - matchup_id:  required for pinnacle
+          - event_id:    required (betty's event_id)
+          - market:      required ('moneyline' | 'spread' | 'total')
+          - point:       optional, line value (spread/total)
+          - outcome:     optional, the row's outcome ('home'/'away'/'over'/
+                         'under'). Used only to flip the sign on
+                         away-spread lookups so we hit the right Pinnacle
+                         market key (which is keyed home-perspective).
+
         Polymarket / Kalshi have no per-event refresh path today; we
         respond 501 and let the frontend's hook surface an "unsupported"
         affordance.
@@ -1325,6 +1390,7 @@ def create_mirror_router(
         event_id = body.get("event_id")
         market = body.get("market")
         point = body.get("point")
+        outcome = body.get("outcome")  # optional; used for spread sign-flip
         if not provider_id or not event_id or not market:
             raise HTTPException(400, "missing required fields")
 
@@ -1340,11 +1406,12 @@ def create_mirror_router(
                 # Surface 200 with error key so the frontend can show a soft
                 # "refresh failed" toast rather than a hard 5xx in console.
                 return {"provider_id": provider_id, **result}
-            await _persist_sharp_market(
+            await _persist_sharp_outcomes(
                 provider_id=provider_id,
                 event_id=event_id,
                 market=market,
                 point=point,
+                outcome=outcome,
                 result=result,
             )
             return {"provider_id": provider_id, **result}
