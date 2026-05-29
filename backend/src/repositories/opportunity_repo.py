@@ -114,9 +114,10 @@ class OpportunityRepo:
             flag_modified(existing, "outcomes")
             if annotations is not None:
                 flag_modified(existing, "annotations")
-            return False, existing
+            opp_obj = existing
+            is_new = False
         else:
-            opp = Opportunity(
+            opp_obj = Opportunity(
                 type="value",
                 event_id=event_id,
                 market=market,
@@ -133,8 +134,16 @@ class OpportunityRepo:
                 annotations=annotations,
                 scope=scope,
             )
-            self.db.add(opp)
-            return True, opp
+            self.db.add(opp_obj)
+            self.db.flush()  # snapshot service needs opp_obj fields populated
+            is_new = True
+
+        # Snapshot for CLV tracking (atomic with the opp upsert above).
+        from ..services.opp_snapshot_service import OppSnapshotService
+
+        OppSnapshotService(self.db).upsert_from_opportunity(opp_obj)
+
+        return is_new, opp_obj
 
     def upsert_arb(
         self,
@@ -199,9 +208,10 @@ class OpportunityRepo:
             existing.point = point
             existing.detected_at = now
             flag_modified(existing, "outcomes")
-            return False, existing
+            opp_obj = existing
+            is_new = False
         else:
-            opp = Opportunity(
+            opp_obj = Opportunity(
                 type="arb",
                 event_id=event_id,
                 market=market,
@@ -219,8 +229,15 @@ class OpportunityRepo:
                 detected_at=now,
                 scope=scope,
             )
-            self.db.add(opp)
-            return True, opp
+            self.db.add(opp_obj)
+            self.db.flush()
+            is_new = True
+
+        from ..services.opp_snapshot_service import OppSnapshotService
+
+        OppSnapshotService(self.db).upsert_from_opportunity(opp_obj)
+
+        return is_new, opp_obj
 
     def upsert_reverse(
         self,
@@ -338,9 +355,10 @@ class OpportunityRepo:
             existing.point = point
             existing.detected_at = now
             flag_modified(existing, "outcomes")
-            return False, existing
+            opp_obj = existing
+            is_new = False
         else:
-            opp = Opportunity(
+            opp_obj = Opportunity(
                 type="reverse_value",
                 event_id=event_id,
                 market=market,
@@ -356,8 +374,15 @@ class OpportunityRepo:
                 detected_at=now,
                 scope=scope,
             )
-            self.db.add(opp)
-            return True, opp
+            self.db.add(opp_obj)
+            self.db.flush()
+            is_new = True
+
+        from ..services.opp_snapshot_service import OppSnapshotService
+
+        OppSnapshotService(self.db).upsert_from_opportunity(opp_obj)
+
+        return is_new, opp_obj
 
     def cleanup_stale(self, changed_event_ids: set[str] | None = None) -> dict:
         """
