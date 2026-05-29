@@ -132,6 +132,12 @@ class BatchBet:
     # Provider metadata (for navigation — altenar event IDs, kambi matchup IDs, etc.)
     provider_meta: dict | None = None
 
+    # Sharp baseline used to compute fair_odds — surfaced so the frontend's
+    # useSharpRefresh hook can live-fetch the baseline on row click. None for
+    # consensus-derived value bets (no single provider responsible).
+    baseline_provider_id: str | None = None
+    baseline_meta: dict | None = None
+
 
 @dataclass
 class ProviderBalance:
@@ -239,6 +245,32 @@ class BatchBuilder:
         self.db = db
         self.opp_repo = OpportunityRepo(db)
         self.profile_repo = ProfileRepo(db)
+
+    def _baseline_for_opp(self, opp) -> tuple[str | None, dict | None]:
+        """Return (baseline_provider_id, baseline_meta) for an opportunity.
+
+        baseline_provider_id is opp.provider2_id (the sharp/devig source).
+        baseline_meta comes from that provider's Odds row provider_meta
+        (e.g. Pinnacle's matchup_id) — None if no row exists or it has
+        no metadata.
+        """
+        from ..db.models import Odds
+
+        baseline_provider_id = opp.provider2_id
+        if not baseline_provider_id:
+            return None, None
+        baseline_odds = (
+            self.db.query(Odds)
+            .filter(
+                Odds.event_id == opp.event_id,
+                Odds.provider_id == baseline_provider_id,
+                Odds.market == opp.market,
+            )
+            .first()
+        )
+        if baseline_odds and baseline_odds.provider_meta:
+            return baseline_provider_id, dict(baseline_odds.provider_meta)
+        return baseline_provider_id, None
 
     def build(self, profile_id: int, exclude: list[str] | None = None, priority_provider: str | None = None) -> dict:
         """
@@ -526,6 +558,8 @@ class BatchBuilder:
         fair_odds = opp.odds2 or 0.0
         edge_raw = (opp.edge_pct or 0.0) / 100.0
 
+        baseline_provider_id, baseline_meta = self._baseline_for_opp(opp)
+
         # Per-provider min-edge filter — skip outright before Kelly. Polymarket
         # has ~$0.07 Polygon gas per trade, so sub-5% edge bets at the $1 min
         # are net-EV-negative after gas (gas-aware MC showed median bankroll
@@ -662,6 +696,8 @@ class BatchBuilder:
             funded=False,  # allocation will flip to True if there's balance
             skip_reason=skip_reason,
             bankroll_needed=getattr(result, "bankroll_needed", 0.0) or 0.0,
+            baseline_provider_id=baseline_provider_id,
+            baseline_meta=baseline_meta,
         )
 
     @staticmethod
@@ -816,6 +852,8 @@ class BatchBuilder:
             lifecycle=pb.lifecycle,
             cluster=bet.cluster,
             provider_meta=bet.provider_meta,
+            baseline_provider_id=bet.baseline_provider_id,
+            baseline_meta=bet.baseline_meta,
         )
 
     def _allocate_batch(
