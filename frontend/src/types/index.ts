@@ -913,6 +913,8 @@ export interface BatchBet {
   funded: boolean;
   skip_reason: string | null;
   wagering_pct?: number | null;
+  baseline_provider_id?: string | null;
+  baseline_meta?: Record<string, unknown> | null;
 }
 
 export interface BatchSummary {

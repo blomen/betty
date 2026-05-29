@@ -372,6 +372,8 @@ interface BatchBet {
   // Provider-specific routing data (event_slug, matchup_id, token_id, etc.).
   // Needed for navigate-to-event when the URL template requires a slug.
   provider_meta?: Record<string, unknown>
+  baseline_provider_id?: string | null
+  baseline_meta?: Record<string, unknown> | null
 }
 
 interface SettleToast {
