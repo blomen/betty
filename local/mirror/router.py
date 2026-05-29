@@ -2146,7 +2146,7 @@ def create_mirror_router(
             # original (stale) slug, so reading it here would re-flag the URL
             # as off-event after a successful refresh.
             expected_slug = (
-                (bet_ns.get("provider_meta") or {}).get("event_slug")
+                (getattr(bet_ns, "provider_meta", None) or {}).get("event_slug")
                 or (anchor_leg.get("provider_meta") or {}).get("event_slug")
                 or ""
             ).lower()
