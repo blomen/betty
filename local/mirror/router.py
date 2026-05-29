@@ -1063,6 +1063,10 @@ def create_mirror_router(
                                 "payout": e.payout,
                                 "provider_bet_id": e.provider_bet_id,
                                 "event_name": e.event_name,
+                                # market+outcome let reconcile reject cross-leg
+                                # matches (moneyline vs spread on same event/odds)
+                                "market": e.market,
+                                "outcome": e.outcome,
                             }
                             for e in raw_history
                         ]

@@ -28,6 +28,45 @@ class ReconcileDelta:
 _FUZZY_NAME_THRESHOLD = 80  # rapidfuzz token_set_ratio
 _FUZZY_ODDS_TOL_PCT = 5.0  # max % drift on odds for fuzzy match
 
+# Market vocab differs across providers; 1x2 and moneyline are the same market.
+_MARKET_ALIASES = {
+    "1x2": "moneyline",
+    "moneyline": "moneyline",
+    "ml": "moneyline",
+    "match winner": "moneyline",
+    "spread": "spread",
+    "handicap": "spread",
+    "total": "total",
+    "over/under": "total",
+    "totals": "total",
+}
+
+
+def _norm_market(m: str | None) -> str:
+    m = (m or "").strip().lower()
+    return _MARKET_ALIASES.get(m, m)
+
+
+def _market_outcome_conflict(bet: dict, entry: dict) -> bool:
+    """True when bet and entry carry KNOWN, conflicting market or outcome.
+
+    Lenient by design: if either side omits market (or outcome), that field is
+    not used to block — many providers' history rows don't expose them, and we
+    must not regress those matches. The guard exists to stop a moneyline leg
+    from cross-matching a spread leg on the same event at the same odds (an
+    arb_counter recorded with provider_bet_id=None then mis-backfilled with its
+    sibling mirror leg's wagerNumber — live bug pinnacle 2239139046 / poly
+    627+810).
+    """
+    bm, em = _norm_market(bet.get("market")), _norm_market(entry.get("market"))
+    if bm and em and bm != em:
+        return True
+    bo = (bet.get("outcome") or "").strip().lower()
+    eo = (entry.get("outcome") or "").strip().lower()
+    if bo and eo and bo != eo:
+        return True
+    return False
+
 
 def _normalize(name: str) -> str:
     return (
@@ -94,6 +133,13 @@ def reconcile_from_history(
         if not bet_pid or bet_pid not in by_pid:
             continue
         idx, entry = by_pid[bet_pid]
+        # Two DB bets can share one provider_bet_id after a prior bad backfill
+        # (market-blind fuzzy match). Only settle the leg whose market+outcome
+        # matches this history entry, and never let one entry settle two bets.
+        if idx in used_history:
+            continue
+        if _market_outcome_conflict(bet, entry):
+            continue
         used_history.add(idx)
         delta = _compute_delta(bet_id, bet, entry, "id", 100.0)
         if delta:
@@ -127,6 +173,10 @@ def reconcile_from_history(
                 continue
             h_event = _normalize(entry.get("event_name") or "")
             if not h_event:
+                continue
+            # Same event at the same odds can host distinct legs (moneyline vs
+            # spread, home vs away). Never settle one leg off another's row.
+            if _market_outcome_conflict(bet, entry):
                 continue
             score = fuzz.token_set_ratio(bet_event, h_event)
             if score < name_threshold:
@@ -193,6 +243,8 @@ def reconcile_from_history(
                 continue
             h_status = (entry.get("status") or "").lower()
             if h_status not in ("won", "lost", "void", "cashout"):
+                continue
+            if _market_outcome_conflict(bet, entry):
                 continue
             h_odds = float(entry.get("odds", 0) or 0)
             h_stake = float(entry.get("stake", 0) or 0)
