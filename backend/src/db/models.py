@@ -886,6 +886,79 @@ class Opportunity(Base):
     provider2 = relationship("Provider", foreign_keys=[provider2_id])
 
 
+class OppSnapshot(Base):
+    """
+    Frozen detection-time record of every opportunity surfaced by the scanner,
+    with closing-line value backfilled once the event starts.
+
+    Sister table to `opportunities`: the live `opportunities` table is ephemeral
+    (wiped on each scan cycle); this table persists one row per logical opp
+    instance (uniqueness mirrors `opportunities`) for retrospective CLV analysis.
+
+    Detection-time fields are frozen on first sighting; re-detections only bump
+    `last_detected_at` and `detection_count`. CLV fields are NULL until the
+    backfill job runs after event start_time.
+    """
+
+    __tablename__ = "opp_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "event_id",
+            "market",
+            "outcome1",
+            "provider1_id",
+            "type",
+            "scope",
+            name="uq_opp_snapshot",
+        ),
+        Index("ix_opp_snap_provider_type_first", "provider1_id", "type", "first_detected_at"),
+        Index("ix_opp_snap_first_detected_at", "first_detected_at"),
+        # Partial index for backfill job (Postgres only — SQLite ignores the
+        # postgresql_where kwarg and creates a plain index, which is fine).
+        Index("ix_opp_snap_clv_pending", "event_id", postgresql_where=text("clv_computed_at IS NULL")),
+    )
+
+    id = Column(Integer, primary_key=True)
+    event_id = Column(String, ForeignKey("events.id"), nullable=False)
+    type = Column(String, nullable=False)  # value | arb | reverse_value
+    market = Column(String, nullable=False)
+    outcome1 = Column(String, nullable=False)
+    point = Column(Float, nullable=True)
+    scope = Column(String(16), nullable=False, server_default="ft", default="ft")
+
+    # Leg 1 (always present)
+    provider1_id = Column(String, ForeignKey("providers.id"), nullable=False)
+    odds1_at_detection = Column(Float, nullable=False)
+    fair_odds1_at_detection = Column(Float, nullable=True)
+    edge_pct_at_detection = Column(Float, nullable=True)
+
+    # Leg 2 (arb-only; NULL for value/reverse_value)
+    provider2_id = Column(String, ForeignKey("providers.id"), nullable=True)
+    outcome2 = Column(String, nullable=True)
+    odds2_at_detection = Column(Float, nullable=True)
+
+    # Lifecycle
+    first_detected_at = Column(DateTime, nullable=False, default=_utcnow)
+    last_detected_at = Column(DateTime, nullable=False, default=_utcnow)
+    detection_count = Column(Integer, nullable=False, default=1, server_default="1")
+    time_to_start_minutes_at_detection = Column(Float, nullable=True)
+
+    # Backfilled at event start (NULL until then)
+    provider1_closing_odds = Column(Float, nullable=True)
+    provider1_closing_age_minutes = Column(Float, nullable=True)
+    provider2_closing_odds = Column(Float, nullable=True)
+    provider2_closing_age_minutes = Column(Float, nullable=True)
+    pinnacle_closing_fair = Column(Float, nullable=True)
+    pinnacle_closing_age_minutes = Column(Float, nullable=True)
+    provider_clv_pct = Column(Float, nullable=True)
+    pinnacle_clv_pct = Column(Float, nullable=True)
+    closing_prob_sum = Column(Float, nullable=True)  # arbs only
+    was_arb_at_close = Column(Boolean, nullable=True)  # arbs only
+    clv_computed_at = Column(DateTime, nullable=True)
+
+    event = relationship("Event")
+
+
 # ============ Extraction Monitoring ============
 
 
