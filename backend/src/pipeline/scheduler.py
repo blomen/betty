@@ -1112,22 +1112,29 @@ class ExtractionScheduler:
                 break
 
     def _run_settlement(self) -> dict:
-        """Snapshot closing odds for CLV tracking."""
+        """Snapshot closing odds for CLV tracking — bets first, then unplayed opps."""
         from src.db.models import get_session
         from src.services.bet_service import BetService
+        from src.services.opp_snapshot_service import OppSnapshotService
 
         session = get_session()
         try:
             bet_service = BetService(session)
-            clv_stats = bet_service.snapshot_closing_odds()
+            bet_clv = bet_service.snapshot_closing_odds()
+
+            opp_service = OppSnapshotService(session)
+            opp_clv = opp_service.compute_closing_clv()
+
             session.commit()
 
-            if clv_stats.get("updated", 0) > 0:
+            if bet_clv.get("updated", 0) > 0:
+                logger.info(f"[Scheduler:settlement] Bet CLV: {bet_clv['updated']}/{bet_clv['processed']} bets updated")
+            if opp_clv.get("updated", 0) > 0:
                 logger.info(
-                    f"[Scheduler:settlement] CLV snapshot: {clv_stats['updated']}/{clv_stats['processed']} bets updated"
+                    f"[Scheduler:settlement] Opp CLV: {opp_clv['updated']}/{opp_clv['processed']} snapshots updated"
                 )
 
-            return clv_stats
+            return {"bet_clv": bet_clv, "opp_clv": opp_clv}
         except Exception:
             session.rollback()
             raise
