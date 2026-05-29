@@ -4380,6 +4380,17 @@ export default function PlayPage() {
                                         // so the row's profit % updates to reflect what Pinnacle is
                                         // actually offering RIGHT NOW (extraction-time data is often
                                         // 2-5 min stale and can flip a "+0.5%" arb to negative).
+                                        // TODO(2026-Q3): cut over arb leg refresh from refreshPinnacleMatchup
+                                        // (legacy /mirror/pinnacle/refresh-matchup) to the unified useSharpRefresh
+                                        // path. Today the legacy fetch populates liveLegOdds (per-leg overrides
+                                        // for the arb leg display); useSharpRefresh exposes freshRaw which can
+                                        // replace it. Keeping both during transition is harmless — same data,
+                                        // same persistence path via /api/odds/live-update. The reason this isn't
+                                        // already migrated: liveLegOdds is per-LEG with team-perspective points,
+                                        // while useSharpRefresh returns a per-MARKET map keyed by Pinnacle's
+                                        // home-perspective designation. A freshRaw → liveLegOdds bridge needs to
+                                        // flip the point for away spread legs (the bridge logic mirrors
+                                        // _select_pinnacle_market's sign-flip from the backend).
                                         const pinnacleLegs = (opp.legs ?? []).filter((l: any) =>
                                           (l.provider ?? l.provider_id) === 'pinnacle',
                                         )
