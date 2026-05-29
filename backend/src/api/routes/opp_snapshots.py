@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
-from ...db.models import OppSnapshot
+from ...db.models import Event, OppSnapshot
 from ..deps import get_db
 
 logger = logging.getLogger(__name__)
@@ -99,4 +99,45 @@ def get_stats(
         for row in breakdown_rows
     ]
 
-    return {"summary": summary, "history": history, "breakdown": breakdown}
+    # ---- Per-sport blended-vs-Pinnacle comparison (drives flip decisions) ----
+    # Only rows where BOTH CLV values exist, so the delta is apples-to-apples.
+    blend_base = (
+        db.query(
+            Event.sport.label("sport"),
+            func.count().label("n"),
+            func.avg(OppSnapshot.pinnacle_clv_pct).label("mean_pin"),
+            func.avg(OppSnapshot.blended_clv_pct).label("mean_blend"),
+        )
+        .join(Event, Event.id == OppSnapshot.event_id)
+        .filter(
+            OppSnapshot.clv_computed_at.isnot(None),
+            OppSnapshot.first_detected_at > cutoff,
+            OppSnapshot.pinnacle_clv_pct.isnot(None),
+            OppSnapshot.blended_clv_pct.isnot(None),
+        )
+        .group_by(Event.sport)
+        .having(func.count() >= 3)
+        .order_by(func.count().desc())
+        .all()
+    )
+    sport_blend_comparison = [
+        {
+            "sport": row.sport,
+            "n": int(row.n),
+            "mean_pinnacle_clv_pct": float(row.mean_pin) if row.mean_pin is not None else None,
+            "mean_blended_clv_pct": float(row.mean_blend) if row.mean_blend is not None else None,
+            "delta": (
+                float(row.mean_blend) - float(row.mean_pin)
+                if row.mean_blend is not None and row.mean_pin is not None
+                else None
+            ),
+        }
+        for row in blend_base
+    ]
+
+    return {
+        "summary": summary,
+        "history": history,
+        "breakdown": breakdown,
+        "sport_blend_comparison": sport_blend_comparison,
+    }

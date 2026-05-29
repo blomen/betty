@@ -23,10 +23,19 @@ export interface OppSnapshotBreakdownRow {
   mean_edge_at_detection: number | null;
 }
 
+export interface SportBlendComparisonRow {
+  sport: string;
+  n: number;
+  mean_pinnacle_clv_pct: number | null;
+  mean_blended_clv_pct: number | null;
+  delta: number | null;
+}
+
 export interface OppSnapshotStats {
   summary: OppSnapshotSummary;
   history: OppSnapshotHistoryPoint[];
   breakdown: OppSnapshotBreakdownRow[];
+  sport_blend_comparison: SportBlendComparisonRow[];
 }
 
 export const oppSnapshotsApi = {

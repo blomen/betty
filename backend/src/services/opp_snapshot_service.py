@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
+from ..analysis.devig import _devig_market_for_outcome
+from ..analysis.sharp_blend import blended_fair_from_rows
 from ..db.models import Event, Opportunity, OppSnapshot
 
 
@@ -70,6 +72,18 @@ class OppSnapshotService:
         outcome2 = opp.outcome2 if is_arb else None
         odds2_at_detection = opp.odds2 if is_arb else None
 
+        # Multi-book sharp blend (shadow). Computed from the same current Odds
+        # rows the scanner saw this cycle — detection-time by construction.
+        # Reuse the already-fetched event rather than re-querying.
+        blend = blended_fair_from_rows(
+            outcome=opp.outcome1,
+            rows=self._blend_member_rows(opp, opp.market, opp.point, opp.scope),
+            sport=(event.sport if event else None),
+        )
+        blended_fair1 = blend.fair_odds if blend else None
+        blend_n_sources = blend.n_sources if blend else None
+        blend_sources = blend.sources if blend else None
+
         snap = OppSnapshot(
             event_id=opp.event_id,
             type=opp.type,
@@ -88,6 +102,9 @@ class OppSnapshotService:
             last_detected_at=now,
             detection_count=1,
             time_to_start_minutes_at_detection=ttk,
+            blended_fair1_at_detection=blended_fair1,
+            blend_n_sources_at_detection=blend_n_sources,
+            blend_sources=blend_sources,
         )
         self.db.add(snap)
         self.db.flush()  # populate PK so caller has it
@@ -128,6 +145,7 @@ class OppSnapshotService:
             did_update = False
             event = self.db.query(Event).filter(Event.id == snap.event_id).first()
             start_time = event.start_time if event else None
+            sport = event.sport if event else None  # reused by the blend block below
             # SQLite strips tzinfo on round-trip; coerce to UTC-aware so
             # datetime arithmetic with tz-aware Odds.updated_at succeeds.
             if start_time is not None and start_time.tzinfo is None:
@@ -191,12 +209,24 @@ class OppSnapshotService:
                     snap.closing_prob_sum = prob_sum
                     snap.was_arb_at_close = prob_sum < 1.0
 
+            # ---- Blended sharp closing fair (shadow) ----
+            blend = blended_fair_from_rows(
+                outcome=snap.outcome1,
+                rows=self._blend_member_rows(snap, snap.market, snap.point, snap.scope),
+                sport=sport,
+            )
+            if blend is not None and blend.fair_odds > 1.0:
+                snap.blended_closing_fair = blend.fair_odds
+                snap.blended_clv_pct = round((snap.odds1_at_detection / blend.fair_odds - 1) * 100, 2)
+                did_update = True
+
             # Always mark done — even when no closing data was available —
             # so the row isn't reprocessed every cycle.
             snap.clv_computed_at = now
             if did_update:
                 updated += 1
 
+        self.db.flush()  # push all mutations to DB (caller owns the transaction)
         return {"processed": processed, "updated": updated}
 
     def _latest_odds(
@@ -233,6 +263,12 @@ class OppSnapshotService:
     ):
         """Pinnacle's odds devigged against sibling outcomes for the same
         (market, point, scope). Returns (fair_odds, age_minutes) or (None, None).
+
+        Uses power devig for 3-way markets (1x2) and multiplicative for 2-way —
+        the same method selection as the scanner and blend — so that in the
+        neutral case (only Pinnacle qualifies for the blend), blended_closing_fair
+        == pinnacle_closing_fair and the per-sport CLV delta is not contaminated
+        by a devig-method artifact.
         """
         from ..db.models import Odds
 
@@ -248,20 +284,40 @@ class OppSnapshotService:
         if not siblings:
             return None, None
 
-        # Devig: prob_i = (1/odds_i) / sum(1/odds_j) → fair_i = 1/prob_i
-        inv_sum = sum(1.0 / o.odds for o in siblings if o.odds > 1.0)
-        if inv_sum <= 0:
+        # Build Pinnacle's complete market for this (market, point, scope) and
+        # devig with the SAME method the scanner + blend use (power for 3-way,
+        # multiplicative for 2-way) so the neutral-case invariant holds:
+        # when only Pinnacle qualifies for the blend, blended_closing_fair ==
+        # pinnacle_closing_fair (else the per-sport CLV delta is contaminated by
+        # a devig-method artifact).
+        p_market = {o.outcome: o.odds for o in siblings if o.odds > 1.0}
+        all_outcomes = list(p_market.keys())
+        if outcome not in p_market or len(all_outcomes) < 2:
+            return None, None
+        fair = _devig_market_for_outcome(outcome, all_outcomes, p_market)
+        if fair is None or fair <= 1.0:
             return None, None
 
+        # Still need the target row for its updated_at (age computation).
         target = next((o for o in siblings if o.outcome == outcome), None)
-        if target is None or target.odds <= 1.0:
-            return None, None
-
-        fair = 1.0 / ((1.0 / target.odds) / inv_sum)
         age = None
-        if start_time and target.updated_at:
+        if start_time and target is not None and target.updated_at:
             upd = target.updated_at
             if upd.tzinfo is None:
                 upd = upd.replace(tzinfo=UTC)
             age = (start_time - upd).total_seconds() / 60.0
         return fair, age
+
+    def _blend_member_rows(self, snap_or_opp, market, point, scope):
+        """All Odds rows (any outcome) for the event/market/point/scope across
+        every provider — sharp_blend filters to members itself. Returns list[Odds]."""
+        from ..db.models import Odds
+
+        q = self.db.query(Odds).filter(
+            Odds.event_id == snap_or_opp.event_id,
+            Odds.market == market,
+            Odds.scope == scope,
+        )
+        if market in ("spread", "total") and point is not None:
+            q = q.filter(Odds.point == point)
+        return q.all()

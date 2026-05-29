@@ -206,6 +206,38 @@ spectate_tournaments: &spectate_tournaments
     - league-of-legends/lec
 
 # ============================================================================
+# Multi-book sharp blend configuration
+# ============================================================================
+# Members are the sharp sources blended to produce fair odds.
+# liquidity_gated providers require depth_usd >= liquidity_min_usd to qualify.
+# per_sport weights override the default for specific sports; unmatched sports
+# fall back to the default block. max_dev_pct clamps the blend to within that
+# percentage of the Pinnacle single-source fair odds.
+sharp_blend:
+  members: [pinnacle, cloudbet, kalshi, polymarket]
+  liquidity_gated: [kalshi, polymarket]
+  liquidity_min_usd: 500
+  per_sport:
+    default:
+      pinnacle: 1.0
+      cloudbet: 0.6
+      kalshi: 0.5
+      polymarket: 0.5
+      max_dev_pct: 8
+    americanfootball_nfl:
+      pinnacle: 1.0
+      cloudbet: 0.2
+      kalshi: 0.3
+      polymarket: 0.3
+      max_dev_pct: 4
+    soccer_epl:
+      pinnacle: 1.0
+      cloudbet: 0.3
+      kalshi: 0.2
+      polymarket: 0.2
+      max_dev_pct: 4
+
+# ============================================================================
 # Provider definitions
 # ============================================================================
 # Only providers with bonuses are included. No-bonus providers (ATG, Paf,
