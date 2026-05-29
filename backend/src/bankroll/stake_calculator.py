@@ -111,7 +111,11 @@ PROVIDER_STAKE_PROFILES: dict[str, ProviderStakeProfile] = {
     # in the gas-aware MC while not throwing away nearly all polymarket volume.
     "polymarket": ProviderStakeProfile(fee_rate=0.0, min_stake_native=1.0, currency="USDC", min_edge_pct=5.0),
     "kalshi": ProviderStakeProfile(fee_rate=0.0, min_stake_native=1.0, currency="USD", min_edge_pct=3.0),
-    "cloudbet": ProviderStakeProfile(fee_rate=0.0, min_stake_native=20.0, currency="SEK", min_edge_pct=1.0),
+    # Cloudbet is a no-fee crypto book whose wallet + betslip settle in USDC.
+    # Sized natively in USDC (like kalshi/polymarket) so Kelly stakes and the
+    # slip fill agree with the wallet currency. $1 min matches the other USD
+    # books; no gas, so the edge floor stays at 1% (vs polymarket's 5%).
+    "cloudbet": ProviderStakeProfile(fee_rate=0.0, min_stake_native=1.0, currency="USDC", min_edge_pct=1.0),
 }
 
 
@@ -126,13 +130,14 @@ def provider_min_stake_sek(provider_id: str, exchange_rate: float, fallback: flo
     if profile is None:
         return fallback
     # min_stake_native is denominated in profile.currency, NOT the wallet's
-    # currency. For SEK-denominated minima ("20 kr click overhead" — pinnacle,
-    # cloudbet) the value is already SEK; multiplying by the wallet's
+    # currency. For a SEK-denominated minimum ("20 kr click overhead" —
+    # pinnacle) the value is already SEK; multiplying by the wallet's
     # exchange_rate would scale a real cost in click-overhead by a wallet FX,
-    # which is meaningless. Crucially this matters when wallet currency ≠
-    # profile currency: cloudbet's profile says 20 SEK but its wallet is USDC
-    # (rate 10.5), so the old `value * rate` returned 210 SEK ≈ full cloudbet
-    # bankroll → every Kelly stake was floored to the entire balance.
+    # which is meaningless. For USD/USDC profiles (polymarket, kalshi,
+    # cloudbet) the $1 floor is converted to its SEK equivalent for the Kelly
+    # comparison below. (Historical bug: cloudbet was once SEK-profiled while
+    # its wallet was USDC, so `value * rate` floored every Kelly stake to the
+    # full balance — now its profile currency matches the wallet.)
     if profile.currency == "SEK":
         return profile.min_stake_native
     return profile.min_stake_native * (exchange_rate or 1.0)
