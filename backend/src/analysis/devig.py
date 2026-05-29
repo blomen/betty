@@ -276,3 +276,150 @@ def compute_consensus_fair_odds(
     hm = n / sum(1.0 / v for v in platform_values)
 
     return (hm, n)
+
+
+from dataclasses import dataclass  # noqa: E402
+
+
+@dataclass
+class BlendedFair:
+    """Result of a multi-book sharp blend for one outcome.
+
+    fair_odds: the blended fair decimal odds (post-guardrail).
+    pinnacle_fair: Pinnacle's own devigged fair for the outcome (None if absent).
+    n_sources: number of sharp members that contributed.
+    sources: sorted list of contributing provider ids.
+    clamped: True if the guardrail pulled the blend back toward Pinnacle.
+    """
+
+    fair_odds: float
+    pinnacle_fair: float | None
+    n_sources: int
+    sources: list[str]
+    clamped: bool = False
+
+
+def _devig_market_for_outcome(outcome: str, all_outcomes: list[str], p_market: dict[str, float]) -> float | None:
+    """Devig ONE provider's complete market and return its fair odds for `outcome`.
+
+    Power method for 3-way (1x2), multiplicative for 2-way — identical selection
+    to compute_consensus_fair_odds. Returns None on invalid odds.
+    """
+    n = len(all_outcomes)
+    p_odds = [p_market[o] for o in all_outcomes]
+    if any(o <= 1 for o in p_odds):
+        return None
+    if n >= 3:
+        fair_list = devig_power(p_odds)
+        return fair_list[all_outcomes.index(outcome)]
+    margin = sum(1.0 / o for o in p_odds) - 1
+    return p_market[outcome] * (1 + margin)
+
+
+def compute_blended_sharp_fair(
+    outcome: str,
+    odds_by_outcome: dict[str, list[dict]],
+    members: list[str],
+    weights: dict[str, float],
+    liquidity_gated: set[str],
+    liquidity_min_usd: float,
+    min_sources: int = 1,
+) -> "BlendedFair | None":
+    """Weighted-harmonic blend of devigged fair odds across sharp members.
+
+    Args:
+        outcome: outcome to price ("home"/"away"/"draw"/etc).
+        odds_by_outcome: {outcome: [{"provider","odds","depth_usd"(optional)}, ...]}.
+        members: eligible blend providers (must include "pinnacle").
+        weights: {provider_id: weight, ..., "max_dev_pct": float}. Providers with
+            weight <= 0 or absent contribute nothing.
+        liquidity_gated: providers (kalshi/polymarket) that must clear depth gate.
+        liquidity_min_usd: minimum depth_usd for a gated provider to contribute.
+        min_sources: minimum qualifying members for a multi-source blend.
+
+    Returns:
+        BlendedFair, or None if no member qualifies / market malformed.
+
+    Guarantees: if only Pinnacle qualifies, returns Pinnacle's fair unchanged —
+    the blend is never strictly worse than Pinnacle-only.
+    """
+    all_outcomes = list(odds_by_outcome.keys())
+    if len(all_outcomes) < 2:
+        return None
+
+    # Build per-provider complete markets + capture depth on the priced outcome.
+    provider_markets: dict[str, dict[str, float]] = {}
+    provider_depth: dict[str, float] = {}
+    for out, plist in odds_by_outcome.items():
+        for p in plist:
+            pid = p["provider"]
+            if pid not in members:
+                continue
+            provider_markets.setdefault(pid, {})[out] = p["odds"]
+            if out == outcome and p.get("depth_usd") is not None:
+                provider_depth[pid] = p["depth_usd"]
+
+    member_fairs: dict[str, float] = {}
+    for pid, p_market in provider_markets.items():
+        if len(p_market) != len(all_outcomes):
+            continue  # incomplete market — can't devig
+        if pid in liquidity_gated:
+            depth = provider_depth.get(pid)
+            if depth is None or depth < liquidity_min_usd:
+                continue  # thin/unknown prediction-market depth — fail safe
+        fair = _devig_market_for_outcome(outcome, all_outcomes, p_market)
+        if fair is None or fair <= 1:
+            continue
+        member_fairs[pid] = fair
+
+    if not member_fairs:
+        return None
+
+    pinnacle_fair = member_fairs.get("pinnacle")
+    non_pinnacle = {k: v for k, v in member_fairs.items() if k != "pinnacle"}
+
+    # Only Pinnacle qualified → return it unchanged (never worse than today).
+    if not non_pinnacle:
+        if pinnacle_fair is None:
+            return None
+        return BlendedFair(
+            fair_odds=pinnacle_fair,
+            pinnacle_fair=pinnacle_fair,
+            n_sources=1,
+            sources=["pinnacle"],
+        )
+
+    if len(member_fairs) < min_sources:
+        return None
+
+    # Weighted harmonic mean of fair odds == inverse of weighted-mean probability.
+    weight_sum = 0.0
+    inv_sum = 0.0
+    for pid, fair in member_fairs.items():
+        w = weights.get(pid, 0.0)
+        if w <= 0:
+            continue
+        weight_sum += w
+        inv_sum += w / fair
+    if inv_sum <= 0:
+        return None
+    blended = weight_sum / inv_sum
+
+    # Guardrail: clamp blend within +/- max_dev_pct of Pinnacle's fair.
+    clamped = False
+    max_dev = weights.get("max_dev_pct")
+    if pinnacle_fair is not None and max_dev:
+        lo = pinnacle_fair * (1 - max_dev / 100.0)
+        hi = pinnacle_fair * (1 + max_dev / 100.0)
+        if blended < lo:
+            blended, clamped = lo, True
+        elif blended > hi:
+            blended, clamped = hi, True
+
+    return BlendedFair(
+        fair_odds=blended,
+        pinnacle_fair=pinnacle_fair,
+        n_sources=len(member_fairs),
+        sources=sorted(member_fairs.keys()),
+        clamped=clamped,
+    )
