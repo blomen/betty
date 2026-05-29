@@ -135,10 +135,10 @@ class OpportunityRepo:
                 scope=scope,
             )
             self.db.add(opp_obj)
-            self.db.flush()  # snapshot service needs opp_obj fields populated
+            self.db.flush()
             is_new = True
 
-        # Snapshot for CLV tracking (atomic with the opp upsert above).
+        # Deferred import to avoid cycle via services/__init__.py aggregator.
         from ..services.opp_snapshot_service import OppSnapshotService
 
         OppSnapshotService(self.db).upsert_from_opportunity(opp_obj)
@@ -233,6 +233,7 @@ class OpportunityRepo:
             self.db.flush()
             is_new = True
 
+        # Deferred import to avoid cycle via services/__init__.py aggregator.
         from ..services.opp_snapshot_service import OppSnapshotService
 
         OppSnapshotService(self.db).upsert_from_opportunity(opp_obj)
@@ -378,6 +379,7 @@ class OpportunityRepo:
             self.db.flush()
             is_new = True
 
+        # Deferred import to avoid cycle via services/__init__.py aggregator.
         from ..services.opp_snapshot_service import OppSnapshotService
 
         OppSnapshotService(self.db).upsert_from_opportunity(opp_obj)
