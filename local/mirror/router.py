@@ -1072,9 +1072,8 @@ def create_mirror_router(
         except Exception as e:
             return {"error": str(e)}
 
-    @router.get("/pinnacle/refresh-matchup/{matchup_id}")
-    async def refresh_pinnacle_matchup(matchup_id: int):
-        """Targeted live-odds refresh for one Pinnacle matchup.
+    async def _pinnacle_fetch_markets(matchup_id: int) -> dict:
+        """Fetch raw markets for a Pinnacle matchup via the user's Playwright tab.
 
         Hits api.arcadia.pinnacle.se with the public X-API-Key (extracted
         from the SPA's appConfig) via Playwright's page.request — bypasses
@@ -1094,6 +1093,8 @@ def create_mirror_router(
             "league": str | None,
             "sport": str | None,
             "participants": [str, str],
+            "is_live": bool,
+            "status": str | None,
             "markets": [
               {
                 "key": "s;0;m" | "s;6;m" | "s;0;s;-1.5" | "s;0;ou;2.5" | ...,
@@ -1105,6 +1106,7 @@ def create_mirror_router(
               }, ...
             ]
           }
+        Or {"error": "<reason>", ...} on failure.
         """
         from .workflows.strategies.pinnacle import (
             _PINNACLE_API_BASE,
@@ -1210,6 +1212,13 @@ def create_mirror_router(
             "status": m.get("status"),
             "markets": markets,
         }
+
+    @router.get("/pinnacle/refresh-matchup/{matchup_id}")
+    async def refresh_pinnacle_matchup(matchup_id: int):
+        """Targeted live-odds refresh for one Pinnacle matchup. Legacy route —
+        new code should call POST /mirror/sharp/refresh-event.
+        """
+        return await _pinnacle_fetch_markets(matchup_id)
 
     @router.get("/browser/eval-on-tab")
     async def eval_on_tab(url_contains: str, js: str = "document.title"):
