@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
+from ..analysis.devig import _devig_market_for_outcome
 from ..analysis.sharp_blend import blended_fair_from_rows
 from ..db.models import Event, Opportunity, OppSnapshot
 
@@ -73,10 +74,11 @@ class OppSnapshotService:
 
         # Multi-book sharp blend (shadow). Computed from the same current Odds
         # rows the scanner saw this cycle — detection-time by construction.
+        # Reuse the already-fetched event rather than re-querying.
         blend = blended_fair_from_rows(
             outcome=opp.outcome1,
             rows=self._blend_member_rows(opp, opp.market, opp.point, opp.scope),
-            sport=self._event_sport(opp.event_id),
+            sport=(event.sport if event else None),
         )
         blended_fair1 = blend.fair_odds if blend else None
         blend_n_sources = blend.n_sources if blend else None
@@ -261,6 +263,12 @@ class OppSnapshotService:
     ):
         """Pinnacle's odds devigged against sibling outcomes for the same
         (market, point, scope). Returns (fair_odds, age_minutes) or (None, None).
+
+        Uses power devig for 3-way markets (1x2) and multiplicative for 2-way —
+        the same method selection as the scanner and blend — so that in the
+        neutral case (only Pinnacle qualifies for the blend), blended_closing_fair
+        == pinnacle_closing_fair and the per-sport CLV delta is not contaminated
+        by a devig-method artifact.
         """
         from ..db.models import Odds
 
@@ -276,18 +284,24 @@ class OppSnapshotService:
         if not siblings:
             return None, None
 
-        # Devig: prob_i = (1/odds_i) / sum(1/odds_j) → fair_i = 1/prob_i
-        inv_sum = sum(1.0 / o.odds for o in siblings if o.odds > 1.0)
-        if inv_sum <= 0:
+        # Build Pinnacle's complete market for this (market, point, scope) and
+        # devig with the SAME method the scanner + blend use (power for 3-way,
+        # multiplicative for 2-way) so the neutral-case invariant holds:
+        # when only Pinnacle qualifies for the blend, blended_closing_fair ==
+        # pinnacle_closing_fair (else the per-sport CLV delta is contaminated by
+        # a devig-method artifact).
+        p_market = {o.outcome: o.odds for o in siblings if o.odds > 1.0}
+        all_outcomes = list(p_market.keys())
+        if outcome not in p_market or len(all_outcomes) < 2:
+            return None, None
+        fair = _devig_market_for_outcome(outcome, all_outcomes, p_market)
+        if fair is None or fair <= 1.0:
             return None, None
 
+        # Still need the target row for its updated_at (age computation).
         target = next((o for o in siblings if o.outcome == outcome), None)
-        if target is None or target.odds <= 1.0:
-            return None, None
-
-        fair = 1.0 / ((1.0 / target.odds) / inv_sum)
         age = None
-        if start_time and target.updated_at:
+        if start_time and target is not None and target.updated_at:
             upd = target.updated_at
             if upd.tzinfo is None:
                 upd = upd.replace(tzinfo=UTC)
@@ -307,7 +321,3 @@ class OppSnapshotService:
         if market in ("spread", "total") and point is not None:
             q = q.filter(Odds.point == point)
         return q.all()
-
-    def _event_sport(self, event_id: str) -> str | None:
-        ev = self.db.query(Event).filter(Event.id == event_id).first()
-        return ev.sport if ev else None

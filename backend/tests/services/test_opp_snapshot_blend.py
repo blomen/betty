@@ -114,3 +114,32 @@ def test_closing_backfill_computes_blended_clv(session):
     # Closing blended fair ~2.0 (50/50 devigged); CLV = (2.20/2.00 - 1)*100 = 10%.
     assert snap.blended_closing_fair == pytest.approx(2.0, rel=1e-6)
     assert snap.blended_clv_pct == pytest.approx(10.0, rel=1e-3)
+
+
+def test_closing_neutral_case_3way_blend_equals_pinnacle(session):
+    # 1x2 (3-way) market, ONLY Pinnacle has odds -> blend uses power devig,
+    # pinnacle_closing_fair must use the SAME method so the neutral-case
+    # invariant holds: blended_closing_fair == pinnacle_closing_fair.
+    _event(session, start_offset_min=-10)
+    for outcome, odds in (("home", 2.10), ("draw", 3.40), ("away", 3.60)):
+        _odds(session, "pinnacle", outcome, odds, market="1x2")
+    session.commit()
+    snap = OppSnapshot(
+        event_id="evt1",
+        type="value",
+        market="1x2",
+        outcome1="home",
+        scope="ft",
+        provider1_id="betsson",
+        odds1_at_detection=2.30,
+        first_detected_at=datetime.now(UTC) - timedelta(hours=2),
+        last_detected_at=datetime.now(UTC) - timedelta(hours=2),
+    )
+    session.add(snap)
+    session.commit()
+    OppSnapshotService(session).compute_closing_clv()
+    session.refresh(snap)
+    assert snap.pinnacle_closing_fair is not None
+    assert snap.blended_closing_fair is not None
+    assert snap.blended_closing_fair == pytest.approx(snap.pinnacle_closing_fair, rel=1e-9)
+    assert snap.blended_clv_pct == pytest.approx(snap.pinnacle_clv_pct, rel=1e-6)
