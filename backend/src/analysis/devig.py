@@ -12,6 +12,7 @@ Most common use: Multiplicative for Pinnacle odds.
 """
 
 import logging
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -278,9 +279,6 @@ def compute_consensus_fair_odds(
     return (hm, n)
 
 
-from dataclasses import dataclass  # noqa: E402
-
-
 @dataclass
 class BlendedFair:
     """Result of a multi-book sharp blend for one outcome.
@@ -389,6 +387,8 @@ def compute_blended_sharp_fair(
             sources=["pinnacle"],
         )
 
+    # Reached only when ≥1 non-Pinnacle source qualified — the Pinnacle-only
+    # case already returned above, so min_sources gates multi-source blends only.
     if len(member_fairs) < min_sources:
         return None
 
