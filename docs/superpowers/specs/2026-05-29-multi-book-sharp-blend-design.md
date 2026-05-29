@@ -194,7 +194,7 @@ Scanner edge now uses blended fair for that sport (guardrail still active)
 |---|---|
 | No qualifying non-Pinnacle member | Return Pinnacle fair unchanged (never worse) |
 | Pinnacle absent | No blend, no value opp — same as today (Pinnacle-required) |
-| Stale / odds-ratio outliers | Must pass existing `staleness_minutes_for` + `MAX_ODDS_RATIO` filters before contributing |
+| Stale / odds-ratio outliers | **Shadow-phase decision (2026-05-30):** the blend does NOT pre-filter members on `staleness_minutes_for` / `MAX_ODDS_RATIO`. Outlier impact is bounded instead by (a) the per-sport `max_dev_pct` guardrail (clamps the blend toward Pinnacle) and (b) the `depth_usd` liquidity gate for Kalshi/Poly. Members are the frequently-extracted unlimited pool (pinnacle/cloudbet/kalshi/polymarket), where staleness is far less likely than for browser-soft books. A dedicated staleness filter can be added to `blended_fair_from_rows` later if shadow data shows stale-line contamination. Shadow-only → risk bounded to analytics, not stakes. |
 | `depth_usd` null/below gate | Kalshi/Poly excluded (fail safe) |
 | Incomplete market / `odds ≤ 1` | Skip that source (same guards as `compute_consensus_fair_odds`) |
 | Only Pinnacle closed at backfill | `blended_closing_fair == pinnacle_closing_fair` → opp neutral in A/B delta (correct) |
