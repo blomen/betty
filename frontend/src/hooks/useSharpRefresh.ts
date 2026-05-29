@@ -29,6 +29,12 @@ interface InflightEntry {
 
 const inflight = new Map<string, InflightEntry>()
 
+// TODO: 60s `staleAt` watchdog from spec is not yet implemented. After
+// `state` becomes 'fresh', a setTimeout(60_000) should flip it back to
+// 'stale' so the user gets a re-refresh prompt if they linger. Adding
+// here would require also clearing the timer in the cleanup callback
+// to avoid leaks on row unmount. Deferred — see spec design doc.
+
 function selectPinnacleMarket(
   markets: any[],
   market: string,

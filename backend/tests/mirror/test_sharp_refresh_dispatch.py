@@ -277,3 +277,68 @@ def test_select_pinnacle_market_float_tolerance():
     ]
     m = _select_pinnacle_market(markets, "spread", -2, outcome="home")
     assert m is not None, "float-tolerant matching failed (-2 vs -2.0)"
+
+
+def test_pinnacle_persist_spread_uses_per_price_points(client):
+    """Spread refresh: each persisted row uses the price's own team-perspective
+    point, not the request body's point. Catches the away-spread bug where
+    the home update was being POSTed with the away point and silently no-op'd."""
+    fake_response = {
+        "matchup_id": 1234567,
+        "requested_id": 1234567,
+        "league": "NFL",
+        "sport": "Football",
+        "participants": ["A", "B"],
+        "is_live": False,
+        "status": "pending",
+        "markets": [
+            {
+                "key": "s;0;s;1.5",
+                "period": 0,
+                "prices": [
+                    {"designation": "home", "american": -150, "decimal": 1.67, "points": 1.5},
+                    {"designation": "away", "american": +130, "decimal": 2.30, "points": -1.5},
+                ],
+            },
+        ],
+    }
+    posts: list[dict] = []
+
+    class FakeResp:
+        status_code = 200
+
+    async def fake_post(url, *, json=None, **kw):
+        posts.append({"url": url, "json": json})
+        return FakeResp()
+
+    class FakeClient:
+        async def post(self, url, *, json=None, **kw):
+            return await fake_post(url, json=json, **kw)
+
+    def fake_tunnel_client():
+        return FakeClient()
+
+    with (
+        patch("local.mirror.router._pinnacle_fetch_markets_for_router", new=AsyncMock(return_value=fake_response)),
+        patch("local.http_client.tunnel_client", new=fake_tunnel_client),
+    ):
+        # Away-spread refresh request: point=-1.5, outcome=away
+        client.post(
+            "/mirror/sharp/refresh-event",
+            json={
+                "provider_id": "pinnacle",
+                "matchup_id": "1234567",
+                "event_id": "evt-spread",
+                "market": "spread",
+                "point": -1.5,
+                "outcome": "away",
+            },
+        )
+
+    persist_posts = [p for p in posts if "odds/live-update" in p["url"]]
+    assert len(persist_posts) == 2, f"expected 2 persist calls, got {len(persist_posts)}"
+    by_outcome = {p["json"]["outcome"]: p["json"] for p in persist_posts}
+    assert by_outcome["home"]["point"] == 1.5, "home row must persist with team-perspective +1.5, not -1.5"
+    assert by_outcome["away"]["point"] == -1.5, "away row must persist with team-perspective -1.5"
+    assert by_outcome["home"]["odds"] == 1.67
+    assert by_outcome["away"]["odds"] == 2.30

@@ -443,16 +443,24 @@ async def _persist_sharp_outcomes(
         return
     payloads = []
     for p in target.get("prices") or []:
-        outcome = _designation_to_outcome(p.get("designation"))
-        if outcome is None or p.get("decimal") is None:
+        outcome_str = _designation_to_outcome(p.get("designation"))
+        if outcome_str is None or p.get("decimal") is None:
             continue
+        # Use the per-price team-perspective `points`, not the request body's
+        # `point`. For spread/total, Pinnacle's two prices carry opposite-sign
+        # points (e.g. home@+1.5 / away@-1.5); using the body's point would
+        # cause the opposite-side row's UPDATE to silently no-op at
+        # /api/odds/live-update because the SQL filter (event_id, provider_id,
+        # market, outcome, point) wouldn't match the stored row.
+        price_point_raw = p.get("points")
+        price_point = float(price_point_raw) if price_point_raw is not None else None
         payloads.append(
             {
                 "provider_id": provider_id,
                 "event_id": event_id,
                 "market": market,
-                "outcome": outcome,
-                "point": point,
+                "outcome": outcome_str,
+                "point": price_point,
                 "odds": p["decimal"],
                 "source": "mirror",
             }
