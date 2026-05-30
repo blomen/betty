@@ -165,12 +165,13 @@ def list_bets(
     status: str | None = None,
     exclude_bonus: bool = False,
     limit: int = 50,
+    profile_id: int | None = None,
     db: Session = Depends(get_db),
 ):
     """Get bet history for active profile."""
     profile_repo = ProfileRepo(db)
     bet_repo = BetRepo(db)
-    profile = profile_repo.get_active()
+    profile = profile_repo.get(profile_id)
 
     bets = bet_repo.list_for_profile(profile.id, status=status, exclude_bonus=exclude_bonus, limit=limit)
     site_urls = load_provider_site_urls()
@@ -410,6 +411,7 @@ def correlate_arbs_endpoint(db: Session = Depends(get_db_writer)):
 def get_analytics(
     provider_id: str | None = None,
     days: int = 90,
+    profile_id: int | None = None,
     db: Session = Depends(get_db),
 ):
     """Per-sport + per-edge-bucket realized ROI vs displayed edge.
@@ -423,7 +425,7 @@ def get_analytics(
     from ...db.models import Bet
 
     profile_repo = ProfileRepo(db)
-    profile = profile_repo.get_active()
+    profile = profile_repo.get(profile_id)
     if not profile:
         raise HTTPException(404, "No active profile")
 

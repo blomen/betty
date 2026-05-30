@@ -61,3 +61,28 @@ def test_profile_to_dict_includes_style(db_session):
     db_session.commit()
     d = profile_to_dict(p, ProfileRepo(db_session))
     assert d["style"] == "bonus_extraction"
+
+
+def test_profile_repo_get_returns_by_id(db_session):
+    from src.repositories import ProfileRepo
+
+    p = Profile(name="t_repo_get")
+    db_session.add(p)
+    db_session.commit()
+    assert ProfileRepo(db_session).get(p.id).id == p.id
+
+
+def test_profile_repo_get_none_returns_active(db_session):
+    from src.repositories import ProfileRepo
+
+    repo = ProfileRepo(db_session)
+    assert repo.get(None).id == repo.get_active().id
+
+
+def test_get_stats_profile_id_matches_active_when_omitted(db_session):
+    from src.services import BankrollService
+
+    svc = BankrollService(db_session)
+    active_id = svc.profile_repo.get_active().id
+    assert svc.get_stats()["profile_id"] == active_id
+    assert svc.get_stats(active_id)["profile_id"] == active_id
