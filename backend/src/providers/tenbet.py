@@ -965,13 +965,14 @@ class TenBetRetriever(BrowserRetriever):
 
         enriched = 0
         errors = 0
-        sem = asyncio.Semaphore(4)
+        debug_logged = 0
+        sem = asyncio.Semaphore(6)
 
         # Create page pool
         await self.transport._ensure_browser()
         context = self.transport.page.context
         extra_pages = []
-        for _ in range(3):  # 3 extra + main = 4 total
+        for _ in range(5):  # 5 extra + main = 6 total
             try:
                 p = await context.new_page()
                 extra_pages.append(p)
@@ -984,7 +985,7 @@ class TenBetRetriever(BrowserRetriever):
         sport_slug = self.SPORT_SLUGS.get(sport, sport)
 
         async def enrich_one(event, event_id):
-            nonlocal enriched, errors
+            nonlocal enriched, errors, debug_logged
             if errors > 30:
                 return
 
@@ -998,32 +999,38 @@ class TenBetRetriever(BrowserRetriever):
                 async with sem:
                     url = f"{self.site_url}/sports/{sport_slug}/events/{numeric_id}"
                     try:
-                        # Match the 30s used in discover_competitions — same proxy/load.
-                        await worker_page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                        # Wait for actual price content (not just skeleton container)
-                        try:
-                            await worker_page.wait_for_function(
-                                """() => {
-                                    const prices = document.querySelectorAll('[class*="ta-price_text"]');
-                                    for (const p of prices) {
-                                        if (/^\\d/.test(p.textContent.trim())) return true;
-                                    }
-                                    return false;
-                                }""",
-                                timeout=12000,
-                            )
-                        except Exception:
-                            # Fallback: wait even longer
-                            await worker_page.wait_for_timeout(8000)
+                        # domcontentloaded is quick; the genuine wait is for prices.
+                        await worker_page.goto(url, wait_until="domcontentloaded", timeout=20000)
                     except Exception:
-                        errors += 1
+                        errors += 1  # hard nav failure — counts toward the abort guard
+                        return
+                    # Wait for real price content (not just the skeleton container).
+                    # Empty skeleton pages ("Här händer inget just nu") never render
+                    # prices, so bail the moment the budget elapses instead of burning
+                    # a blind 8s wait + a doomed evaluate. This is a *miss*, not a hard
+                    # error, so it must not trip the errors>30 abort guard.
+                    try:
+                        await worker_page.wait_for_function(
+                            """() => {
+                                const prices = document.querySelectorAll('[class*="ta-price_text"]');
+                                for (const p of prices) {
+                                    if (/^\\d/.test(p.textContent.trim())) return true;
+                                }
+                                return false;
+                            }""",
+                            timeout=7000,
+                        )
+                    except Exception:
                         return
 
                     detail = await worker_page.evaluate(JS_EXTRACT_DETAIL_MARKETS)
 
-                    # Log diagnostic from first event to help fix selectors
+                    # Log a couple of diagnostic DOM dumps to help fix selectors.
+                    # Gated on a dedicated counter — the old `enriched == 0` guard
+                    # spammed a ~3KB line for every miss until the first success.
                     debug_info = detail.pop("_debug", None)
-                    if debug_info and enriched == 0 and errors < 3:
+                    if debug_info and debug_logged < 2:
+                        debug_logged += 1
                         logger.info(f"[{self.provider_id}] {sport} detail DOM classes: {debug_info}")
 
                     added = False

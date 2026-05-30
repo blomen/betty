@@ -714,9 +714,11 @@ providers:
       - esports
       - mma
       - tennis            # 143 matches on site
-      - volleyball        # 49 matches on site
-      - boxing            # 29 matches on site
       - baseball          # 23 matches on site
+      # Removed 2026-05-30: volleyball + boxing extracted 0 events over 147 runs
+      # / 7 days (~45s/run wasted) despite the site claiming matches — our
+      # parser never yields any. Re-add if the coolbet extractor learns to read
+      # those pages (this is a speed prune, not a confirmed permanent absence).
     bonus:
       type: bonusdeposit
       amount: 1000
@@ -862,12 +864,14 @@ providers:
     supported_sports:
       - football
       - basketball
-      - tennis
       - ice_hockey
       - american_football
       - baseball
       - mma
       - boxing
+      # Removed tennis 2026-05-30: 0 events over 212 runs / 7 days (~20s/run of
+      # proxied pagination wasted). Tennis is year-round, so this is a Smarkets
+      # type-filter gap, not seasonality — re-add if it ever surfaces matches.
 
 # ============================================================================
 # Extraction Scheduling (per-provider cadence)

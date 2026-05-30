@@ -346,6 +346,12 @@ class SmarketsRetriever(Retriever):
                 if not body:
                     break
                 page_events = body.get("events", [])
+                if not page_events:
+                    # Empty page ⇒ no more events for this sport (Smarkets orders
+                    # by date). Walking the remaining pages just burns slow proxy
+                    # round-trips — bail. Fixes 0-event sports (e.g. tennis) eating
+                    # the full MAX_PAGES budget (~20s) every cycle.
+                    break
                 events_raw.extend(page_events)
                 in_scope.extend(self.filter_events_by_sport(page_events, sport))
                 # Stop paginating once we have enough — the health check sets

@@ -182,6 +182,26 @@ JS_SCRAPE_ALL_MARKETS = """async ({spreadKeywords, totalKeywords, otKeywords, ot
         return false;
     }
 
+    // --- Helper: wait until the cards repaint with the new tab's odds ---
+    // Replaces a blind sleep(1000) after a tab click: poll getCardOdds() until
+    // it differs from the pre-click snapshot (the SPA has rendered the new
+    // market) or the budget elapses. Early-exits the moment the repaint lands
+    // (~200-400ms typical) while keeping the same 1000ms ceiling — strictly
+    // faster, and no less reliable since it confirms the odds actually changed.
+    function oddsSig(o) {
+        return Object.keys(o).sort().map(k => k + ':' + (o[k] || []).join(',')).join('|');
+    }
+    async function waitForOddsRepaint(beforeOdds, budgetMs) {
+        const start = Date.now();
+        const beforeSig = oddsSig(beforeOdds);
+        while (Date.now() - start < budgetMs) {
+            await sleep(100);
+            const now = getCardOdds();
+            if (Object.keys(now).length && oddsSig(now) !== beforeSig) return now;
+        }
+        return getCardOdds();
+    }
+
     // --- Step 1: Parse game cards (1x2 default tab) ---
     const cards = document.querySelectorAll('[data-at="game-card"]');
     const events = [];
@@ -244,18 +264,22 @@ JS_SCRAPE_ALL_MARKETS = """async ({spreadKeywords, totalKeywords, otKeywords, ot
     const spreadPill = pickPill(spreadCandidates);
     const totalPill = pickPill(totalCandidates);
 
-    // --- Step 4: Click spread tab, wait, collect ---
+    // --- Step 4: Click spread tab, wait for repaint, collect ---
     let spreadOdds = {};
-    if (spreadPill && clickPill(spreadPill)) {
-        await sleep(1000);
-        spreadOdds = getCardOdds();
+    if (spreadPill) {
+        const before = getCardOdds();
+        if (clickPill(spreadPill)) {
+            spreadOdds = await waitForOddsRepaint(before, 1000);
+        }
     }
 
-    // --- Step 5: Click total tab, wait, collect ---
+    // --- Step 5: Click total tab, wait for repaint, collect ---
     let totalOdds = {};
-    if (totalPill && clickPill(totalPill)) {
-        await sleep(1000);
-        totalOdds = getCardOdds();
+    if (totalPill) {
+        const before = getCardOdds();
+        if (clickPill(totalPill)) {
+            totalOdds = await waitForOddsRepaint(before, 1000);
+        }
     }
 
     return { events, pills, spreadOdds, totalOdds };
