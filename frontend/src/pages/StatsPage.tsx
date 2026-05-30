@@ -988,7 +988,7 @@ export function BetsPage() {
                       <td className="text-right">
                         {bet.placed_edge_pct != null ? (
                           <span className={`text-sm font-medium ${bet.placed_edge_pct >= 0 ? 'text-success' : 'text-error'}`}>
-                            +{bet.placed_edge_pct.toFixed(1)}%
+                            {bet.placed_edge_pct >= 0 ? '+' : ''}{bet.placed_edge_pct.toFixed(1)}%
                           </span>
                         ) : (
                           <span className="text-sm text-muted">-</span>

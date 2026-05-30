@@ -498,6 +498,21 @@ class BetService:
         consensus_fair, _ = result
         return consensus_fair if consensus_fair > 1.0 else None
 
+    def _own_closing_odds(self, bet: Bet) -> float | None:
+        """Sharp book's own current line for a bet — fallback CLV benchmark
+        when no soft-book consensus exists (Pinnacle-only events that soft
+        books don't quote). Same-book CLV: did the line move in our favour."""
+        query = self.db.query(Odds).filter(
+            Odds.event_id == bet.event_id,
+            Odds.provider_id == bet.provider_id,
+            Odds.market == bet.market,
+            Odds.outcome == bet.outcome,
+        )
+        if bet.market in ("spread", "total") and bet.point is not None:
+            query = query.filter(Odds.point == bet.point)
+        row = query.first()
+        return row.odds if row and row.odds > 1.0 else None
+
     def _calculate_clv(self, bet: Bet) -> float | None:
         """
         Calculate Closing Line Value for a settled bet.
@@ -526,6 +541,12 @@ class BetService:
             if consensus:
                 bet.closing_odds = consensus
                 pinnacle_clv = round((bet.odds / consensus - 1) * 100, 2)
+            else:
+                # No soft consensus — fall back to Pinnacle's own line.
+                own = self._own_closing_odds(bet)
+                if own:
+                    bet.closing_odds = own
+                    pinnacle_clv = round((bet.odds / own - 1) * 100, 2)
         else:
             # Soft book bet: use Pinnacle closing odds as benchmark
             query = self.db.query(Odds).filter(
@@ -617,6 +638,15 @@ class BetService:
                         bet.closing_odds = consensus
                         bet.clv_pct = round((bet.odds / consensus - 1) * 100, 2)
                         updated += 1
+                    else:
+                        # No soft consensus (Pinnacle-only event — soft books
+                        # don't quote it). Fall back to Pinnacle's own current
+                        # line as the closing benchmark so CLOSE/CLV still fill.
+                        own = self._own_closing_odds(bet)
+                        if own:
+                            bet.closing_odds = own
+                            bet.clv_pct = round((bet.odds / own - 1) * 100, 2)
+                            updated += 1
                 else:
                     # Soft book bet: use Pinnacle closing odds as benchmark
                     query = self.db.query(Odds).filter(
@@ -660,6 +690,65 @@ class BetService:
             )
 
         return {"processed": processed, "updated": updated, "provider_clv_updated": provider_clv_updated}
+
+    def backfill_fair_odds(self) -> dict:
+        """Backfill fair_odds_at_placement for pending PRE-KICKOFF bets that
+        were recorded without it.
+
+        Mirror history sync records bets the user placed directly on the book
+        after the fact — when Pinnacle odds for the event often aren't in the
+        DB yet, so create_bet can't compute the fair price. By the next
+        Pinnacle extraction (~2 min) the odds exist; this fills the gap so the
+        EST EDGE and PROB columns populate.
+
+        Restricted to events that haven't started so the Pinnacle line used is
+        still a pre-match fair approximation of the placement-time edge. Once
+        an event starts, snapshot_closing_odds owns closing-line capture.
+
+        Returns: {"processed": int, "updated": int}
+        """
+        now = datetime.now(UTC)
+
+        candidates = (
+            self.db.query(Bet)
+            .join(Event, Event.id == Bet.event_id)
+            .filter(
+                Bet.result == "pending",
+                Bet.event_id.isnot(None),
+                Bet.market.isnot(None),
+                Bet.outcome.isnot(None),
+                Bet.fair_odds_at_placement.is_(None),
+                Event.start_time.isnot(None),
+                Event.start_time > now,
+            )
+            .all()
+        )
+
+        updated = 0
+        for bet in candidates:
+            # Mirror the de-vig from create_bet: filter by point for
+            # total/spread so we compare against the actual line we bet.
+            pin_query = self.db.query(Odds).filter(
+                Odds.event_id == bet.event_id,
+                Odds.provider_id == "pinnacle",
+                Odds.market == bet.market,
+            )
+            if bet.market in ("total", "spread"):
+                if bet.point is not None:
+                    pin_query = pin_query.filter(Odds.point == bet.point)
+                else:
+                    pin_query = pin_query.filter(Odds.point.is_(None))
+            pin_market = {row.outcome: row.odds for row in pin_query.all()}
+            if len(pin_market) >= 2 and bet.outcome in pin_market:
+                fair = get_fair_odds_for_outcome(bet.outcome, pin_market, method="multiplicative")
+                if fair and fair > 1.0:
+                    bet.fair_odds_at_placement = round(fair, 4)
+                    updated += 1
+
+        if updated:
+            logger.info(f"[BetService] Backfilled fair_odds for {updated}/{len(candidates)} pending bets")
+
+        return {"processed": len(candidates), "updated": updated}
 
     def edit_bet(
         self,

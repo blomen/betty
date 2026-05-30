@@ -1121,6 +1121,7 @@ class ExtractionScheduler:
         try:
             bet_service = BetService(session)
             bet_clv = bet_service.snapshot_closing_odds()
+            bet_fair = bet_service.backfill_fair_odds()
 
             opp_service = OppSnapshotService(session)
             opp_clv = opp_service.compute_closing_clv()
@@ -1129,12 +1130,17 @@ class ExtractionScheduler:
 
             if bet_clv.get("updated", 0) > 0:
                 logger.info(f"[Scheduler:settlement] Bet CLV: {bet_clv['updated']}/{bet_clv['processed']} bets updated")
+            if bet_fair.get("updated", 0) > 0:
+                logger.info(
+                    f"[Scheduler:settlement] Bet fair-odds backfill: "
+                    f"{bet_fair['updated']}/{bet_fair['processed']} bets updated"
+                )
             if opp_clv.get("updated", 0) > 0:
                 logger.info(
                     f"[Scheduler:settlement] Opp CLV: {opp_clv['updated']}/{opp_clv['processed']} snapshots updated"
                 )
 
-            return {"bet_clv": bet_clv, "opp_clv": opp_clv}
+            return {"bet_clv": bet_clv, "bet_fair": bet_fair, "opp_clv": opp_clv}
         except Exception:
             session.rollback()
             raise
