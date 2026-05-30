@@ -5,6 +5,7 @@ export function ProfileSelector() {
   const { profiles, activeProfile, isLoading, activate, create, remove } = useProfiles();
   const [open, setOpen] = useState(false);
   const [newName, setNewName] = useState('');
+  const [newStyle, setNewStyle] = useState<'personal' | 'bonus_extraction'>('personal');
   const [createError, setCreateError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -51,8 +52,9 @@ export function ProfileSelector() {
     if (!name) return;
     setCreateError(null);
     try {
-      await create.mutateAsync({ name });
+      await create.mutateAsync({ name, style: newStyle });
       setNewName('');
+      setNewStyle('personal');
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : 'Failed to create');
     }
@@ -140,6 +142,14 @@ export function ProfileSelector() {
               placeholder="New profile name"
               className="flex-1 px-2 py-1 bg-panel2 border border-border text-text text-xs"
             />
+            <select
+              value={newStyle}
+              onChange={(e) => setNewStyle(e.target.value as 'personal' | 'bonus_extraction')}
+              className="px-1 py-1 bg-panel2 border border-border text-text text-[10px]"
+            >
+              <option value="personal">Personal</option>
+              <option value="bonus_extraction">Bonus</option>
+            </select>
             <button
               type="submit"
               disabled={!newName.trim() || create.isPending}

@@ -29,9 +29,9 @@ def _get_service(db: Session = Depends(get_db)) -> BankrollService:
 
 
 @router.get("")
-def get_bankroll(service: BankrollService = Depends(_get_service)):
-    """Get provider balances and total bankroll for active profile."""
-    return service.get_bankroll()
+def get_bankroll(profile_id: int | None = None, service: BankrollService = Depends(_get_service)):
+    """Get provider balances and total bankroll for a profile (active if omitted)."""
+    return service.get_bankroll(profile_id)
 
 
 @router.get("/full")
@@ -120,9 +120,9 @@ def get_drawdown_status(db: Session = Depends(get_db)):
 
 
 @router.get("/stats")
-def get_bankroll_stats(service: BankrollService = Depends(_get_service)):
-    """Get bankroll statistics for active profile."""
-    return service.get_stats()
+def get_bankroll_stats(profile_id: int | None = None, service: BankrollService = Depends(_get_service)):
+    """Get bankroll statistics for a profile (active if omitted)."""
+    return service.get_stats(profile_id)
 
 
 @router.post("/set-all")

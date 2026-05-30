@@ -344,6 +344,7 @@ export interface Profile {
   bonus_enabled: boolean;
   is_active: boolean;
   color: string;
+  style: 'personal' | 'bonus_extraction';
   created_at: string | null;
 }
 
@@ -356,6 +357,7 @@ export interface ProfileCreate {
   min_arb_pct?: number;
   max_stake_pct?: number;
   color?: string;
+  style?: 'personal' | 'bonus_extraction';
 }
 
 export interface ProfileUpdate {
@@ -370,6 +372,7 @@ export interface ProfileUpdate {
   preferred_counterparts?: string[];
   bonus_enabled?: boolean;
   color?: string;
+  style?: 'personal' | 'bonus_extraction';
 }
 
 // Fund Allocation

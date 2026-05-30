@@ -32,11 +32,11 @@ class BankrollService:
         records = self.db.query(ProfileProviderBalance).filter(ProfileProviderBalance.profile_id == profile_id).all()
         return {r.provider_id: r.balance for r in records}
 
-    def get_bankroll(self) -> dict:
+    def get_bankroll(self, profile_id: int | None = None) -> dict:
         """Get provider balances and total bankroll for active profile."""
         from ..api.routes.providers import load_provider_bonuses
 
-        profile = self.profile_repo.get_active()
+        profile = self.profile_repo.get(profile_id)
         providers = self.db.query(Provider).filter(Provider.is_enabled).all()
 
         yaml_bonuses = load_provider_bonuses()
@@ -87,11 +87,11 @@ class BankrollService:
             "providers": provider_data,
         }
 
-    def get_stats(self) -> dict:
+    def get_stats(self, profile_id: int | None = None) -> dict:
         """Get bankroll statistics for active profile."""
         from ..config import get_exchange_rate
 
-        profile = self.profile_repo.get_active()
+        profile = self.profile_repo.get(profile_id)
         # Replaced the prior `bet_repo.get_settled(profile.id)` full scan +
         # 5-pass Python iteration with a SQL GROUP BY aggregate keyed on
         # (provider_id, currency, result, is_bonus). The (provider_id,

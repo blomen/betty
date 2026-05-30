@@ -2,12 +2,14 @@ import type { BankrollInfo, BankrollStats, BankrollExposure, AllocationEnvelope 
 import { fetchJson } from './client';
 
 export const bankrollApi = {
-  async getBankroll(): Promise<BankrollInfo> {
-    return fetchJson<BankrollInfo>('/bankroll');
+  async getBankroll(profileId?: number): Promise<BankrollInfo> {
+    const q = profileId != null ? `?profile_id=${profileId}` : '';
+    return fetchJson<BankrollInfo>(`/bankroll${q}`);
   },
 
-  async getBankrollStats(): Promise<BankrollStats> {
-    return fetchJson<BankrollStats>('/bankroll/stats');
+  async getBankrollStats(profileId?: number): Promise<BankrollStats> {
+    const q = profileId != null ? `?profile_id=${profileId}` : '';
+    return fetchJson<BankrollStats>(`/bankroll/stats${q}`);
   },
 
   async getBankrollStatus(): Promise<{

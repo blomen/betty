@@ -647,6 +647,7 @@ class Profile(Base):
     is_active = Column(Boolean, default=False)  # Currently selected profile
     chrome_port = Column(Integer, nullable=True)  # CDP port (default: 9221 + id)
     color = Column(String, nullable=True)  # Hex color for Chrome border (auto-assigned)
+    style = Column(String, nullable=False, default="personal")  # "personal" | "bonus_extraction"
 
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
@@ -1639,6 +1640,16 @@ def _run_migrations(engine):
             except sqlite3.OperationalError:
                 pass
 
+        # Add style to profiles (Stats per-profile account styles)
+        try:
+            cursor.execute("SELECT style FROM profiles LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE profiles ADD COLUMN style TEXT NOT NULL DEFAULT 'personal'")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
+
         # Add wallet_address to profile_provider_balances (Polymarket wallet sync)
         try:
             cursor.execute("SELECT wallet_address FROM profile_provider_balances LIMIT 1")
@@ -1927,6 +1938,12 @@ def _run_pg_migrations(engine) -> None:
         ("opp_snapshots", "blend_sources", "JSON"),
         ("opp_snapshots", "blended_closing_fair", "DOUBLE PRECISION"),
         ("opp_snapshots", "blended_clv_pct", "DOUBLE PRECISION"),
+        # 2026-05-30 — Stats per-profile account styles. "personal" vs
+        # "bonus_extraction" drives the adaptive Stats layout. Default 'personal'
+        # so existing prod profiles keep the standard performance view. Without
+        # this, the SQLite ALTER + Alembic 006 don't reach prod (container runs
+        # uvicorn directly; create_all never ALTERs the existing profiles table).
+        ("profiles", "style", "VARCHAR NOT NULL DEFAULT 'personal'"),
         # 2026-05-30 — shading-aware diagnostic columns on opp_snapshots.
         # Frozen at detection time; diagnostic only, no effect on edge/stake.
         ("opp_snapshots", "shading_risk", "VARCHAR"),
