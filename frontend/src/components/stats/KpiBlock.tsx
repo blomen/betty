@@ -1,9 +1,14 @@
 import type { BankrollStats } from '@/types';
 
 export function KpiBlock({ stats, bankrollSek }: { stats: BankrollStats; bankrollSek: number }) {
+  // Bonus profit (Rule B): harvested from bonus-extraction campaigns, deliberately
+  // excluded from Net Profit/ROI above. Shown only when non-zero so edge-only
+  // profiles keep the standard 5-up layout. Both grid widths are spelled out
+  // literally so Tailwind keeps the classes at build time.
+  const showBonus = stats.bonus_profit !== 0;
   return (
     <div className="border-l-2 border-tabBets">
-      <div className="grid grid-cols-5 gap-px bg-border border border-border">
+      <div className={`grid ${showBonus ? 'grid-cols-6' : 'grid-cols-5'} gap-px bg-border border border-border`}>
         <div className="bg-panel2 px-3 py-2.5">
           <div className="text-[10px] text-muted uppercase tracking-wider mb-0.5">Net Profit</div>
           <div className={`text-lg font-semibold ${stats.total_profit >= 0 ? 'text-success' : 'text-error'}`}>
@@ -42,6 +47,17 @@ export function KpiBlock({ stats, bankrollSek }: { stats: BankrollStats; bankrol
           <div className="text-[10px] text-muted uppercase tracking-wider mb-0.5">Bankroll</div>
           <div className="text-text text-lg font-semibold">{bankrollSek.toFixed(0)} kr</div>
         </div>
+        {showBonus && (
+          <div
+            className="bg-panel2 px-3 py-2.5"
+            title="Profit from bonus-extraction campaigns (both legs). Excluded from Net Profit and ROI (Rule B)."
+          >
+            <div className="text-[10px] text-amber-400/80 uppercase tracking-wider mb-0.5">Bonus profit</div>
+            <div className="text-lg font-semibold text-amber-400">
+              {stats.bonus_profit >= 0 ? '+' : ''}{stats.bonus_profit.toFixed(0)} kr
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
