@@ -270,3 +270,12 @@ def test_equity_curve_total_matches_get_stats_with_bonus(client, db_session):
     curve = client.get(f"/api/bets/equity-curve?profile_id={pid}").json()
     stats_profit = BankrollService(db_session).get_stats(pid)["total_profit"]
     assert curve["total_profit_sek"] == stats_profit  # both exclude the bonus bet
+
+
+def test_profile_bonus_statuses_endpoint(client, db_session):
+    from src.repositories import ProfileRepo
+
+    pid = ProfileRepo(db_session).get_active().id
+    r = client.get(f"/api/profiles/{pid}/bonus-statuses")
+    assert r.status_code == 200
+    assert isinstance(r.json(), dict)

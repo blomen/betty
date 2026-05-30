@@ -158,6 +158,15 @@ def get_profile(profile_id: int, db: Session = Depends(get_db)):
     return profile_to_dict(profile, profile_repo)
 
 
+@router.get("/{profile_id}/bonus-statuses")
+def get_profile_bonus_statuses(profile_id: int, db: Session = Depends(get_db)):
+    """Per-provider bonus status for a profile (powers the Stats bonus panel)."""
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get(profile_id)
+    provider_ids = sorted(profile_repo.get_all_registered_providers(profile.id))
+    return profile_repo.get_bonus_statuses_batch(profile.id, provider_ids)
+
+
 @router.put("/{profile_id}")
 def update_profile(profile_id: int, data: ProfileUpdate, db: Session = Depends(get_db)):
     """Update profile settings."""
