@@ -320,6 +320,7 @@ providers:
       trigger_multiplier: 6        # Wager-first: wager deposit×6 at 1.80+ → bonus as cash
       trigger_odds: 1.80
       trigger_mode: cumulative
+      wagering_multiplier: 0       # trigger completion = done (no main wagering phase)
 
 
 
@@ -336,6 +337,7 @@ providers:
       trigger_multiplier: 20       # Wager-first: wager deposit×20 at 1.80+ → bonus as cash
       trigger_odds: 1.80
       trigger_mode: cumulative
+      wagering_multiplier: 0       # trigger completion = done (no main wagering phase)
 
   # PRODUCTION_READY (2026-02-04) - ratio 2.77, 100% normalization
   betmgm:
@@ -350,6 +352,7 @@ providers:
       trigger_multiplier: 10       # Wager-first: wager deposit×10 at 1.80+ → bonus as cash
       trigger_odds: 1.80
       trigger_mode: cumulative
+      wagering_multiplier: 0       # trigger completion = done (no main wagering phase)
 
 
   # PRODUCTION_READY (2026-02-04) - ratio 2.77, 100% normalization

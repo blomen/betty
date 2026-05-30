@@ -151,3 +151,20 @@ def test_is_bonus_not_misfired_for_bonusdeposit_in_progress(db: Session):
     assert result.get("success") is True, result
     bet = db.query(Bet).filter(Bet.id == result["bet_id"]).first()
     assert bet.is_bonus is False
+
+
+def test_leovegas_config_completes_at_trigger(db: Session):
+    """Integration via deposit_with_bonus reading the REAL yaml: leovegas is
+    wager-first, so after the trigger wager it must COMPLETE (not enter a main
+    phase). Fails until wagering_multiplier:0 is set in providers.yaml."""
+    from src.services.bankroll_service import BankrollService
+
+    svc = BankrollService(db)
+    res = svc.deposit_with_bonus("leovegas", 600)  # deposit == bonus cap
+    assert res["bonus_status"] == "trigger_needed"
+    trig_req = res["wagering_requirement"]  # deposit * trigger_multiplier = 600*6
+    assert trig_req == 3600
+
+    repo = ProfileRepo(db)
+    repo.record_wagering(1, "leovegas", stake=trig_req, odds=1.9)  # meet trigger @1.80+
+    assert repo.get_bonus_status(1, "leovegas")["status"] == "completed"
