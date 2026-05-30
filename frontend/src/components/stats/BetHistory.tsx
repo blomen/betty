@@ -261,15 +261,26 @@ export function BetHistory({ bets, isLoading, refetch }: {
   return (
     <>
       {/* Bet History collapsible header */}
-      <button
-        className="flex items-center gap-2 w-full text-left cursor-pointer group"
-        onClick={() => setHistoryCollapsed(c => !c)}
-      >
-        <span className={`text-[10px] text-muted2 transition-transform ${historyCollapsed ? '' : 'rotate-90'}`}>▶</span>
-        <h3 className="text-xs text-muted uppercase tracking-wider font-semibold group-hover:text-text transition-colors">
-          Bet History <span className="text-muted2">{historyBets.length}</span>
-        </h3>
-      </button>
+      <div className="flex items-center gap-3">
+        <button
+          className="flex items-center gap-2 text-left cursor-pointer group flex-1 min-w-0"
+          onClick={() => setHistoryCollapsed(c => !c)}
+        >
+          <span className={`text-[10px] text-muted2 transition-transform ${historyCollapsed ? '' : 'rotate-90'}`}>▶</span>
+          <h3 className="text-xs text-muted uppercase tracking-wider font-semibold group-hover:text-text transition-colors">
+            Bet History <span className="text-muted2">{historyBets.length}</span>
+          </h3>
+        </button>
+        {!historyCollapsed && (
+          <input
+            type="text"
+            placeholder="Search event, provider, sport..."
+            className="px-2 py-1 text-xs bg-bg border border-border text-text placeholder:text-muted2 w-64 focus:border-tabBets focus:outline-none"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        )}
+      </div>
       {!historyCollapsed && (isLoading && bets.length === 0 ? (
         <div className="text-muted text-sm py-8 text-center border border-border bg-panel">Loading...</div>
       ) : historyBets.length === 0 ? (
