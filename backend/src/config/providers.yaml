@@ -366,6 +366,8 @@ providers:
       type: bonusdeposit
       amount: 500
       trigger_mode: cumulative
+      # TODO(bonus-terms): wagering_multiplier unset -> defaults to 10 (placeholder).
+      # Confirm real T&C wagering (x bonus) + min_odds + deadline_days before relying on tracking.
 
   # PRODUCTION_READY (2026-02-04) - ratio 2.77, 100% normalization
   x3000:
@@ -378,6 +380,8 @@ providers:
       type: bonusdeposit
       amount: 500
       trigger_mode: cumulative
+      # TODO(bonus-terms): wagering_multiplier unset -> defaults to 10 (placeholder).
+      # Confirm real T&C wagering (x bonus) + min_odds + deadline_days before relying on tracking.
 
   # PRODUCTION_READY (2026-02-04) - ratio 2.74, 100% normalization
   goldenbull:
@@ -390,6 +394,8 @@ providers:
       type: bonusdeposit
       amount: 500
       trigger_mode: cumulative
+      # TODO(bonus-terms): wagering_multiplier unset -> defaults to 10 (placeholder).
+      # Confirm real T&C wagering (x bonus) + min_odds + deadline_days before relying on tracking.
 
   # PRODUCTION_READY (2026-02-04) - ratio 2.74, 100% normalization
   1x2:
@@ -402,6 +408,8 @@ providers:
       type: bonusdeposit
       amount: 500
       trigger_mode: cumulative
+      # TODO(bonus-terms): wagering_multiplier unset -> defaults to 10 (placeholder).
+      # Confirm real T&C wagering (x bonus) + min_odds + deadline_days before relying on tracking.
 
   # --------------------------------------------------------------------------
   # Altenar REST API providers
@@ -419,6 +427,8 @@ providers:
       trigger_multiplier: 1        # 1× deposit at odds 1.50 to unlock
       trigger_odds: 1.50
       trigger_mode: cumulative
+      # TODO(bonus-terms): wagering_multiplier unset -> defaults to 10 (placeholder).
+      # Confirm real T&C wagering (x bonus) + min_odds + deadline_days before relying on tracking.
 
   campobet:
     <<: *altenar_defaults
@@ -432,6 +442,8 @@ providers:
       trigger_multiplier: 1        # Trigger: wager deposit×1 at 1.50+ to unlock bonus
       trigger_odds: 1.50
       trigger_mode: cumulative
+      # TODO(bonus-terms): wagering_multiplier unset -> defaults to 10 (placeholder).
+      # Confirm real T&C wagering (x bonus) + min_odds + deadline_days before relying on tracking.
 
   swiper:
     <<: *altenar_defaults
@@ -445,6 +457,8 @@ providers:
       trigger_multiplier: 1        # Trigger: wager deposit×1 at 1.50+ to unlock bonus
       trigger_odds: 1.50
       trigger_mode: cumulative
+      # TODO(bonus-terms): wagering_multiplier unset -> defaults to 10 (placeholder).
+      # Confirm real T&C wagering (x bonus) + min_odds + deadline_days before relying on tracking.
 
   lodur:
     <<: *altenar_defaults
@@ -456,6 +470,8 @@ providers:
       type: bonusdeposit
       amount: 1000
       trigger_mode: cumulative
+      # TODO(bonus-terms): wagering_multiplier unset -> defaults to 10 (placeholder).
+      # Confirm real T&C wagering (x bonus) + min_odds + deadline_days before relying on tracking.
 
   dbet:
     <<: *altenar_defaults
@@ -480,6 +496,8 @@ providers:
       trigger_multiplier: 1        # Trigger: wager deposit×1 at 1.50+ to unlock bonus
       trigger_odds: 1.50
       trigger_mode: cumulative
+      # TODO(bonus-terms): wagering_multiplier unset -> defaults to 10 (placeholder).
+      # Confirm real T&C wagering (x bonus) + min_odds + deadline_days before relying on tracking.
 
   # --------------------------------------------------------------------------
   # Spectate providers (888/Evoke platform)
@@ -517,6 +535,8 @@ providers:
       type: bonusdeposit
       amount: 500
       trigger_mode: cumulative
+      # TODO(bonus-terms): wagering_multiplier unset -> defaults to 10 (placeholder).
+      # Confirm real T&C wagering (x bonus) + min_odds + deadline_days before relying on tracking.
 
   # --------------------------------------------------------------------------
   # Gecko V2 / OBG providers (browser + events-table/v2 API)
@@ -569,6 +589,8 @@ providers:
       type: bonusdeposit
       amount: 500
       trigger_mode: cumulative
+      # TODO(bonus-terms): wagering_multiplier unset -> defaults to 10 (placeholder).
+      # Confirm real T&C wagering (x bonus) + min_odds + deadline_days before relying on tracking.
 
   bethard:
     id: bethard
@@ -581,6 +603,8 @@ providers:
       type: bonusdeposit
       amount: 500
       trigger_mode: cumulative
+      # TODO(bonus-terms): wagering_multiplier unset -> defaults to 10 (placeholder).
+      # Confirm real T&C wagering (x bonus) + min_odds + deadline_days before relying on tracking.
 
   # --------------------------------------------------------------------------
   # 10Bet (Playtech/Mojito SPA — DOM scraping)
@@ -606,6 +630,8 @@ providers:
       type: bonusdeposit
       amount: 1000
       trigger_mode: cumulative
+      # TODO(bonus-terms): wagering_multiplier unset -> defaults to 10 (placeholder).
+      # Confirm real T&C wagering (x bonus) + min_odds + deadline_days before relying on tracking.
 
   # --------------------------------------------------------------------------
   # Snabbare (Sportradar MTS - WebSocket extraction)
@@ -633,6 +659,8 @@ providers:
       type: bonusdeposit
       amount: 600
       trigger_mode: cumulative
+      # TODO(bonus-terms): wagering_multiplier unset -> defaults to 10 (placeholder).
+      # Confirm real T&C wagering (x bonus) + min_odds + deadline_days before relying on tracking.
 
   # --------------------------------------------------------------------------
   # ComeOn Group (custom multi-league WebSocket extraction)
@@ -649,6 +677,8 @@ providers:
       type: bonusdeposit
       amount: 500
       trigger_mode: cumulative
+      # TODO(bonus-terms): wagering_multiplier unset -> defaults to 10 (placeholder).
+      # Confirm real T&C wagering (x bonus) + min_odds + deadline_days before relying on tracking.
     max_leagues: 100
     concurrent_leagues: 8
     supported_sports:
@@ -729,6 +759,8 @@ providers:
       type: bonusdeposit
       amount: 800
       trigger_mode: cumulative
+      # TODO(bonus-terms): wagering_multiplier unset -> defaults to 10 (placeholder).
+      # Confirm real T&C wagering (x bonus) + min_odds + deadline_days before relying on tracking.
 
   # --------------------------------------------------------------------------
   # Coolbet (proprietary GAN Sports platform — browser-based API interception)
@@ -756,6 +788,8 @@ providers:
       type: bonusdeposit
       amount: 1000
       trigger_mode: cumulative
+      # TODO(bonus-terms): wagering_multiplier unset -> defaults to 10 (placeholder).
+      # Confirm real T&C wagering (x bonus) + min_odds + deadline_days before relying on tracking.
 
   # --------------------------------------------------------------------------
   # Tipwin (proprietary platform — browser-based API interception)
@@ -785,6 +819,8 @@ providers:
       type: bonusdeposit
       amount: 1000
       trigger_mode: cumulative
+      # TODO(bonus-terms): wagering_multiplier unset -> defaults to 10 (placeholder).
+      # Confirm real T&C wagering (x bonus) + min_odds + deadline_days before relying on tracking.
 
   # --- International signal-only providers ---
 
