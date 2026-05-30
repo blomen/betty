@@ -73,6 +73,45 @@ class BetService:
         row = q.first()
         return row[0] if row else None
 
+    def _pinnacle_fair_odds(
+        self,
+        event_id: str,
+        market: str,
+        outcome: str,
+        point: float | None,
+    ) -> float | None:
+        """De-vigged Pinnacle fair odds for a bet's outcome, or None.
+
+        Shared by create_bet (at placement) and backfill_fair_odds (settlement
+        tick) so the two stay consistent.
+
+        Two correctness guards:
+        - total/spread: filter by `point`. Pinnacle ships a ladder (over 8.5,
+          9.5, 10.5, ...); an unfiltered de-vig pulls a random line and prints
+          fantasy edges (bet 613/614 Twins/Astros over showed +341%).
+        - 1x2 is 3-way (home/draw/away): require ALL THREE outcomes present.
+          A 2-of-3 market de-vigs as a 2-way (probs normalised to 1.0),
+          understating fair odds and OVERSTATING the displayed edge. 2-way
+          markets (moneyline/total/spread) need >= 2.
+        """
+        pin_query = self.db.query(Odds).filter(
+            Odds.event_id == event_id,
+            Odds.provider_id == "pinnacle",
+            Odds.market == market,
+        )
+        if market in ("total", "spread"):
+            if point is not None:
+                pin_query = pin_query.filter(Odds.point == point)
+            else:
+                pin_query = pin_query.filter(Odds.point.is_(None))
+        pin_market = {row.outcome: row.odds for row in pin_query.all()}
+        min_outcomes = 3 if market == "1x2" else 2
+        if len(pin_market) >= min_outcomes and outcome in pin_market:
+            fair = get_fair_odds_for_outcome(outcome, pin_market, method="multiplicative")
+            if fair and fair > 1.0:
+                return round(fair, 4)
+        return None
+
     def create_bet(
         self,
         event_id: str | None,
@@ -182,28 +221,8 @@ class BetService:
         risk_score = self._get_risk_score(provider_id)
 
         # Compute fair odds at placement from current Pinnacle odds (or use passed value for boosts).
-        # For total/spread markets, Pinnacle stores multiple lines (over 8.5, 9.5, 10.5, ...).
-        # Without filtering by `point` the de-vig pulls a random line's odds into pin_market and
-        # produces fantasy edge numbers (e.g. bet 613/614 Twins/Astros over showed +341% / +34.84%
-        # because our over-X.5 was compared against the over-8.5 fair price). Filter by point so
-        # the comparison is against the actual line we bet.
         if fair_odds_at_placement is None and event_id and market and outcome:
-            pin_query = self.db.query(Odds).filter(
-                Odds.event_id == event_id,
-                Odds.provider_id == "pinnacle",
-                Odds.market == market,
-            )
-            if market in ("total", "spread"):
-                if point is not None:
-                    pin_query = pin_query.filter(Odds.point == point)
-                else:
-                    pin_query = pin_query.filter(Odds.point.is_(None))
-            pin_rows = pin_query.all()
-            pin_market = {row.outcome: row.odds for row in pin_rows}
-            if len(pin_market) >= 2 and outcome in pin_market:
-                fair = get_fair_odds_for_outcome(outcome, pin_market, method="multiplicative")
-                if fair and fair > 1.0:
-                    fair_odds_at_placement = round(fair, 4)
+            fair_odds_at_placement = self._pinnacle_fair_odds(event_id, market, outcome, point)
 
         # Refine bet_type from the matching active opportunity. Mirror callers
         # hardcode bet_type="value" for every recorded placement, which hides
@@ -501,14 +520,27 @@ class BetService:
     def _own_closing_odds(self, bet: Bet) -> float | None:
         """Sharp book's own current line for a bet — fallback CLV benchmark
         when no soft-book consensus exists (Pinnacle-only events that soft
-        books don't quote). Same-book CLV: did the line move in our favour."""
+        books don't quote). Same-book CLV: did the line move in our favour.
+
+        NOTE: this produces a DIFFERENT-scale CLV than the consensus path
+        (raw same-book line movement, ~0-centred, vig cancels) vs the
+        consensus path's bet-odds-vs-devigged-soft-fair. Both land in
+        bet.clv_pct, which bucket_confidence averages to drive the Kelly
+        multiplier. That consumer is gated off by default
+        (BUCKET_CONFIDENCE_ENABLED); BEFORE enabling it, split this fallback
+        into its own column/flag so the bucket mean stays benchmark-homogeneous.
+        """
+        if bet.market in ("spread", "total") and bet.point is None:
+            # Without a point we'd match an arbitrary ladder line — bail
+            # rather than benchmark against the wrong handicap.
+            return None
         query = self.db.query(Odds).filter(
             Odds.event_id == bet.event_id,
             Odds.provider_id == bet.provider_id,
             Odds.market == bet.market,
             Odds.outcome == bet.outcome,
         )
-        if bet.market in ("spread", "total") and bet.point is not None:
+        if bet.market in ("spread", "total"):
             query = query.filter(Odds.point == bet.point)
         row = query.first()
         return row.odds if row and row.odds > 1.0 else None
@@ -726,24 +758,10 @@ class BetService:
 
         updated = 0
         for bet in candidates:
-            # Mirror the de-vig from create_bet: filter by point for
-            # total/spread so we compare against the actual line we bet.
-            pin_query = self.db.query(Odds).filter(
-                Odds.event_id == bet.event_id,
-                Odds.provider_id == "pinnacle",
-                Odds.market == bet.market,
-            )
-            if bet.market in ("total", "spread"):
-                if bet.point is not None:
-                    pin_query = pin_query.filter(Odds.point == bet.point)
-                else:
-                    pin_query = pin_query.filter(Odds.point.is_(None))
-            pin_market = {row.outcome: row.odds for row in pin_query.all()}
-            if len(pin_market) >= 2 and bet.outcome in pin_market:
-                fair = get_fair_odds_for_outcome(bet.outcome, pin_market, method="multiplicative")
-                if fair and fair > 1.0:
-                    bet.fair_odds_at_placement = round(fair, 4)
-                    updated += 1
+            fair = self._pinnacle_fair_odds(bet.event_id, bet.market, bet.outcome, bet.point)
+            if fair is not None:
+                bet.fair_odds_at_placement = fair
+                updated += 1
 
         if updated:
             logger.info(f"[BetService] Backfilled fair_odds for {updated}/{len(candidates)} pending bets")
