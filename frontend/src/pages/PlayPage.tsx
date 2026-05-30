@@ -4,6 +4,8 @@ import { api } from '../hooks/useApi'
 import { useMirrorStream } from '../hooks/useMirrorStream'
 import { useMirrorState } from '../hooks/useMirrorState'
 import { useSharpRefresh } from '../hooks/useSharpRefresh'
+import { steamKey, useSteamAlert } from '../hooks/useSteamAlert'
+import type { SteamAlertBet } from '../hooks/useSteamAlert'
 import { migratedLocalStorageGet } from '../utils/localStorageMigration'
 import { RehedgeSection } from './play/RehedgeSection'
 
@@ -439,6 +441,7 @@ interface ValueBetRowProps {
   fmtTtk: (b: BatchBet) => string
   isCentsMarket: (providerId: string | undefined | null) => boolean
   legKey: (pid: string, outcome: string | null | undefined, point: number | null | undefined) => string
+  isSteamActive?: boolean
 }
 function ValueBetRow({
   b,
@@ -456,6 +459,7 @@ function ValueBetRow({
   fmtTtk,
   isCentsMarket,
   legKey,
+  isSteamActive,
 }: ValueBetRowProps) {
   const baselineProviderId =
     (b.baseline_provider_id as string | null | undefined) ?? null
@@ -514,7 +518,7 @@ function ValueBetRow({
       className={`border-b border-zinc-800/30 hover:bg-zinc-800/40 cursor-pointer transition-colors ${
         isSynced ? 'bg-emerald-900/30 ring-1 ring-emerald-500/40'
           : isCurrent ? 'bg-amber-900/20' : ''
-      } ${sharp.state === 'refreshing' ? 'opacity-80' : ''}`}
+      } ${sharp.state === 'refreshing' ? 'opacity-80' : ''} ${isSteamActive ? 'ring-2 ring-amber-400 bg-amber-400/10' : ''}`}
     >
       <td className="pl-6 pr-2 py-1 text-[10px] text-zinc-500 uppercase w-[80px]">
         {b.cluster && b.cluster !== b.provider_id
@@ -2613,6 +2617,21 @@ export default function PlayPage() {
     return true
   })
 
+  // Steam alert: funded provider set + flat bet array for the hook.
+  const fundedProviders = useMemo(
+    () => new Set(
+      Object.entries(providerBalances)
+        .filter(([, bal]) => (getBalance(bal) || 0) > 0)
+        .map(([pid]) => pid),
+    ),
+    [providerBalances],
+  )
+  const allValueBets = useMemo(
+    () => bets.map(b => ({ ...b, provider: b.provider_id } as unknown as SteamAlertBet)),
+    [bets],
+  )
+  const steamActiveKeys = useSteamAlert(allValueBets, fundedProviders)
+
   // Soft providers seen in the current batch — drive the arb activation bar.
   // Derived from batch data so the UI follows whatever the backend returns.
   const softProviders = Array.from(
@@ -2654,7 +2673,12 @@ export default function PlayPage() {
     const cluster = providerToCluster[pid] || pid
     if (!byCluster[cluster]) byCluster[cluster] = []
   }
-  for (const cluster in byCluster) byCluster[cluster].sort((a, b) => b.edge_pct - a.edge_pct)
+  for (const cluster in byCluster) byCluster[cluster].sort((a, b) => {
+    const as = steamActiveKeys.has(steamKey({ ...a, provider: a.provider_id } as unknown as SteamAlertBet)) ? 1 : 0
+    const bs = steamActiveKeys.has(steamKey({ ...b, provider: b.provider_id } as unknown as SteamAlertBet)) ? 1 : 0
+    if (as !== bs) return bs - as
+    return b.edge_pct - a.edge_pct
+  })
 
   // Cluster-level stats
   const clusterStats = (clusterId: string) => {
@@ -4903,11 +4927,15 @@ export default function PlayPage() {
                       return currentEdge > 0
                     })
                     .sort((a, b) => {
+                      const as = steamActiveKeys.has(steamKey({ ...a, provider: a.provider_id } as unknown as SteamAlertBet)) ? 1 : 0
+                      const bs = steamActiveKeys.has(steamKey({ ...b, provider: b.provider_id } as unknown as SteamAlertBet)) ? 1 : 0
+                      if (as !== bs) return bs - as
                       const aEdge = livePrices[`${a.event_id}:${a.market}:${a.outcome}`]?.edge ?? a.edge_pct
                       const bEdge = livePrices[`${b.event_id}:${b.market}:${b.outcome}`]?.edge ?? b.edge_pct
                       return bEdge - aEdge
                     }).map(b => {
                     const key = `${b.event_id}:${b.market}:${b.outcome}:${b.provider_id}`
+                    const isSteamActive = steamActiveKeys.has(steamKey({ ...b, provider: b.provider_id } as unknown as SteamAlertBet))
                     return (
                       <ValueBetRow
                         key={key}
@@ -4926,6 +4954,7 @@ export default function PlayPage() {
                         fmtTtk={fmtTtk}
                         isCentsMarket={isCentsMarket}
                         legKey={legKey}
+                        isSteamActive={isSteamActive}
                       />
                     )
                   })}
