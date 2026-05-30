@@ -1418,7 +1418,9 @@ class OpportunityScanner:
                     "bid": odds.bid,
                     "ask": odds.ask,
                     "max_stake": odds.max_stake,
-                    "depth_usd": odds.depth_usd,
+                    # depth_usd is CLOB-only (Polymarket); null for every other
+                    # provider and absent on legacy/stale rows — read defensively.
+                    "depth_usd": getattr(odds, "depth_usd", None),
                 }
             )
 
