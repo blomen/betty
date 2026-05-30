@@ -160,6 +160,7 @@ class ProfileCreate(BaseModel):
     bonus_enabled: bool | None = True
     bonus_deposit: float | None = 0.0
     color: str | None = None
+    style: str | None = "personal"
 
 
 class ProfileUpdate(BaseModel):
@@ -177,6 +178,7 @@ class ProfileUpdate(BaseModel):
     total_deposited: float | None = None
     total_withdrawn: float | None = None
     color: str | None = None
+    style: str | None = None
 
 
 # ============ Opportunity Schemas ============

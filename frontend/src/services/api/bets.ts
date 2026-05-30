@@ -4,11 +4,13 @@ import { fetchJson, fetchWithRetry } from './client';
 export const betsApi = {
   async getBets(
     status?: 'pending' | 'won' | 'lost' | 'void',
-    limit = 50
+    limit = 50,
+    profileId?: number,
   ): Promise<{ bets: Bet[]; count: number }> {
     const params = new URLSearchParams();
     if (status) params.set('status', status);
     params.set('limit', limit.toString());
+    if (profileId != null) params.set('profile_id', String(profileId));
     return fetchJson(`/bets?${params}`);
   },
 
@@ -91,7 +93,8 @@ export const betsApi = {
 
   async getAnalytics(
     providerId?: string,
-    days = 90
+    days = 90,
+    profileId?: number,
   ): Promise<{
     provider_id: string | null;
     days: number;
@@ -102,11 +105,29 @@ export const betsApi = {
     by_sport_and_bucket: Record<string, AnalyticsBucket>;
     by_sport_and_market: Record<string, AnalyticsBucketWithMultiplier>;
     bucket_confidence_enabled: boolean;
+    by_strategy: Record<string, AnalyticsBucket>;
+    by_provider: Record<string, AnalyticsBucket>;
   }> {
     const params = new URLSearchParams();
     if (providerId) params.set('provider_id', providerId);
     params.set('days', String(days));
+    if (profileId != null) params.set('profile_id', String(profileId));
     return fetchJson(`/bets/analytics?${params}`);
+  },
+
+  async getEquityCurve(
+    profileId?: number,
+    days?: number,
+  ): Promise<{
+    points: { t: string | null; cum_profit_sek: number }[];
+    total_profit_sek: number;
+    total_staked_sek: number;
+    current_bankroll_sek: number;
+  }> {
+    const params = new URLSearchParams();
+    if (profileId != null) params.set('profile_id', String(profileId));
+    if (days != null) params.set('days', String(days));
+    return fetchJson(`/bets/equity-curve?${params}`);
   },
 
   async getBonusArbs(
@@ -130,6 +151,7 @@ export type AnalyticsBucket = {
   profit: number;
   roi_pct: number | null;
   avg_clv_pct: number | null;
+  clv_positive_pct: number | null;
 };
 
 export type AnalyticsBucketWithMultiplier = AnalyticsBucket & {

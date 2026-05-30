@@ -42,6 +42,13 @@ class ProfileRepo:
                 self.db.commit()
         return profile
 
+    def get(self, profile_id: int | None) -> Profile:
+        """Resolve a profile by id, or the active profile when id is None/missing."""
+        if profile_id is None:
+            return self.get_active()
+        profile = self.db.query(Profile).filter(Profile.id == profile_id).first()
+        return profile or self.get_active()
+
     # ---- Balance ----
 
     def get_balance(self, profile_id: int, provider_id: str) -> float:

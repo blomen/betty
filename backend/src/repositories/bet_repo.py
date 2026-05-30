@@ -114,6 +114,28 @@ class BetRepo:
             query = query.filter(~Bet.is_bonus)
         return query.order_by(Bet.placed_at.desc()).limit(limit).all()
 
+    def get_settled_for_curve(self, profile_id: int, cutoff=None) -> list:
+        """Ordered settled bets for the equity curve — minimal columns, no enrichment.
+
+        Returns Row objects with: placed_at, result, payout, stake, currency,
+        provider_id, is_bonus. Ordered by placed_at ASC.
+        """
+        q = self.db.query(
+            Bet.placed_at,
+            Bet.result,
+            Bet.payout,
+            Bet.stake,
+            Bet.currency,
+            Bet.provider_id,
+            Bet.is_bonus,
+        ).filter(
+            Bet.profile_id == profile_id,
+            Bet.result.in_(("won", "lost", "void")),
+        )
+        if cutoff is not None:
+            q = q.filter(Bet.placed_at >= cutoff)
+        return q.order_by(Bet.placed_at.asc()).all()
+
     def create(self, **kwargs) -> Bet:
         """Create a new bet record."""
         bet = Bet(**kwargs)
