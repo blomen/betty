@@ -80,6 +80,10 @@ class ProviderStakeProfile:
     # candidates that sit at 1-4% edge — gas-aware sim showed median bankroll
     # collapsing to $1 / 61.5% bust within a year.
     min_edge_pct: float = 1.0
+    # Fraction of visible ask-side depth (depth_usd) a single value-bet stake
+    # may consume on a CLOB prediction market. None = provider not liquidity-
+    # gated (pinnacle uses max_stake separately; cloudbet has no order book).
+    liquidity_fraction: float | None = None
 
 
 # fee_rate here is for stakes where the fee is paid SEPARATELY ON TOP of the
@@ -109,8 +113,12 @@ PROVIDER_STAKE_PROFILES: dict[str, ProviderStakeProfile] = {
     # At $1 min stake, edges <7% are net-EV-negative after gas. min_edge_pct=5
     # is the slightly-tolerant cutoff that keeps total expected growth positive
     # in the gas-aware MC while not throwing away nearly all polymarket volume.
-    "polymarket": ProviderStakeProfile(fee_rate=0.0, min_stake_native=1.0, currency="USDC", min_edge_pct=5.0),
-    "kalshi": ProviderStakeProfile(fee_rate=0.0, min_stake_native=1.0, currency="USD", min_edge_pct=3.0),
+    "polymarket": ProviderStakeProfile(
+        fee_rate=0.0, min_stake_native=1.0, currency="USDC", min_edge_pct=5.0, liquidity_fraction=0.5
+    ),
+    "kalshi": ProviderStakeProfile(
+        fee_rate=0.0, min_stake_native=1.0, currency="USD", min_edge_pct=3.0, liquidity_fraction=0.5
+    ),
     # Cloudbet is a no-fee crypto book whose wallet + betslip settle in USDC.
     # Sized natively in USDC (like kalshi/polymarket) so Kelly stakes and the
     # slip fill agree with the wallet currency. $1 min matches the other USD
@@ -153,6 +161,39 @@ def provider_min_edge_pct(provider_id: str) -> float:
     """Per-provider edge floor (in %). Returns 1.0 default if no profile."""
     profile = PROVIDER_STAKE_PROFILES.get(provider_id)
     return profile.min_edge_pct if profile else 1.0
+
+
+def liquidity_capped_stake(
+    stake_sek: float,
+    provider_id: str,
+    depth_usd: float | None,
+    exchange_rate_sek: float,
+) -> tuple[float, bool, str | None]:
+    """Cap a value-bet stake by available CLOB order-book depth.
+
+    Only applies to liquidity-gated providers (those with a `liquidity_fraction`
+    in PROVIDER_STAKE_PROFILES — polymarket, kalshi). For ungated providers, or
+    when depth is unknown/non-positive, the stake is returned unchanged.
+
+    Args:
+        stake_sek: Kelly stake in SEK (Betty's base currency).
+        provider_id: the bet provider.
+        depth_usd: ask-side order-book depth in USD (Odds.depth_usd), or None.
+        exchange_rate_sek: SEK per 1 native unit (≈10.5 for USDC/USD books).
+
+    Returns:
+        (capped_stake_sek, was_capped, reason). Currency note: depth_usd is USD;
+        USDC≈USD for depth purposes, so cap_sek = fraction × depth_usd × rate.
+    """
+    profile = PROVIDER_STAKE_PROFILES.get(provider_id)
+    fraction = profile.liquidity_fraction if profile else None
+    if fraction is None or depth_usd is None or depth_usd <= 0:
+        return stake_sek, False, None
+
+    cap_sek = fraction * depth_usd * (exchange_rate_sek or 1.0)
+    if stake_sek <= cap_sek:
+        return stake_sek, False, None
+    return cap_sek, True, f"liquidity cap: {fraction:.0%} of ${depth_usd:.0f} depth"
 
 
 # Minimum expected profit to bother placing a bet (stake * edge >= this)
