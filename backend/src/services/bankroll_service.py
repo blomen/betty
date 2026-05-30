@@ -27,14 +27,16 @@ class BankrollService:
         self.bet_repo = BetRepo(db)
 
     def _load_balances_map(self, profile_id: int) -> dict[str, float]:
-        from ..db.models import ProfileProviderBalance
+        # Live balances come from the Account layer (shared sharp pools +
+        # per-campaign soft accounts), not the frozen legacy balance table.
+        from ..repositories.account_repo import AccountRepo
 
-        records = self.db.query(ProfileProviderBalance).filter(ProfileProviderBalance.profile_id == profile_id).all()
-        return {r.provider_id: r.balance for r in records}
+        return AccountRepo(self.db).balances_map(profile_id)
 
     def get_bankroll(self) -> dict:
         """Get provider balances and total bankroll for active profile."""
         from ..api.routes.providers import load_provider_bonuses
+        from ..repositories.account_repo import AccountRepo
 
         profile = self.profile_repo.get_active()
         providers = self.db.query(Provider).filter(Provider.is_enabled).all()
@@ -44,12 +46,16 @@ class BankrollService:
             b.provider_id: b
             for b in self.db.query(ProfileProviderBonus).filter(ProfileProviderBonus.profile_id == profile.id).all()
         }
-        balances = self._load_balances_map(profile.id)
+        # Map provider_id -> Account for this profile so we can surface the
+        # account label (e.g. "POLY (rasmus)") and id alongside the balance.
+        accounts = AccountRepo(self.db)
+        account_by_provider = {a.provider_id: a for a in accounts.accounts_for_profile(profile.id)}
 
         provider_data = []
         total_sek = 0.0
         for p in providers:
-            balance = balances.get(p.id, 0.0)
+            acct = account_by_provider.get(p.id)
+            balance = acct.balance if acct else 0.0
             currency = get_provider_currency(p.id)
             rate = get_exchange_rate(p.id)
             total_sek += balance * rate
@@ -74,6 +80,11 @@ class BankrollService:
                     "currency": currency,
                     "exchange_rate_sek": rate,
                     "balance_sek": round(balance * rate, 2),
+                    # Account layer: label distinguishes shared sharp pool
+                    # ("rasmus") and per-campaign soft accounts; None until the
+                    # profile funds the provider.
+                    "label": acct.label if acct else None,
+                    "account_id": acct.id if acct else None,
                     "bonus_trigger_amount": amount if trigger_actionable else None,
                     "bonus_currency": currency if trigger_actionable else None,
                     "bonus_trigger_odds": cfg.get("trigger_odds") if trigger_actionable else None,
