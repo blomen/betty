@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import type { ReactNode } from 'react'
 import { api } from '../hooks/useApi'
+import type { BonusChipProgress, ProviderBonusConfig } from './bonusChipState'
 import { useMirrorStream } from '../hooks/useMirrorStream'
 import { useMirrorState } from '../hooks/useMirrorState'
 import { useSharpRefresh } from '../hooks/useSharpRefresh'
@@ -88,6 +89,11 @@ type ProviderBalanceInfo = {
 type ProviderBalanceLike = number | ProviderBalanceInfo
 const getBalance = (b: ProviderBalanceLike | undefined): number =>
   typeof b === 'number' ? b : (b?.balance ?? 0)
+// Balance in the provider's OWN currency (not normalised to SEK). Needed to
+// compare against native-currency freebet amounts. Falls back to the SEK-
+// normalised balance when balance_native is absent (SEK providers: equal).
+const getBalanceNative = (b: ProviderBalanceLike | undefined): number =>
+  typeof b === 'number' ? b : (b?.balance_native ?? b?.balance ?? 0)
 const getTrigger = (b: ProviderBalanceLike | undefined): { amount: number; currency: string; odds?: number } | null => {
   if (b == null || typeof b === 'number') return null
   return b.bonus_trigger != null && b.bonus_trigger > 0
@@ -563,6 +569,12 @@ export default function PlayPage() {
   const [batch, setBatch] = useState<BatchBet[]>([])
   const [summary, setSummary] = useState<any>(null)
   const [providerBalances, setProviderBalances] = useState<Record<string, ProviderBalanceLike>>({})
+  // Live bonus rows (/bankroll/status) + static yaml configs (/bankroll/bonuses).
+  // Kept separate from providerBalances because /bankroll (the balance poll)
+  // does NOT carry bonus_status, and the trigger amount vanishes once balance
+  // >= amount. configs are fetched once on mount (static); progress every poll.
+  const [bonusProgress, setBonusProgress] = useState<Record<string, BonusChipProgress>>({})
+  const [bonusConfigs, setBonusConfigs] = useState<Record<string, ProviderBonusConfig>>({})
   const [pendingByProvider, setPendingByProvider] = useState<Record<string, any[]>>({})
   const [placedToday, setPlacedToday] = useState<Record<string, number>>({})
   const [ttkFilter, setTtkFilter] = useState<number>(168)
@@ -1116,10 +1128,11 @@ export default function PlayPage() {
 
   const load = useCallback(async () => {
     try {
-      const [result, pendingResult, bankrollResult] = await Promise.all([
+      const [result, pendingResult, bankrollResult, statusResult] = await Promise.all([
         api.getPlayBatch(),
         api.getPendingBets().catch(() => ({ providers: [] })),
         api.getBankrollSummary().catch(() => ({ providers: [] })),
+        api.getBankrollStatus().catch(() => ({ bonus_progress: {} })),
       ])
       setBatch(result.batch ?? [])
       setSummary(result.summary ?? null)
@@ -1139,6 +1152,7 @@ export default function PlayPage() {
         }
       }
       setProviderBalances(balanceMap)
+      setBonusProgress(statusResult.bonus_progress ?? {})
       setPlacedToday(result.placed_today ?? {})
       const grouped: Record<string, any[]> = {}
       for (const p of pendingResult.providers ?? [])
@@ -1172,6 +1186,15 @@ export default function PlayPage() {
       if (timer) clearTimeout(timer)
     }
   }, [load])
+
+  // Static bonus configs (freebet amount/type/min-odds per provider). Fetched
+  // once — they come from providers.yaml and don't change within a session.
+  // Needed for fresh accounts whose balance now masks the trigger amount.
+  useEffect(() => {
+    api.getProviderBonuses()
+      .then((cfg: Record<string, ProviderBonusConfig>) => setBonusConfigs(cfg ?? {}))
+      .catch(() => { /* leave configs empty; chip falls back to live progress */ })
+  }, [])
 
   // Fetch top 10 arb opps per cluster of funded soft providers.
   // One fetch per cluster (siblings share odds). Counter pool excludes same-cluster
