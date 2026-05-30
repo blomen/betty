@@ -41,6 +41,9 @@ export type BonusChipState =
   | { kind: 'wagering'; wagered: number; requirement: number; minOdds: number }
   | { kind: 'unlock_ready'; amount: number }
   | { kind: 'freebet_ready'; amount: number }
+  | { kind: 'bd_deposit'; amount: number; currency: string }
+  | { kind: 'bd_trigger'; wagered: number; requirement: number; minOdds: number }
+  | { kind: 'bd_wagering'; wagered: number; requirement: number; minOdds: number; bonusAmount: number }
 
 // A deposit "counts" once the balance reaches ~90% of the freebet amount —
 // tolerant of rounding/fees on the bookmaker side. Below that the user still
@@ -51,42 +54,69 @@ const DEPOSIT_DETECT_RATIO = 0.9
 export function resolveBonusChipState(input: BonusChipInput): BonusChipState {
   const { balanceNative, isDrained, pendingCount, progress, config, triggerCurrency } = input
   const status = progress?.status ?? null
+  const bonusType = progress?.bonus_type ?? config?.type ?? null
 
-  // 1) Active freebet lifecycle — live row is source of truth, independent of balance.
-  if (status === 'trigger_needed') {
-    const requirement = progress!.wagering_requirement
-    const wagered = progress!.wagered_amount
-    // requirement > 0 is intentional: a zero requirement keeps the chip in
-    // 'wagering' rather than instantly offering unlock on a 0/0 false positive.
-    // All real freebets carry a positive single-bet requirement (e.g. 1000).
-    if (requirement > 0 && wagered >= requirement) {
-      return { kind: 'unlock_ready', amount: progress!.bonus_amount }
+  if (bonusType === 'freebet') {
+    // --- Freebet lifecycle (unchanged) ---
+    if (status === 'trigger_needed') {
+      const requirement = progress!.wagering_requirement
+      const wagered = progress!.wagered_amount
+      // requirement > 0 is intentional: a zero requirement keeps the chip in
+      // 'wagering' rather than instantly offering unlock on a 0/0 false positive.
+      if (requirement > 0 && wagered >= requirement) {
+        return { kind: 'unlock_ready', amount: progress!.bonus_amount }
+      }
+      return { kind: 'wagering', wagered, requirement, minOdds: progress!.min_odds }
     }
-    return { kind: 'wagering', wagered, requirement, minOdds: progress!.min_odds }
-  }
-  if (status === 'freebet_available') {
-    return { kind: 'freebet_ready', amount: progress!.bonus_amount }
-  }
-  // completed/claimed -> row drops out (existing behavior). in_progress is a
-  // bonusdeposit phase, not handled by the freebet chip.
-  if (status === 'completed' || status === 'claimed' || status === 'in_progress') {
+    if (status === 'freebet_available') {
+      return { kind: 'freebet_ready', amount: progress!.bonus_amount }
+    }
+    if (status === 'completed' || status === 'claimed' || status === 'in_progress') {
+      return { kind: 'none' }
+    }
+    if (!config) return { kind: 'none' }
+    const amount = config.amount ?? 0
+    if (amount <= 0) return { kind: 'none' }
+    if (balanceNative >= amount * DEPOSIT_DETECT_RATIO) {
+      return { kind: 'deposit_detected', amount, currency: triggerCurrency }
+    }
+    if (isDrained && pendingCount === 0) {
+      return { kind: 'deposit_hint', amount, currency: triggerCurrency }
+    }
     return { kind: 'none' }
   }
 
-  // 2) No active row (status 'available' or absent). Need a freebet config.
-  const bonusType = progress?.bonus_type ?? config?.type ?? null
-  if (bonusType !== 'freebet' || !config) return { kind: 'none' }
-  const amount = config.amount ?? 0
-  if (amount <= 0) return { kind: 'none' }
+  if (bonusType === 'bonusdeposit') {
+    // --- Bonusdeposit lifecycle ---
+    if (status === 'trigger_needed') {
+      return {
+        kind: 'bd_trigger',
+        wagered: progress!.wagered_amount,
+        requirement: progress!.wagering_requirement,
+        minOdds: progress!.min_odds,
+      }
+    }
+    if (status === 'in_progress') {
+      return {
+        kind: 'bd_wagering',
+        wagered: progress!.wagered_amount,
+        requirement: progress!.wagering_requirement,
+        minOdds: progress!.min_odds,
+        bonusAmount: progress!.bonus_amount,
+      }
+    }
+    if (status === 'completed' || status === 'claimed') {
+      return { kind: 'none' }
+    }
+    // available / absent: offer deposit & start (explicit amount), bonus-only only
+    if (!config) return { kind: 'none' }
+    const amount = config.amount ?? 0
+    if (amount <= 0) return { kind: 'none' }
+    if (isDrained && pendingCount === 0) {
+      return { kind: 'bd_deposit', amount, currency: triggerCurrency }
+    }
+    return { kind: 'none' }
+  }
 
-  // Deposit detected: balance covers (most of) the freebet amount.
-  if (balanceNative >= amount * DEPOSIT_DETECT_RATIO) {
-    return { kind: 'deposit_detected', amount, currency: triggerCurrency }
-  }
-  // Pre-deposit hint: only for bonus-only providers (near-empty, no pending),
-  // matching the existing onlyBonus gate so funded clusters aren't cluttered.
-  if (isDrained && pendingCount === 0) {
-    return { kind: 'deposit_hint', amount, currency: triggerCurrency }
-  }
   return { kind: 'none' }
 }

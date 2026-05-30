@@ -680,6 +680,9 @@ function BonusChip(props: {
     )
   }
 
+  // bd_* states are handled in a later task — no UI yet.
+  if (state.kind !== 'freebet_ready') return null
+
   // state.kind === 'freebet_ready'
   // TODO(freebet-accounting): the placed freebet records as a normal stake=amount
   // bet, but a freebet's stake is not at risk. Ensure the recorded bet is flagged

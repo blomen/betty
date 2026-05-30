@@ -35,8 +35,8 @@ describe('resolveBonusChipState', () => {
     expect(resolveBonusChipState({ ...base, config: null })).toEqual({ kind: 'none' })
   })
 
-  test('non-freebet config -> none', () => {
-    expect(resolveBonusChipState({ ...base, config: { type: 'bonusdeposit', amount: 1000 } }))
+  test('unknown bonus type config -> none', () => {
+    expect(resolveBonusChipState({ ...base, config: { type: 'cashback', amount: 1000 } }))
       .toEqual({ kind: 'none' })
   })
 
@@ -72,5 +72,38 @@ describe('resolveBonusChipState', () => {
     const progress = { status: 'freebet_available', bonus_type: 'freebet', bonus_amount: 1000, wagering_requirement: 1000, wagered_amount: 1000, min_odds: 1.8 }
     expect(resolveBonusChipState({ ...base, config: null, progress }))
       .toEqual({ kind: 'freebet_ready', amount: 1000 })
+  })
+})
+
+describe('resolveBonusChipState — bonusdeposit', () => {
+  const bd = (over: Partial<BonusChipInput> = {}): BonusChipInput => ({
+    balanceNative: 0, isDrained: true, pendingCount: 0,
+    progress: null, config: { type: 'bonusdeposit', amount: 500 },
+    triggerCurrency: 'SEK', ...over,
+  })
+
+  test('available bonusdeposit, drained -> bd_deposit with cap amount', () => {
+    expect(resolveBonusChipState(bd())).toEqual({ kind: 'bd_deposit', amount: 500, currency: 'SEK' })
+  })
+
+  test('trigger_needed -> bd_trigger progress', () => {
+    const progress = { status: 'trigger_needed', bonus_type: 'bonusdeposit', bonus_amount: 500, wagering_requirement: 500, wagered_amount: 200, min_odds: 1.5 }
+    expect(resolveBonusChipState(bd({ progress, isDrained: false, balanceNative: 500 })))
+      .toEqual({ kind: 'bd_trigger', wagered: 200, requirement: 500, minOdds: 1.5 })
+  })
+
+  test('in_progress -> bd_wagering progress with bonus amount', () => {
+    const progress = { status: 'in_progress', bonus_type: 'bonusdeposit', bonus_amount: 500, wagering_requirement: 5000, wagered_amount: 1200, min_odds: 1.8 }
+    expect(resolveBonusChipState(bd({ progress, isDrained: false, balanceNative: 1000 })))
+      .toEqual({ kind: 'bd_wagering', wagered: 1200, requirement: 5000, minOdds: 1.8, bonusAmount: 500 })
+  })
+
+  test('completed -> none', () => {
+    const progress = { status: 'completed', bonus_type: 'bonusdeposit', bonus_amount: 500, wagering_requirement: 5000, wagered_amount: 5000, min_odds: 1.8 }
+    expect(resolveBonusChipState(bd({ progress }))).toEqual({ kind: 'none' })
+  })
+
+  test('bonusdeposit funded (not drained, no row) -> none (no clutter)', () => {
+    expect(resolveBonusChipState(bd({ isDrained: false, balanceNative: 500 }))).toEqual({ kind: 'none' })
   })
 })
