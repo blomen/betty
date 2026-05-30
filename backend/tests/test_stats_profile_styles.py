@@ -50,3 +50,14 @@ def test_profile_style_settable(db_session):
     db_session.add(p)
     db_session.commit()
     assert p.style == "bonus_extraction"
+
+
+def test_profile_to_dict_includes_style(db_session):
+    from src.api.routes.profiles import profile_to_dict
+    from src.repositories import ProfileRepo
+
+    p = Profile(name="t_dict_style", style="bonus_extraction")
+    db_session.add(p)
+    db_session.commit()
+    d = profile_to_dict(p, ProfileRepo(db_session))
+    assert d["style"] == "bonus_extraction"

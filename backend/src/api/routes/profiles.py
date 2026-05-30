@@ -77,6 +77,7 @@ def profile_to_dict(profile: Profile, profile_repo: ProfileRepo) -> dict:
         "total_withdrawn": profile.total_withdrawn or 0.0,
         "is_active": profile.is_active,
         "color": profile.color or PROFILE_COLORS[0],
+        "style": profile.style or "personal",
         "created_at": profile.created_at.isoformat() if profile.created_at else None,
     }
 
@@ -132,6 +133,7 @@ def create_profile(data: ProfileCreate, db: Session = Depends(get_db)):
         min_edge_pct=data.min_edge_pct or 2.0,
         is_active=False,
         color=color,
+        style=data.style or "personal",
     )
     db.add(profile)
     db.commit()
@@ -195,6 +197,8 @@ def update_profile(profile_id: int, data: ProfileUpdate, db: Session = Depends(g
         profile.total_withdrawn = data.total_withdrawn
     if data.color is not None:
         profile.color = data.color
+    if data.style is not None:
+        profile.style = data.style
 
     db.commit()
     return {"success": True, "profile": profile_to_dict(profile, profile_repo)}
