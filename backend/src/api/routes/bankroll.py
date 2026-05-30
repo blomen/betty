@@ -218,6 +218,19 @@ def deposit_with_bonus(
     return result
 
 
+@router.post("/withdraw/{provider_id}")
+def withdraw(
+    provider_id: str,
+    data: DepositRequest,
+    service: BankrollService = Depends(_get_service),
+):
+    """Withdraw real money from a provider for active profile (tracks total_withdrawn)."""
+    result = service.withdraw(provider_id, data.amount)
+    if result is None:
+        raise HTTPException(404, f"Provider {provider_id} not found")
+    return result
+
+
 @router.post("/reset-all")
 def reset_all_balances(db: Session = Depends(get_db)):
     """Reset all provider balances to 0 for active profile."""

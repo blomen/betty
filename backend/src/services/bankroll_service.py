@@ -88,6 +88,7 @@ class BankrollService:
                     "bonus_trigger_amount": amount if trigger_actionable else None,
                     "bonus_currency": currency if trigger_actionable else None,
                     "bonus_trigger_odds": cfg.get("trigger_odds") if trigger_actionable else None,
+                    "bonus_type": cfg.get("type") if trigger_actionable else None,
                 }
             )
 
@@ -545,6 +546,48 @@ class BankrollService:
             "bonus_limit": bonus_limit if bonus_type else None,
             "wagering_requirement": bonus_info.get("wagering_requirement") if bonus_info else None,
             "min_odds": bonus_info.get("min_odds") if bonus_info else None,
+        }
+
+    def withdraw(self, provider_id: str, amount: float) -> dict | None:
+        """Withdraw real money from a provider for the active profile.
+
+        Decrements the provider balance (clamped at 0) and tracks the cumulative
+        withdrawal on the profile so net-deposited / ROI stay correct. Does NOT
+        touch bonus state — a cash-out is separate from any bonus wagering still
+        in progress. Mirror of deposit_with_bonus minus the bonus mechanics.
+
+        Returns None if the provider doesn't exist.
+        """
+        provider = self.db.query(Provider).filter(Provider.id == provider_id).first()
+        if not provider:
+            return None
+
+        active_profile = self.profile_repo.get_active()
+        old_balance = self.profile_repo.get_balance(active_profile.id, provider_id)
+
+        # Never let a withdrawal drive the balance negative — clamp to what's there.
+        withdrawn = min(amount, old_balance) if old_balance > 0 else 0.0
+        new_balance = self.profile_repo.adjust_balance(active_profile.id, provider_id, -withdrawn)
+
+        active_profile.total_withdrawn = (active_profile.total_withdrawn or 0.0) + withdrawn
+        active_profile.updated_at = datetime.now(UTC)
+
+        # Invalidate planner cache (Kelly stakes scale with bankroll).
+        try:
+            from .planner_service import BankrollPlannerService
+
+            BankrollPlannerService.invalidate_cache(active_profile.id)
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "profile_id": active_profile.id,
+            "provider_id": provider_id,
+            "requested": amount,
+            "withdrawn": withdrawn,
+            "old_balance": old_balance,
+            "new_balance": new_balance,
         }
 
     @staticmethod
