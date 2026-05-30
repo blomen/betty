@@ -545,6 +545,10 @@ def get_analytics(
     for b in bets:
         by_strategy.setdefault(_LANE.get(b.bet_type or "", "Other"), []).append(b)
 
+    by_provider = {}
+    for b in bets:
+        by_provider.setdefault(b.provider_id, []).append(b)
+
     return {
         "provider_id": provider_id,
         "days": days,
@@ -556,6 +560,7 @@ def get_analytics(
         "by_sport_and_market": {k: summarize_with_multiplier(v) for k, v in by_sport_x_market.items()},
         "bucket_confidence_enabled": bucket_conf_enabled(),
         "by_strategy": {k: summarize(v) for k, v in by_strategy.items()},
+        "by_provider": {k: summarize(v) for k, v in by_provider.items()},
     }
 
 

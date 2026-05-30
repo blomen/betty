@@ -143,3 +143,42 @@ def test_analytics_by_strategy_lanes(client, db_session):
     assert v["profit"] == 0.0
     assert v["clv_positive_pct"] == 50.0
     assert r["by_strategy"]["Arb"]["n"] == 1
+
+
+def test_analytics_by_provider_currency_correct(client, db_session):
+    from src.db.models import Bet
+    from src.repositories import ProfileRepo
+
+    pid = ProfileRepo(db_session).get_active().id
+    db_session.add_all(
+        [
+            Bet(
+                profile_id=pid,
+                provider_id="betsson",
+                market="1x2",
+                outcome="home",
+                odds=2.0,
+                stake=100.0,
+                currency="SEK",
+                bet_type="value",
+                result="won",
+                payout=200.0,
+            ),
+            Bet(
+                profile_id=pid,
+                provider_id="polymarket",
+                market="moneyline",
+                outcome="home",
+                odds=2.0,
+                stake=10.0,
+                currency="USDC",
+                bet_type="value",
+                result="won",
+                payout=20.0,
+            ),
+        ]
+    )
+    db_session.commit()
+    r = client.get(f"/api/bets/analytics?days=3650&profile_id={pid}").json()
+    assert r["by_provider"]["betsson"]["profit"] == 100.0
+    assert r["by_provider"]["polymarket"]["profit"] > 100.0  # +10 USDC ~105 SEK
