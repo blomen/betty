@@ -87,8 +87,10 @@ def compute_shading(
             reasons.append(f"soft consensus diverges {divergence_pp:+.1f}pp (stale-outlier)")
 
     flb_contrib = False
+    # Symmetric boundary: avoid IEEE-754 drift in (1.0 - fav_extreme_prob) so the
+    # longshot side fires at EXACTLY 1 - fav_extreme_prob, mirroring the favorite side.
     if market in TWO_WAY_MARKETS and (
-        fair_probability >= fav_extreme_prob or fair_probability <= (1.0 - fav_extreme_prob)
+        fair_probability >= fav_extreme_prob or (1.0 - fair_probability) >= fav_extreme_prob
     ):
         flb_contrib = True
         side = "favorite" if fair_probability >= 0.5 else "longshot"

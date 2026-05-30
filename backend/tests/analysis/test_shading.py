@@ -44,6 +44,15 @@ def test_flb_flag_fires_on_two_way_longshot():
     assert sig.flb_contrib is True
 
 
+def test_flb_longshot_boundary_exactly_at_threshold():
+    # p == 1 - SHADING_FAV_EXTREME_PROB (0.20) must fire — symmetric with the
+    # favorite side at 0.80. Guards against IEEE-754 drift in (1.0 - 0.80).
+    sig = compute_shading(0.20, "moneyline", _lean("market_lag", 0.0))
+    assert sig.flb_contrib is True
+    sig_fav = compute_shading(0.80, "moneyline", _lean("market_lag", 0.0))
+    assert sig_fav.flb_contrib is True
+
+
 def test_flb_flag_never_fires_on_1x2():
     sig = compute_shading(0.90, "1x2", _lean("market_lag", 0.0))
     assert sig.flb_contrib is False
