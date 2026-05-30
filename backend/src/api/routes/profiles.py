@@ -13,6 +13,7 @@ from ...bankroll import calculate_stake as calc_stake
 from ...bankroll.stake_calculator import dynamic_min_stake
 from ...db.models import Profile, Provider
 from ...repositories import ProfileRepo
+from ...services.account_service import AccountService
 from ...services.bonus_seed_service import seed_provider_bonuses
 from ..deps import get_db
 from ..schemas import ProfileCreate, ProfileUpdate
@@ -230,7 +231,11 @@ def delete_profile(profile_id: int, db: Session = Depends(get_db)):
     if profile.is_active:
         raise HTTPException(400, "Cannot delete active profile. Activate another profile first.")
 
-    # Delete DB record (cascades to bonuses + balances)
+    # GC accounts first: unlink this profile, drop bet-less orphans, soft-delete
+    # any that carry bet history; shared sharp accounts linked elsewhere survive.
+    AccountService(db).delete_profile_accounts(profile)
+
+    # Delete DB record (cascades to bonuses + the profile_accounts links)
     db.delete(profile)
     db.commit()
 

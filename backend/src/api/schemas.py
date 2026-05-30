@@ -160,6 +160,11 @@ class ProfileCreate(BaseModel):
     bonus_enabled: bool | None = True
     bonus_deposit: float | None = 0.0
     color: str | None = None
+    # Account-layer provisioning (multi-profile sharp accounts):
+    kind: str | None = "edge"  # "edge" | "bonus" — drives Rule-B ROI bucketing
+    use_shared_sharp: bool | None = True  # link the existing shared sharp pool
+    fresh_sharp_label: str | None = None  # else create fresh sharp accounts under this label
+    soft_providers: list[str] | None = None  # soft books this campaign signs up for
 
 
 class ProfileUpdate(BaseModel):
