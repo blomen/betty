@@ -389,6 +389,7 @@ class OpportunityAnalyzer:
             # so this block is fail-safe.
             from ..analysis.consensus_lean import compute_consensus_lean
             from ..analysis.key_numbers import annotate as annotate_key_number
+            from ..analysis.shading import compute_shading
             from ..analysis.steam_detector import lookup_signal_for_outcome
 
             key_info = annotate_key_number(sport=sport, market=clean_market, point=point_value)
@@ -409,12 +410,19 @@ class OpportunityAnalyzer:
                 sharp_fair_probability=vb.fair_probability,
                 bet_provider=vb.provider,
             )
+            lean_dict = lean_obj.to_dict() if lean_obj else None
+            shading_obj = compute_shading(
+                fair_probability=vb.fair_probability,
+                market=clean_market,
+                consensus_lean=lean_dict,
+            )
             annotations: dict | None = None
-            if key_info or steam_sig or lean_obj:
+            if key_info or steam_sig or lean_obj or shading_obj:
                 annotations = {
                     "key_number": key_info.to_dict() if key_info else None,
                     "steam_signal": steam_sig,
-                    "consensus_lean": lean_obj.to_dict() if lean_obj else None,
+                    "consensus_lean": lean_dict,
+                    "shading": shading_obj.to_dict() if shading_obj else None,
                 }
 
             # Fan out to all platform members (e.g., unibet → all 8 Kambi brands)

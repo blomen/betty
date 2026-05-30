@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import type { ReactNode } from 'react'
 import { api } from '../hooks/useApi'
+import { resolveBonusChipState, type BonusChipProgress, type ProviderBonusConfig } from './bonusChipState'
 import { useMirrorStream } from '../hooks/useMirrorStream'
 import { useMirrorState } from '../hooks/useMirrorState'
 import { useSharpRefresh } from '../hooks/useSharpRefresh'
@@ -88,6 +89,11 @@ type ProviderBalanceInfo = {
 type ProviderBalanceLike = number | ProviderBalanceInfo
 const getBalance = (b: ProviderBalanceLike | undefined): number =>
   typeof b === 'number' ? b : (b?.balance ?? 0)
+// Balance in the provider's OWN currency (not normalised to SEK). Needed to
+// compare against native-currency freebet amounts. Falls back to the SEK-
+// normalised balance when balance_native is absent (SEK providers: equal).
+const getBalanceNative = (b: ProviderBalanceLike | undefined): number =>
+  typeof b === 'number' ? b : (b?.balance_native ?? b?.balance ?? 0)
 const getTrigger = (b: ProviderBalanceLike | undefined): { amount: number; currency: string; odds?: number } | null => {
   if (b == null || typeof b === 'number') return null
   return b.bonus_trigger != null && b.bonus_trigger > 0
@@ -559,10 +565,150 @@ function ValueBetRow({
   )
 }
 
+// Inline freebet-lifecycle chip for the Sports tab. Renders one of six states
+// (see resolveBonusChipState) and fires the existing bonus-transition /
+// claim-bonus endpoints. Shared by BOTH cluster render sites so the logic
+// can't drift (CLAUDE.md flags "two divergent renders" as a recurring bug).
+function BonusChip(props: {
+  pid: string
+  balanceNative: number
+  isDrained: boolean
+  pendingCount: number
+  progress: BonusChipProgress | null
+  config: ProviderBonusConfig | null
+  currency: string
+  onChanged: () => void
+}) {
+  const { pid, balanceNative, isDrained, pendingCount, progress, config, currency, onChanged } = props
+  const state = resolveBonusChipState({ balanceNative, isDrained, pendingCount, progress, config, triggerCurrency: currency })
+  const [busy, setBusy] = useState(false)
+
+  if (state.kind === 'none') return null
+
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true)
+    try {
+      await fn()
+      onChanged()
+    } catch (err) {
+      console.warn(`[bonus-chip] ${pid} action failed`, err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const pidLabel = pid.toUpperCase()
+  const btn = 'px-1.5 py-0.5 text-[9px] uppercase tracking-wider rounded border cursor-pointer disabled:opacity-50'
+  const claimBtn = (
+    <button
+      disabled={busy}
+      onClick={(e) => { e.stopPropagation(); run(() => api.claimBonus(pid)) }}
+      className={`${btn} bg-zinc-800 text-zinc-400 border-zinc-700 hover:bg-zinc-700 hover:text-zinc-200`}
+      title={`Mark ${pidLabel}'s bonus as claimed — hides this row. Reversible from Bankroll tab.`}
+    >
+      mark claimed
+    </button>
+  )
+
+  if (state.kind === 'deposit_hint') {
+    return (
+      <span className="flex items-center gap-1.5">
+        <span className="text-amber-400">deposit {state.amount.toFixed(0)} {state.currency.toLowerCase()}</span>
+        <button
+          disabled={busy}
+          onClick={(e) => { e.stopPropagation(); run(() => api.bonusTransition(pid, 'start_freebet')) }}
+          className={`${btn} bg-emerald-900/40 text-emerald-300 border-emerald-700/50 hover:bg-emerald-800/50`}
+          title={`Start freebet tracking for ${pidLabel} (after you deposit, then place one qualifying bet).`}
+        >
+          start tracking
+        </button>
+        {claimBtn}
+      </span>
+    )
+  }
+
+  if (state.kind === 'deposit_detected') {
+    return (
+      <span className="flex items-center gap-1.5">
+        <span className="text-emerald-400">✓ deposit detected</span>
+        <button
+          disabled={busy}
+          onClick={(e) => { e.stopPropagation(); run(() => api.bonusTransition(pid, 'start_freebet')) }}
+          className={`${btn} bg-emerald-900/40 text-emerald-300 border-emerald-700/50 hover:bg-emerald-800/50`}
+          title={`Start the ${state.amount.toFixed(0)} ${state.currency} freebet tracking for ${pidLabel}.`}
+        >
+          start freebet tracking
+        </button>
+        {claimBtn}
+      </span>
+    )
+  }
+
+  if (state.kind === 'wagering') {
+    return (
+      <span className="flex items-center gap-1.5">
+        <span className="text-zinc-400">
+          qualifying bet: {state.wagered.toFixed(0)}/{state.requirement.toFixed(0)} @ ≥{state.minOdds.toFixed(2)}
+        </span>
+        {/* Escape hatch: if the qualifying bet was placed BEFORE tracking
+            started, wagered stays 0. Replay settled bets to backfill. */}
+        <button
+          disabled={busy}
+          onClick={(e) => { e.stopPropagation(); run(() => api.backfillWagering()) }}
+          className={`${btn} bg-zinc-800 text-zinc-500 border-zinc-700 hover:text-zinc-300`}
+          title="Replay settled bets through wagering (use if you placed the qualifying bet before starting tracking)."
+        >
+          replay
+        </button>
+      </span>
+    )
+  }
+
+  if (state.kind === 'unlock_ready') {
+    return (
+      <span className="flex items-center gap-1.5">
+        <span className="text-emerald-400">✓ qualifying bet done</span>
+        <button
+          disabled={busy}
+          onClick={(e) => { e.stopPropagation(); run(() => api.bonusTransition(pid, 'trigger_settled')) }}
+          className={`${btn} bg-emerald-700/50 text-emerald-100 border-emerald-500/60 hover:bg-emerald-600/60 font-bold`}
+          title={`Unlock the ${state.amount.toFixed(0)} freebet for ${pidLabel}.`}
+        >
+          unlock freebet
+        </button>
+      </span>
+    )
+  }
+
+  // state.kind === 'freebet_ready'
+  // TODO(freebet-accounting): the placed freebet records as a normal stake=amount
+  // bet, but a freebet's stake is not at risk. Ensure the recorded bet is flagged
+  // is_bonus=true in the mirror recording path so stats/ROI don't over-count it.
+  return (
+    <span className="flex items-center gap-1.5">
+      <span className="text-yellow-300">🎁 {state.amount.toFixed(0)} freebet ready — place it, then:</span>
+      <button
+        disabled={busy}
+        onClick={(e) => { e.stopPropagation(); run(() => api.bonusTransition(pid, 'freebet_used')) }}
+        className={`${btn} bg-yellow-800/40 text-yellow-200 border-yellow-600/50 hover:bg-yellow-700/50`}
+        title={`Mark ${pidLabel}'s freebet as used (after placing it in the browser).`}
+      >
+        mark freebet used
+      </button>
+    </span>
+  )
+}
+
 export default function PlayPage() {
   const [batch, setBatch] = useState<BatchBet[]>([])
   const [summary, setSummary] = useState<any>(null)
   const [providerBalances, setProviderBalances] = useState<Record<string, ProviderBalanceLike>>({})
+  // Live bonus rows (/bankroll/status) + static yaml configs (/bankroll/bonuses).
+  // Kept separate from providerBalances because /bankroll (the balance poll)
+  // does NOT carry bonus_status, and the trigger amount vanishes once balance
+  // >= amount. configs are fetched once on mount (static); progress every poll.
+  const [bonusProgress, setBonusProgress] = useState<Record<string, BonusChipProgress>>({})
+  const [bonusConfigs, setBonusConfigs] = useState<Record<string, ProviderBonusConfig>>({})
   const [pendingByProvider, setPendingByProvider] = useState<Record<string, any[]>>({})
   const [placedToday, setPlacedToday] = useState<Record<string, number>>({})
   const [ttkFilter, setTtkFilter] = useState<number>(168)
@@ -1116,10 +1262,11 @@ export default function PlayPage() {
 
   const load = useCallback(async () => {
     try {
-      const [result, pendingResult, bankrollResult] = await Promise.all([
+      const [result, pendingResult, bankrollResult, statusResult] = await Promise.all([
         api.getPlayBatch(),
         api.getPendingBets().catch(() => ({ providers: [] })),
         api.getBankrollSummary().catch(() => ({ providers: [] })),
+        api.getBankrollStatus().catch(() => ({ bonus_progress: {} })),
       ])
       setBatch(result.batch ?? [])
       setSummary(result.summary ?? null)
@@ -1139,6 +1286,7 @@ export default function PlayPage() {
         }
       }
       setProviderBalances(balanceMap)
+      setBonusProgress(statusResult.bonus_progress ?? {})
       setPlacedToday(result.placed_today ?? {})
       const grouped: Record<string, any[]> = {}
       for (const p of pendingResult.providers ?? [])
@@ -1172,6 +1320,15 @@ export default function PlayPage() {
       if (timer) clearTimeout(timer)
     }
   }, [load])
+
+  // Static bonus configs (freebet amount/type/min-odds per provider). Fetched
+  // once — they come from providers.yaml and don't change within a session.
+  // Needed for fresh accounts whose balance now masks the trigger amount.
+  useEffect(() => {
+    api.getProviderBonuses()
+      .then((cfg: Record<string, ProviderBonusConfig>) => setBonusConfigs(cfg ?? {}))
+      .catch(() => { /* leave configs empty; chip falls back to live progress */ })
+  }, [])
 
   // Fetch top 10 arb opps per cluster of funded soft providers.
   // One fetch per cluster (siblings share odds). Counter pool excludes same-cluster
@@ -2727,6 +2884,7 @@ export default function PlayPage() {
     const steam = ann.steam_signal as { direction?: 'up' | 'down'; provider_count?: number } | null | undefined
     const kn = ann.key_number as { on_key?: boolean; straddles_key?: boolean; nearest_key?: number } | null | undefined
     const cl = ann.consensus_lean as { divergence_pp?: number; n_soft_books?: number } | null | undefined
+    const shading = ann.shading as { risk?: string; reason?: string } | null | undefined
     return (
       <span className="inline-flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wider">
         {lean === 'sharp_value' && (
@@ -2762,6 +2920,18 @@ export default function PlayPage() {
             className="px-1 py-0.5 rounded border bg-amber-900/30 border-amber-600/40 text-amber-300"
             title={`NFL key number ${kn.nearest_key} — ${kn.on_key ? 'point sits exactly on a key' : 'half-point straddle of a key (high-leverage)'}.`}
           >key {kn.nearest_key}</span>
+        )}
+        {shading?.risk === 'elevated' && (
+          <span
+            className="px-1 py-0.5 rounded border bg-amber-900/30 border-amber-600/40 text-amber-300"
+            title={shading.reason ?? 'Elevated shading risk.'}
+          >shade•el</span>
+        )}
+        {shading?.risk === 'high' && (
+          <span
+            className="px-1 py-0.5 rounded border bg-red-900/30 border-red-600/40 text-red-300"
+            title={shading.reason ?? 'High shading risk.'}
+          >shade•hi</span>
         )}
       </span>
     )
@@ -3210,42 +3380,29 @@ export default function PlayPage() {
                           {/* Per-member deposit hints — each cluster member with its bonus trigger */}
                           <div className="flex flex-wrap gap-3 px-3 py-2 bg-zinc-900/20 border-b border-zinc-800/30 text-[11px]">
                             {members.map(pid => {
-                              // If the ONLY reason this member qualifies is a bonus
-                              // trigger (no balance, no pending), expose a "mark
-                              // claimed" affordance so the user can hide the card
-                              // after they've taken the bonus on another account.
-                              // POSTs /bankroll/claim-bonus/{pid} → bonus_status
-                              // flips to "claimed" → next bankroll poll drops the
-                              // provider from isQualifiedSoft.
+                              // Inline freebet-lifecycle chip (see BonusChip). Drives
+                              // the full deposit → start tracking → qualifying bet →
+                              // unlock → freebet-used flow, and still exposes the
+                              // "mark claimed" dismiss for bonus-only providers. The
+                              // chip renders null when there's nothing to show, so it's
+                              // safe to render unconditionally here.
                               const bal = getBalance(providerBalances[pid])
                               const trig = getTrigger(providerBalances[pid])
                               const pending = pendingByProvider[pid]?.length ?? 0
-                              const onlyBonus =
-                                (trig?.amount ?? 0) > 0 && bal < DRAIN_THRESHOLD_SEK && pending === 0
                               return (
                                 <div key={pid} className="flex items-center gap-1.5">
                                   <span className="text-zinc-400 uppercase text-[10px] tracking-wider">{pid}</span>
                                   <BalanceCell pid={pid} balances={providerBalances} onSaved={load} />
-                                  {onlyBonus && (
-                                    <button
-                                      onClick={async (e) => {
-                                        e.stopPropagation()
-                                        try {
-                                          const r = await fetch(`/api/bankroll/claim-bonus/${pid}`, { method: 'POST' })
-                                          if (!r.ok) throw new Error(`status ${r.status}`)
-                                          load()  // immediate refresh; the 5-s poll would
-                                                  // catch it eventually but the user clicked
-                                                  // so feedback should be snappy.
-                                        } catch (err) {
-                                          console.warn(`[claim-bonus] ${pid} failed`, err)
-                                        }
-                                      }}
-                                      className="px-1.5 py-0.5 text-[9px] uppercase tracking-wider rounded bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700 hover:text-zinc-200 cursor-pointer"
-                                      title={`Mark ${pid.toUpperCase()}'s bonus as claimed — hides this row. Reversible from Bankroll tab.`}
-                                    >
-                                      mark claimed
-                                    </button>
-                                  )}
+                                  <BonusChip
+                                    pid={pid}
+                                    balanceNative={getBalanceNative(providerBalances[pid])}
+                                    isDrained={bal < DRAIN_THRESHOLD_SEK}
+                                    pendingCount={pending}
+                                    progress={bonusProgress[pid] ?? null}
+                                    config={bonusConfigs[pid] ?? null}
+                                    currency={trig?.currency ?? 'SEK'}
+                                    onChanged={load}
+                                  />
                                 </div>
                               )
                             })}
@@ -3398,38 +3555,22 @@ export default function PlayPage() {
                                     ≤{Math.round(stakeCaps[pid])}
                                   </span>
                                 )}
-                                {/* Bonus-only provider: the only reason this card
-                                    showed up is an unclaimed bonus. Surface a
-                                    "mark claimed" affordance — POST flips
-                                    bonus_status to "claimed" and the next bankroll
-                                    poll drops the card. Reversible from Bankroll
-                                    tab. Skipped when the user has real balance or
-                                    pending bets (those are independent reasons to
-                                    keep the card visible). */}
-                                {(() => {
-                                  const trig = getTrigger(providerBalances[pid])
-                                  const onlyBonus =
-                                    (trig?.amount ?? 0) > 0 && bal < DRAIN_THRESHOLD_SEK && pending === 0
-                                  if (!onlyBonus) return null
-                                  return (
-                                    <button
-                                      onClick={async (e) => {
-                                        e.stopPropagation()
-                                        try {
-                                          const r = await fetch(`/api/bankroll/claim-bonus/${pid}`, { method: 'POST' })
-                                          if (!r.ok) throw new Error(`status ${r.status}`)
-                                          load()
-                                        } catch (err) {
-                                          console.warn(`[claim-bonus] ${pid} failed`, err)
-                                        }
-                                      }}
-                                      className="px-1.5 py-0.5 text-[9px] uppercase tracking-wider rounded bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700 hover:text-zinc-200 cursor-pointer"
-                                      title={`Mark ${pid.toUpperCase()}'s bonus as claimed — hides this row. Reversible from Bankroll tab.`}
-                                    >
-                                      mark claimed
-                                    </button>
-                                  )
-                                })()}
+                                {/* Inline freebet-lifecycle chip (see BonusChip) —
+                                    same shared component as the deposit-hint cluster.
+                                    Shows deposit/unlock/freebet states for an active
+                                    freebet, and the "mark claimed" dismiss for a
+                                    bonus-only provider. Renders null when there's
+                                    nothing to show, so it's safe here unconditionally. */}
+                                <BonusChip
+                                  pid={pid}
+                                  balanceNative={getBalanceNative(providerBalances[pid])}
+                                  isDrained={bal < DRAIN_THRESHOLD_SEK}
+                                  pendingCount={pending}
+                                  progress={bonusProgress[pid] ?? null}
+                                  config={bonusConfigs[pid] ?? null}
+                                  currency={getTrigger(providerBalances[pid])?.currency ?? 'SEK'}
+                                  onChanged={load}
+                                />
                                 {/* Counter sites — same login/balance status as the anchor.
                                     The four unlimited providers are the auto-hedge pool; rendering
                                     them inline next to the anchor lets the user see at a glance

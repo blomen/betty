@@ -142,6 +142,26 @@ class BetService:
         if not provider:
             return {"error": f"Provider {provider_id} not found"}
 
+        # Freebet auto-flag: a bet placed while this provider sits in the
+        # freebet_available phase IS the freebet — flag is_bonus server-side
+        # (the mirror always sends is_bonus=False). Must run before the balance
+        # check below so the free stake isn't rejected for insufficient funds.
+        # Guarded on stake >= ~the freebet amount so a small cash bet placed
+        # during the phase isn't misflagged (a freebet token is staked at its
+        # full value). The is_bonus block further down then auto-completes it.
+        if not is_bonus:
+            _fb = (
+                self.db.query(ProfileProviderBonus)
+                .filter(
+                    ProfileProviderBonus.profile_id == profile.id,
+                    ProfileProviderBonus.provider_id == provider_id,
+                    ProfileProviderBonus.bonus_status == "freebet_available",
+                )
+                .first()
+            )
+            if _fb and stake >= (_fb.bonus_amount or 0) * 0.9:
+                is_bonus = True
+
         # Block bets on banned providers
         from ..repositories.limit_repo import LimitRepo
 
