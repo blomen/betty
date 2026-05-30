@@ -1,6 +1,6 @@
 """Bet repository - bet data access."""
 
-from sqlalchemy import case, func
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from ..db.models import Bet
@@ -74,14 +74,19 @@ class BetRepo:
         )
 
     def get_bonus_profit_aggregates(self) -> list:
-        """Settled bets across ALL bonus-kind profiles, grouped for SEK conversion.
+        """Settled bonus-extraction profit across ALL profiles, grouped for SEK conversion.
 
-        Rule B: a bonus-extraction campaign's profit (both the soft free-bet leg
-        and the real-money sharp hedge leg) is tracked separately from true ROI.
-        Every bet placed under a profile with kind='bonus' counts here and is
-        excluded from the ROI aggregate above. Grouped by (provider_id, currency,
-        result, is_bonus) so the caller can convert to SEK per provider and apply
-        the same Bet.profit semantics.
+        Rule B: a bonus-extraction campaign's profit (the soft free-bet leg AND
+        the real-money sharp hedge leg) is tracked separately from true ROI. A bet
+        counts here when EITHER:
+          - it's under a kind='bonus' profile (both legs), OR
+          - it's flagged is_bonus on any profile (a stray free-bet placed on an
+            edge profile — is_bonus predates the profile-kind model).
+        These two sets exactly complement the ROI aggregate (which counts only
+        `not is_bonus AND kind='edge'` rows), so every settled bet lands in
+        exactly one bucket — never double-counted, never dropped. Grouped by
+        (provider_id, currency, result, is_bonus) so the caller can convert to
+        SEK per provider and apply the same Bet.profit semantics.
         """
         from ..db.models import Profile
 
@@ -97,7 +102,7 @@ class BetRepo:
             .join(Profile, Profile.id == Bet.profile_id)
             .filter(
                 Bet.result != "pending",
-                Profile.kind == "bonus",
+                or_(Profile.kind == "bonus", Bet.is_bonus.is_(True)),
             )
             .group_by(Bet.provider_id, Bet.currency, Bet.result, Bet.is_bonus)
             .all()

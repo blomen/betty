@@ -97,6 +97,37 @@ def test_bonus_profit_captures_both_legs(session):
     assert stats["roi_pct"] == 0
 
 
+def test_stray_is_bonus_bet_on_edge_profile_counts_as_bonus_profit(session):
+    """A free-bet (is_bonus=True) placed on the EDGE profile must land in
+    bonus_profit, not vanish. It is excluded from ROI (is_bonus) and the edge
+    profile isn't kind='bonus', so without the is_bonus union its profit would be
+    reported nowhere."""
+    s = session
+    _edge_value_bet(s)  # genuine edge bet: +100 profit, 100 staked
+    # Stray free-bet on the EDGE profile (profile_id=1): won @ 2.0, payout 200.
+    # Bonus stake is free, so profit = payout = 200.
+    s.add(
+        Bet(
+            profile_id=1,
+            provider_id="betinia",
+            odds=2.0,
+            stake=200,
+            currency="SEK",
+            result="won",
+            payout=200,
+            is_bonus=True,
+        )
+    )
+    s.commit()
+
+    stats = BankrollService(s).get_stats()
+    # ROI is the edge bet alone — the stray free-bet is excluded.
+    assert stats["total_staked"] == 100
+    assert stats["roi_pct"] == 100.0
+    # The free-bet's profit is captured in bonus_profit, not lost.
+    assert stats["bonus_profit"] == pytest.approx(200.0, abs=0.5)
+
+
 def test_rule_b_roi_invariant_to_hedge_outcome(session):
     """The whole point: flipping which leg of the bonus play won must NOT move
     true ROI (only redistribute within bonus_profit)."""
