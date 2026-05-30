@@ -582,6 +582,10 @@ function BonusChip(props: {
   const { pid, balanceNative, isDrained, pendingCount, progress, config, currency, onChanged } = props
   const state = resolveBonusChipState({ balanceNative, isDrained, pendingCount, progress, config, triggerCurrency: currency })
   const [busy, setBusy] = useState(false)
+  // Deposit-amount buffer for bonusdeposit "deposit & start". Defaults to the
+  // bonus cap (config.amount); stored as a string so the field is freely
+  // editable. Only read when state.kind === 'bd_deposit'.
+  const [depositAmt, setDepositAmt] = useState<string>(String(config?.amount ?? ''))
 
   if (state.kind === 'none') return null
 
@@ -680,8 +684,73 @@ function BonusChip(props: {
     )
   }
 
-  // bd_* states are handled in a later task — no UI yet.
-  if (state.kind !== 'freebet_ready') return null
+  if (state.kind === 'bd_deposit') {
+    return (
+      <span className="flex items-center gap-1.5">
+        <span className="text-amber-400">matched bonus up to {state.amount.toFixed(0)} {state.currency.toLowerCase()}</span>
+        <input
+          type="number"
+          value={depositAmt}
+          min={0}
+          onChange={(e) => setDepositAmt(e.target.value)}
+          onClick={(e) => e.stopPropagation()}
+          className="w-16 px-1 py-0.5 text-[10px] rounded bg-zinc-900 text-zinc-200 border border-zinc-700"
+          title="Deposit amount (defaults to the bonus cap; edit if you deposited less)."
+        />
+        <button
+          disabled={busy}
+          onClick={(e) => {
+            e.stopPropagation()
+            const amt = Number(depositAmt)
+            if (!Number.isFinite(amt) || amt <= 0) return
+            run(() => api.depositWithBonus(pid, amt))
+          }}
+          className={`${btn} bg-emerald-900/40 text-emerald-300 border-emerald-700/50 hover:bg-emerald-800/50`}
+          title={`Record your ${pidLabel} deposit and arm bonus tracking. Adds the deposit to the tracked balance.`}
+        >
+          deposit &amp; start
+        </button>
+        {claimBtn}
+      </span>
+    )
+  }
+
+  if (state.kind === 'bd_trigger') {
+    return (
+      <span className="flex items-center gap-1.5">
+        <span className="text-zinc-400">
+          trigger: {state.wagered.toFixed(0)}/{state.requirement.toFixed(0)} @ ≥{state.minOdds.toFixed(2)}
+        </span>
+        <button
+          disabled={busy}
+          onClick={(e) => { e.stopPropagation(); run(() => api.backfillWagering()) }}
+          className={`${btn} bg-zinc-800 text-zinc-500 border-zinc-700 hover:text-zinc-300`}
+          title="Replay settled bets through wagering (use if bets were placed before tracking started)."
+        >
+          replay
+        </button>
+      </span>
+    )
+  }
+
+  if (state.kind === 'bd_wagering') {
+    return (
+      <span className="flex items-center gap-1.5">
+        <span className="text-emerald-300">🔓 {state.bonusAmount.toFixed(0)} bonus unlocked</span>
+        <span className="text-zinc-400">
+          wager: {state.wagered.toFixed(0)}/{state.requirement.toFixed(0)} @ ≥{state.minOdds.toFixed(2)}
+        </span>
+        <button
+          disabled={busy}
+          onClick={(e) => { e.stopPropagation(); run(() => api.backfillWagering()) }}
+          className={`${btn} bg-zinc-800 text-zinc-500 border-zinc-700 hover:text-zinc-300`}
+          title="Replay settled bets through wagering."
+        >
+          replay
+        </button>
+      </span>
+    )
+  }
 
   // state.kind === 'freebet_ready'
   // TODO(freebet-accounting): the placed freebet records as a normal stake=amount
