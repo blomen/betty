@@ -3367,13 +3367,12 @@ export default function PlayPage() {
                           {/* Per-member deposit hints — each cluster member with its bonus trigger */}
                           <div className="flex flex-wrap gap-3 px-3 py-2 bg-zinc-900/20 border-b border-zinc-800/30 text-[11px]">
                             {members.map(pid => {
-                              // If the ONLY reason this member qualifies is a bonus
-                              // trigger (no balance, no pending), expose a "mark
-                              // claimed" affordance so the user can hide the card
-                              // after they've taken the bonus on another account.
-                              // POSTs /bankroll/claim-bonus/{pid} → bonus_status
-                              // flips to "claimed" → next bankroll poll drops the
-                              // provider from isQualifiedSoft.
+                              // Inline freebet-lifecycle chip (see BonusChip). Drives
+                              // the full deposit → start tracking → qualifying bet →
+                              // unlock → freebet-used flow, and still exposes the
+                              // "mark claimed" dismiss for bonus-only providers. The
+                              // chip renders null when there's nothing to show, so it's
+                              // safe to render unconditionally here.
                               const bal = getBalance(providerBalances[pid])
                               const trig = getTrigger(providerBalances[pid])
                               const pending = pendingByProvider[pid]?.length ?? 0
@@ -3543,14 +3542,12 @@ export default function PlayPage() {
                                     ≤{Math.round(stakeCaps[pid])}
                                   </span>
                                 )}
-                                {/* Bonus-only provider: the only reason this card
-                                    showed up is an unclaimed bonus. Surface a
-                                    "mark claimed" affordance — POST flips
-                                    bonus_status to "claimed" and the next bankroll
-                                    poll drops the card. Reversible from Bankroll
-                                    tab. Skipped when the user has real balance or
-                                    pending bets (those are independent reasons to
-                                    keep the card visible). */}
+                                {/* Inline freebet-lifecycle chip (see BonusChip) —
+                                    same shared component as the deposit-hint cluster.
+                                    Shows deposit/unlock/freebet states for an active
+                                    freebet, and the "mark claimed" dismiss for a
+                                    bonus-only provider. Renders null when there's
+                                    nothing to show, so it's safe here unconditionally. */}
                                 <BonusChip
                                   pid={pid}
                                   balanceNative={getBalanceNative(providerBalances[pid])}

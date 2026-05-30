@@ -56,6 +56,9 @@ export function resolveBonusChipState(input: BonusChipInput): BonusChipState {
   if (status === 'trigger_needed') {
     const requirement = progress!.wagering_requirement
     const wagered = progress!.wagered_amount
+    // requirement > 0 is intentional: a zero requirement keeps the chip in
+    // 'wagering' rather than instantly offering unlock on a 0/0 false positive.
+    // All real freebets carry a positive single-bet requirement (e.g. 1000).
     if (requirement > 0 && wagered >= requirement) {
       return { kind: 'unlock_ready', amount: progress!.bonus_amount }
     }
