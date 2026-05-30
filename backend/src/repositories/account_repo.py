@@ -28,9 +28,20 @@ class AccountRepo:
         return self.db.query(Account).filter(Account.id == account_id).first()
 
     def get_or_create(self, provider_id: str, label: str, kind: str, currency: str) -> Account:
-        """Return the (provider_id, label) account, creating it if absent."""
+        """Return the (provider_id, label) account, creating it if absent.
+
+        If a soft-deleted account with this (provider_id, label) exists — e.g. a
+        campaign profile was deleted (its account soft-deleted because it had
+        bets) and a new profile reuses the same name — reactivate it rather than
+        leave a dead row that resolve() (is_active-filtered) would skip, which
+        would strand the new profile with no usable account. Reactivating
+        preserves the account's bet history.
+        """
         acct = self.db.query(Account).filter(Account.provider_id == provider_id, Account.label == label).first()
         if acct is not None:
+            if not acct.is_active:
+                acct.is_active = True
+                acct.updated_at = datetime.now(UTC)
             return acct
         acct = Account(provider_id=provider_id, label=label, kind=kind, currency=currency, is_active=True)
         self.db.add(acct)

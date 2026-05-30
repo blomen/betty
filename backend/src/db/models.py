@@ -2240,6 +2240,32 @@ def _run_pg_migrations(engine) -> None:
             sp.rollback()
             logger.warning("pg migration: bets.provider_bet_id index failed", exc_info=True)
 
+        # 2026-05-30 — Account layer. bets.account_id is added via the `additions`
+        # list above as a bare INTEGER (ADD COLUMN can't carry the FK). Add the FK
+        # (ON DELETE SET NULL, matching the ORM model) + lookup index here so
+        # existing Postgres DBs match a fresh create_all. Guarded: re-running is a
+        # no-op once the constraint/index exist (or accounts isn't present yet).
+        sp = conn.begin_nested()
+        try:
+            conn.execute(
+                text(
+                    "ALTER TABLE bets ADD CONSTRAINT fk_bets_account_id "
+                    "FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE SET NULL"
+                )
+            )
+            sp.commit()
+        except Exception:
+            sp.rollback()  # already exists, or accounts table not yet created
+            logger.warning("pg migration: bets.account_id FK add skipped", exc_info=True)
+
+        sp = conn.begin_nested()
+        try:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_bet_account_id ON bets(account_id)"))
+            sp.commit()
+        except Exception:
+            sp.rollback()
+            logger.warning("pg migration: bets.account_id index failed", exc_info=True)
+
         # 2026-05-26 — opportunities upsert index rebuilt to include scope so
         # F5/1H/Q1 opportunities can coexist with the ft row on the same
         # event/market/provider. Drop old, then add new under SAVEPOINTs.

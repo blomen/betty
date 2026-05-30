@@ -128,3 +128,49 @@ def test_fresh_sharp_betless_orphan_hard_deleted_on_delete(session):
     svc.delete_profile_accounts(camp)
     s.flush()
     assert s.get(Account, poly_alt) is None  # fresh sharp, no bets, single-linked -> gone
+
+
+def test_fresh_sharp_label_collision_raises(session):
+    """A fresh-sharp label already used by the shared pool must raise — else it
+    would silently alias the shared accounts instead of isolating them."""
+    s, edge = session
+    camp = Profile(name="camp", kind="bonus")
+    s.add(camp)
+    s.flush()
+    # edge already owns sharp accounts labeled 'rasmus' (fixture)
+    with pytest.raises(ValueError):
+        AccountService(s).create_fresh_sharp(camp, "rasmus")
+
+
+def test_soft_deleted_account_reactivated_on_reuse(session):
+    """Delete a campaign whose soft account had bets (soft-deleted), then a new
+    profile reusing the same name reactivates that account rather than stranding."""
+    s, edge = session
+    camp = Profile(name="camp", kind="bonus")
+    s.add(camp)
+    s.flush()
+    svc = AccountService(s)
+    svc.provision(camp, use_shared_sharp=True, fresh_sharp_label=None, soft_providers=["betinia"])
+    s.flush()
+    ar = AccountRepo(s)
+    betinia_id = ar.resolve(camp.id, "betinia").id
+    s.add(
+        Bet(
+            profile_id=camp.id, provider_id="betinia", account_id=betinia_id, odds=2.0, stake=10,
+            currency="SEK", result="won", payout=20.0,
+        )
+    )
+    s.flush()
+    svc.delete_profile_accounts(camp)
+    s.flush()
+    assert s.get(Account, betinia_id).is_active is False  # soft-deleted (had bets)
+
+    camp2 = Profile(name="camp", kind="bonus")
+    s.add(camp2)
+    s.flush()
+    svc.provision(camp2, use_shared_sharp=True, fresh_sharp_label=None, soft_providers=["betinia"])
+    s.flush()
+    reused = ar.resolve(camp2.id, "betinia")
+    assert reused is not None
+    assert reused.id == betinia_id  # same row, reactivated (bet history preserved)
+    assert reused.is_active is True

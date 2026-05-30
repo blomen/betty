@@ -36,7 +36,19 @@ class AccountService:
                 self.accounts.link(profile.id, acct.id)
 
     def create_fresh_sharp(self, profile: Profile, label: str) -> None:
-        """Create a new, independent set of sharp accounts linked only to this profile."""
+        """Create a new, independent set of sharp accounts linked only to this profile.
+
+        The label MUST be unused by any existing sharp account — otherwise
+        get_or_create would return the existing (possibly shared) account and the
+        new profile would silently join that pool instead of getting isolated
+        fresh accounts (e.g. label 'rasmus' would alias the shared pool, defeating
+        ROI separation). Raises ValueError on collision so the route returns 400.
+        """
+        clash = self.db.query(Account).filter(Account.label == label, Account.kind == "sharp").first()
+        if clash is not None:
+            raise ValueError(
+                f"Sharp account label '{label}' is already in use — pick a unique label for fresh accounts."
+            )
         for prov in UNLIMITED_PROVIDERS:
             acct = self.accounts.get_or_create(prov, label, "sharp", get_provider_currency(prov))
             self.accounts.link(profile.id, acct.id)

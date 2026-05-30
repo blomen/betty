@@ -143,12 +143,20 @@ def create_profile(data: ProfileCreate, db: Session = Depends(get_db)):
 
     # Provision accounts per the create-dialog choice: link the shared sharp pool
     # or create fresh labeled sharp accounts, plus any per-campaign soft accounts.
-    AccountService(db).provision(
-        profile,
-        use_shared_sharp=bool(data.use_shared_sharp),
-        fresh_sharp_label=data.fresh_sharp_label,
-        soft_providers=data.soft_providers,
-    )
+    # A fresh-label collision (e.g. reusing the shared pool's label) is a 400 —
+    # roll back the just-created profile so create stays atomic.
+    try:
+        AccountService(db).provision(
+            profile,
+            use_shared_sharp=bool(data.use_shared_sharp),
+            fresh_sharp_label=data.fresh_sharp_label,
+            soft_providers=data.soft_providers,
+        )
+    except ValueError as e:
+        db.rollback()
+        db.delete(profile)
+        db.commit()
+        raise HTTPException(400, str(e))
     db.commit()
 
     return {

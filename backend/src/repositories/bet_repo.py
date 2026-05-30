@@ -163,9 +163,16 @@ class BetRepo:
             if profile_id is not None and provider_id:
                 from .account_repo import AccountRepo
 
-                acct = AccountRepo(self.db).resolve(profile_id, provider_id)
-                if acct is not None:
-                    kwargs["account_id"] = acct.id
+                # account_id is attribution, not a correctness gate (ROI buckets
+                # on profile.kind). Never let a resolution hiccup drop a bet —
+                # CLAUDE.md: recorders must not silently lose bets. On error,
+                # leave account_id NULL and record the bet anyway.
+                try:
+                    acct = AccountRepo(self.db).resolve(profile_id, provider_id)
+                    if acct is not None:
+                        kwargs["account_id"] = acct.id
+                except Exception:
+                    pass
         bet = Bet(**kwargs)
         self.db.add(bet)
         return bet
