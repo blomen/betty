@@ -16,8 +16,8 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
-from ..bankroll.stake_calculator import StakeCalculator
-from ..config import get_provider_currency
+from ..bankroll.stake_calculator import StakeCalculator, liquidity_capped_stake, provider_min_stake_sek
+from ..config import get_exchange_rate, get_provider_currency
 from ..constants import (
     PLATFORM_MAP,
     PREDICTION_MARKETS,
@@ -296,6 +296,25 @@ class OpportunityScanner:
                 high_confidence=is_high_confidence,
             )
 
+            # Liquidity cap (prediction markets): never stake more than a
+            # fraction of visible CLOB depth. Only lowers a stake. Applied
+            # after Kelly so the MC-tuned sizing stays untouched.
+            final_stake = result.stake
+            was_liq_capped = False
+            liq_reason = None
+            liq_skip_reason = result.skip_reason
+            if final_stake > 0:
+                final_stake, was_liq_capped, liq_reason = liquidity_capped_stake(
+                    final_stake, vb.provider, vb.depth_usd, get_exchange_rate(vb.provider)
+                )
+                if was_liq_capped:
+                    floor_sek = provider_min_stake_sek(
+                        vb.provider, get_exchange_rate(vb.provider), stake_calculator.min_stake
+                    )
+                    if final_stake < floor_sek:
+                        final_stake = 0.0
+                        liq_skip_reason = f"liquidity-capped stake below min ({floor_sek:.0f} kr): {liq_reason}"
+
             # NFL key-number annotation (None for non-NFL or non-spread/total).
             # Diagnostic-only — does not affect edge_pct or stake.
             from .key_numbers import annotate as key_number_annotate
@@ -333,10 +352,10 @@ class OpportunityScanner:
                 fair_odds=vb.fair_odds,
                 fair_probability=vb.fair_probability,
                 edge_pct=vb.edge_pct,
-                recommended_stake=result.stake if result.stake > 0 else None,
+                recommended_stake=final_stake if final_stake > 0 else None,
                 kelly_fraction=result.kelly_fraction,
                 is_high_confidence=is_high_confidence,
-                skip_reason=result.skip_reason,
+                skip_reason=liq_skip_reason,
                 home_team=event.home_team if event else None,
                 away_team=event.away_team if event else None,
                 sport=event.sport if event else None,
@@ -348,6 +367,9 @@ class OpportunityScanner:
                 key_number=key_info.to_dict() if key_info else None,
                 steam_signal=steam_sig,
                 consensus_lean=lean_obj.to_dict() if lean_obj else None,
+                depth_usd=vb.depth_usd,
+                was_liquidity_capped=was_liq_capped,
+                liquidity_cap_reason=liq_reason,
             )
             # Log ML features (best-effort, never blocks scanning)
             try:
@@ -1397,6 +1419,7 @@ class OpportunityScanner:
                     "bid": odds.bid,
                     "ask": odds.ask,
                     "max_stake": odds.max_stake,
+                    "depth_usd": odds.depth_usd,
                 }
             )
 
@@ -1838,6 +1861,7 @@ class OpportunityScanner:
                         {"provider": p["provider"], "odds": p["odds"], "updated_at": str(p.get("updated_at", ""))}
                         for p in provider_odds_list
                     ]
+                    vb.depth_usd = po.get("depth_usd")
 
                     # ML edge quality check (M1) — best-effort additional filter
                     try:

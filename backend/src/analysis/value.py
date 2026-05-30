@@ -83,6 +83,13 @@ class ValueBet:
     #         "divergence_pp": float, "lean": str, "n_soft_books": int}
     consensus_lean: dict | None = None
 
+    # Order-book depth (Odds.depth_usd, USD) for the bet provider — CLOB books
+    # only (polymarket/kalshi); None elsewhere. Drives the liquidity stake cap.
+    depth_usd: float | None = None
+    # Set when the recommended stake was reduced to fit available depth.
+    was_liquidity_capped: bool = False
+    liquidity_cap_reason: str | None = None
+
     @property
     def expected_value(self) -> float:
         """Expected value per $1 bet."""
