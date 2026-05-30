@@ -3377,32 +3377,20 @@ export default function PlayPage() {
                               const bal = getBalance(providerBalances[pid])
                               const trig = getTrigger(providerBalances[pid])
                               const pending = pendingByProvider[pid]?.length ?? 0
-                              const onlyBonus =
-                                (trig?.amount ?? 0) > 0 && bal < DRAIN_THRESHOLD_SEK && pending === 0
                               return (
                                 <div key={pid} className="flex items-center gap-1.5">
                                   <span className="text-zinc-400 uppercase text-[10px] tracking-wider">{pid}</span>
                                   <BalanceCell pid={pid} balances={providerBalances} onSaved={load} />
-                                  {onlyBonus && (
-                                    <button
-                                      onClick={async (e) => {
-                                        e.stopPropagation()
-                                        try {
-                                          const r = await fetch(`/api/bankroll/claim-bonus/${pid}`, { method: 'POST' })
-                                          if (!r.ok) throw new Error(`status ${r.status}`)
-                                          load()  // immediate refresh; the 5-s poll would
-                                                  // catch it eventually but the user clicked
-                                                  // so feedback should be snappy.
-                                        } catch (err) {
-                                          console.warn(`[claim-bonus] ${pid} failed`, err)
-                                        }
-                                      }}
-                                      className="px-1.5 py-0.5 text-[9px] uppercase tracking-wider rounded bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700 hover:text-zinc-200 cursor-pointer"
-                                      title={`Mark ${pid.toUpperCase()}'s bonus as claimed — hides this row. Reversible from Bankroll tab.`}
-                                    >
-                                      mark claimed
-                                    </button>
-                                  )}
+                                  <BonusChip
+                                    pid={pid}
+                                    balanceNative={getBalanceNative(providerBalances[pid])}
+                                    isDrained={bal < DRAIN_THRESHOLD_SEK}
+                                    pendingCount={pending}
+                                    progress={bonusProgress[pid] ?? null}
+                                    config={bonusConfigs[pid] ?? null}
+                                    currency={trig?.currency ?? 'SEK'}
+                                    onChanged={load}
+                                  />
                                 </div>
                               )
                             })}
@@ -3563,30 +3551,16 @@ export default function PlayPage() {
                                     tab. Skipped when the user has real balance or
                                     pending bets (those are independent reasons to
                                     keep the card visible). */}
-                                {(() => {
-                                  const trig = getTrigger(providerBalances[pid])
-                                  const onlyBonus =
-                                    (trig?.amount ?? 0) > 0 && bal < DRAIN_THRESHOLD_SEK && pending === 0
-                                  if (!onlyBonus) return null
-                                  return (
-                                    <button
-                                      onClick={async (e) => {
-                                        e.stopPropagation()
-                                        try {
-                                          const r = await fetch(`/api/bankroll/claim-bonus/${pid}`, { method: 'POST' })
-                                          if (!r.ok) throw new Error(`status ${r.status}`)
-                                          load()
-                                        } catch (err) {
-                                          console.warn(`[claim-bonus] ${pid} failed`, err)
-                                        }
-                                      }}
-                                      className="px-1.5 py-0.5 text-[9px] uppercase tracking-wider rounded bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700 hover:text-zinc-200 cursor-pointer"
-                                      title={`Mark ${pid.toUpperCase()}'s bonus as claimed — hides this row. Reversible from Bankroll tab.`}
-                                    >
-                                      mark claimed
-                                    </button>
-                                  )
-                                })()}
+                                <BonusChip
+                                  pid={pid}
+                                  balanceNative={getBalanceNative(providerBalances[pid])}
+                                  isDrained={bal < DRAIN_THRESHOLD_SEK}
+                                  pendingCount={pending}
+                                  progress={bonusProgress[pid] ?? null}
+                                  config={bonusConfigs[pid] ?? null}
+                                  currency={getTrigger(providerBalances[pid])?.currency ?? 'SEK'}
+                                  onChanged={load}
+                                />
                                 {/* Counter sites — same login/balance status as the anchor.
                                     The four unlimited providers are the auto-hedge pool; rendering
                                     them inline next to the anchor lets the user see at a glance
