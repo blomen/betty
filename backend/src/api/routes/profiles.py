@@ -140,6 +140,15 @@ def create_profile(data: ProfileCreate, db: Session = Depends(get_db)):
     db.commit()
 
     seed_provider_bonuses(profile.id, db)
+
+    # Provision accounts per the create-dialog choice: link the shared sharp pool
+    # or create fresh labeled sharp accounts, plus any per-campaign soft accounts.
+    AccountService(db).provision(
+        profile,
+        use_shared_sharp=bool(data.use_shared_sharp),
+        fresh_sharp_label=data.fresh_sharp_label,
+        soft_providers=data.soft_providers,
+    )
     db.commit()
 
     return {
