@@ -1,17 +1,25 @@
 # backend/tests/test_ban_system.py
 """Tests for provider ban system."""
 
+from datetime import UTC, datetime
+
 import pytest
-from datetime import datetime, timezone
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from src.db.models import Base, Profile, Provider, ProfileProviderLimit, ProviderExtractionSetting, Opportunity, Event
+from src.db.models import (
+    Base,
+    Event,
+    Opportunity,
+    Profile,
+    ProfileProviderLimit,
+    Provider,
+    ProviderExtractionSetting,
+)
 from src.repositories.limit_repo import LimitRepo
-from src.services.limit_service import LimitService
-from src.services.bet_service import BetService
-from src.db.models import ProfileProviderBalance
 from src.risk.allocator import ProviderAllocator
+from src.services.bet_service import BetService
+from src.services.limit_service import LimitService
 
 
 @pytest.fixture
@@ -35,43 +43,59 @@ class TestGetBannedProviders:
         assert repo.get_banned_providers(profile_id=1) == set()
 
     def test_fully_banned_level5_returned(self, db: Session):
-        db.add(ProfileProviderLimit(
-            profile_id=1, provider_id="coolbet",
-            limit_type="fully_banned", limit_level=5,
-            detected_at=datetime.now(timezone.utc),
-        ))
+        db.add(
+            ProfileProviderLimit(
+                profile_id=1,
+                provider_id="coolbet",
+                limit_type="fully_banned",
+                limit_level=5,
+                detected_at=datetime.now(UTC),
+            )
+        )
         db.commit()
         repo = LimitRepo(db)
         assert repo.get_banned_providers(profile_id=1) == {"coolbet"}
 
     def test_level4_not_banned(self, db: Session):
         """Only level 5 (account closed) counts as banned."""
-        db.add(ProfileProviderLimit(
-            profile_id=1, provider_id="coolbet",
-            limit_type="fully_banned", limit_level=4,
-            detected_at=datetime.now(timezone.utc),
-        ))
+        db.add(
+            ProfileProviderLimit(
+                profile_id=1,
+                provider_id="coolbet",
+                limit_type="fully_banned",
+                limit_level=4,
+                detected_at=datetime.now(UTC),
+            )
+        )
         db.commit()
         repo = LimitRepo(db)
         assert repo.get_banned_providers(profile_id=1) == set()
 
     def test_stake_limited_not_banned(self, db: Session):
-        db.add(ProfileProviderLimit(
-            profile_id=1, provider_id="coolbet",
-            limit_type="stake_limited", limit_level=5,
-            detected_at=datetime.now(timezone.utc),
-        ))
+        db.add(
+            ProfileProviderLimit(
+                profile_id=1,
+                provider_id="coolbet",
+                limit_type="stake_limited",
+                limit_level=5,
+                detected_at=datetime.now(UTC),
+            )
+        )
         db.commit()
         repo = LimitRepo(db)
         assert repo.get_banned_providers(profile_id=1) == set()
 
     def test_multiple_bans(self, db: Session):
         for pid in ("coolbet", "snabbare"):
-            db.add(ProfileProviderLimit(
-                profile_id=1, provider_id=pid,
-                limit_type="fully_banned", limit_level=5,
-                detected_at=datetime.now(timezone.utc),
-            ))
+            db.add(
+                ProfileProviderLimit(
+                    profile_id=1,
+                    provider_id=pid,
+                    limit_type="fully_banned",
+                    limit_level=5,
+                    detected_at=datetime.now(UTC),
+                )
+            )
         db.commit()
         repo = LimitRepo(db)
         assert repo.get_banned_providers(profile_id=1) == {"coolbet", "snabbare"}
@@ -92,10 +116,14 @@ class TestBanProvider:
         assert "coolbet" in repo.get_banned_providers(profile_id=1)
 
         # Verify extraction disabled
-        setting = db.query(ProviderExtractionSetting).filter(
-            ProviderExtractionSetting.profile_id == 1,
-            ProviderExtractionSetting.provider_id == "coolbet",
-        ).first()
+        setting = (
+            db.query(ProviderExtractionSetting)
+            .filter(
+                ProviderExtractionSetting.profile_id == 1,
+                ProviderExtractionSetting.provider_id == "coolbet",
+            )
+            .first()
+        )
         assert setting is not None
         assert setting.enabled is False
 
@@ -113,18 +141,20 @@ class TestBanProvider:
 
     def test_ban_updates_existing_extraction_setting(self, db: Session):
         """If extraction setting already exists as enabled, flip it to False."""
-        db.add(ProviderExtractionSetting(
-            profile_id=1, provider_id="coolbet", enabled=True
-        ))
+        db.add(ProviderExtractionSetting(profile_id=1, provider_id="coolbet", enabled=True))
         db.commit()
         service = LimitService(db)
         result = service.ban_provider(profile_id=1, provider_id="coolbet")
         assert result["success"] is True
 
-        setting = db.query(ProviderExtractionSetting).filter(
-            ProviderExtractionSetting.profile_id == 1,
-            ProviderExtractionSetting.provider_id == "coolbet",
-        ).first()
+        setting = (
+            db.query(ProviderExtractionSetting)
+            .filter(
+                ProviderExtractionSetting.profile_id == 1,
+                ProviderExtractionSetting.provider_id == "coolbet",
+            )
+            .first()
+        )
         assert setting.enabled is False
 
 
@@ -134,30 +164,55 @@ class TestOpportunityBanFiltering:
         # Create event + opportunities
         event = Event(
             id="football:teamA:teamB:2026-04-05",
-            sport="football", home_team="teamA", away_team="teamB",
+            sport="football",
+            home_team="teamA",
+            away_team="teamB",
         )
         db.add(event)
-        db.add(Opportunity(
-            event_id=event.id, type="value", market="1x2", outcome1="1",
-            provider1_id="coolbet", provider2_id="pinnacle",
-            odds1=2.5, odds2=2.0, edge_pct=5.0, is_active=True,
-        ))
-        db.add(Opportunity(
-            event_id=event.id, type="value", market="1x2", outcome1="1",
-            provider1_id="unibet", provider2_id="pinnacle",
-            odds1=2.3, odds2=2.0, edge_pct=3.0, is_active=True,
-        ))
+        db.add(
+            Opportunity(
+                event_id=event.id,
+                type="value",
+                market="1x2",
+                outcome1="1",
+                provider1_id="coolbet",
+                provider2_id="pinnacle",
+                odds1=2.5,
+                odds2=2.0,
+                edge_pct=5.0,
+                is_active=True,
+            )
+        )
+        db.add(
+            Opportunity(
+                event_id=event.id,
+                type="value",
+                market="1x2",
+                outcome1="1",
+                provider1_id="unibet",
+                provider2_id="pinnacle",
+                odds1=2.3,
+                odds2=2.0,
+                edge_pct=3.0,
+                is_active=True,
+            )
+        )
         db.commit()
 
         # Ban coolbet
-        db.add(ProfileProviderLimit(
-            profile_id=1, provider_id="coolbet",
-            limit_type="fully_banned", limit_level=5,
-            detected_at=datetime.now(timezone.utc),
-        ))
+        db.add(
+            ProfileProviderLimit(
+                profile_id=1,
+                provider_id="coolbet",
+                limit_type="fully_banned",
+                limit_level=5,
+                detected_at=datetime.now(UTC),
+            )
+        )
         db.commit()
 
         from src.services.opportunity_service import OpportunityService
+
         service = OpportunityService(db)
         result = service.list_opportunities()
 
@@ -169,11 +224,15 @@ class TestOpportunityBanFiltering:
 class TestAllocatorBanBlock:
     def test_banned_provider_gets_negative_score(self, db: Session):
         """Banned providers should get score -1 (same as capped)."""
-        db.add(ProfileProviderLimit(
-            profile_id=1, provider_id="coolbet",
-            limit_type="fully_banned", limit_level=5,
-            detected_at=datetime.now(timezone.utc),
-        ))
+        db.add(
+            ProfileProviderLimit(
+                profile_id=1,
+                provider_id="coolbet",
+                limit_type="fully_banned",
+                limit_level=5,
+                detected_at=datetime.now(UTC),
+            )
+        )
         db.commit()
 
         allocator = ProviderAllocator(db, profile_id=1)
@@ -192,11 +251,15 @@ class TestAllocatorBanBlock:
 
 class TestBetServiceBanGate:
     def test_bet_on_banned_provider_rejected(self, db: Session):
-        db.add(ProfileProviderLimit(
-            profile_id=1, provider_id="coolbet",
-            limit_type="fully_banned", limit_level=5,
-            detected_at=datetime.now(timezone.utc),
-        ))
+        db.add(
+            ProfileProviderLimit(
+                profile_id=1,
+                provider_id="coolbet",
+                limit_type="fully_banned",
+                limit_level=5,
+                detected_at=datetime.now(UTC),
+            )
+        )
         db.commit()
 
         service = BetService(db)
@@ -212,9 +275,9 @@ class TestBetServiceBanGate:
         assert "banned" in result["error"].lower()
 
     def test_bet_on_active_provider_allowed(self, db: Session):
-        db.add(ProfileProviderBalance(
-            profile_id=1, provider_id="unibet", balance=1000
-        ))
+        from src.repositories.profile_repo import ProfileRepo
+
+        ProfileRepo(db).set_balance(1, "unibet", 1000)
         db.commit()
 
         service = BetService(db)

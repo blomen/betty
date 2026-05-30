@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from ...bankroll import calculate_stake as calc_stake
 from ...bankroll.stake_calculator import dynamic_min_stake
-from ...db.models import Profile, ProfileProviderBalance, Provider
+from ...db.models import Profile, Provider
 from ...repositories import ProfileRepo
 from ...services.bonus_seed_service import seed_provider_bonuses
 from ..deps import get_db

@@ -4,7 +4,8 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from src.db.models import Base, Profile, ProfileProviderBalance, ProfileProviderBonus, Provider
+from src.db.models import Base, Profile, ProfileProviderBonus, Provider
+from src.repositories.profile_repo import ProfileRepo
 from src.services.bankroll_service import BankrollService
 
 
@@ -54,7 +55,7 @@ def test_trigger_null_when_no_bonus_in_yaml(db):
 
 
 def test_trigger_null_when_balance_already_covers_amount(db):
-    db.add(ProfileProviderBalance(profile_id=1, provider_id="leovegas", balance=600))
+    ProfileRepo(db).set_balance(1, "leovegas", 600)
     db.commit()
     out = BankrollService(db).get_bankroll()
     by_id = {p["id"]: p for p in out["providers"]}

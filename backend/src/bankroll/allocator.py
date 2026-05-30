@@ -120,7 +120,7 @@ class AllocationEngine:
         # Start with BatchBuilder's suggestions (its capital_plan knows about shortfalls),
         # then supplement with any profile balance that is clearly idle (no active bonus,
         # no pending bets) that BatchBuilder missed.
-        from ..db.models import Bet, ProfileProviderBalance
+        from ..db.models import Bet
 
         withdrawals: list[dict] = []
         withdrawal_total_sek = 0.0
@@ -164,11 +164,9 @@ class AllocationEngine:
             .distinct()
             .all()
         }
-        balance_rows = (
-            self.db.query(ProfileProviderBalance).filter(ProfileProviderBalance.profile_id == self.profile.id).all()
-        )
-        for row in balance_rows:
-            pid = row.provider_id
+        # Live balances from the Account layer (shared sharp pools + soft accounts).
+        idle_balances = AccountRepo(self.db).balances_map(self.profile.id)
+        for pid, bal in idle_balances.items():
             if pid in seen_withdrawal_pids:
                 continue
             cfg = self.config.get_provider(pid)
@@ -179,7 +177,7 @@ class AllocationEngine:
             bonus = bonuses.get(pid)
             if bonus and bonus.bonus_status in ("available", "trigger_needed", "in_progress"):
                 continue
-            _add_withdrawal(pid, row.balance or 0.0, "Idle balance — withdraw to redeploy")
+            _add_withdrawal(pid, bal or 0.0, "Idle balance — withdraw to redeploy")
 
         # Effective budget
         unbounded = deposit_input is None
