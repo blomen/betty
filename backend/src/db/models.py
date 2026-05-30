@@ -316,6 +316,12 @@ class Bet(Base):
     # Profile association (for per-profile bet isolation)
     profile_id = Column(Integer, ForeignKey("profiles.id"), nullable=True)
 
+    # Which real account this bet was placed from (shared sharp pool or a
+    # per-campaign soft account). Source of truth for account attribution;
+    # provider_id is retained for all existing readers. SET NULL so a GC'd
+    # soft account doesn't orphan-delete bet history.
+    account_id = Column(Integer, ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True, index=True)
+
     # What you bet on
     event_id = Column(String, ForeignKey("events.id"))
     provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
@@ -648,12 +654,20 @@ class Profile(Base):
     chrome_port = Column(Integer, nullable=True)  # CDP port (default: 9221 + id)
     color = Column(String, nullable=True)  # Hex color for Chrome border (auto-assigned)
 
+    # Purpose — drives ROI bucketing (Rule B). "edge" profiles hold the genuine
+    # edge volume that defines true ROI; "bonus" profiles are bonus-extraction
+    # campaigns whose bets (both the soft free-bet leg AND the real-money sharp
+    # hedge leg) are excluded from true ROI and summed into a separate bonus
+    # profit total. See docs/spec/2026-05-30-multi-profile-sharp-accounts-bonus-roi.md
+    kind = Column(String, default="edge", nullable=False)  # "edge" | "bonus"
+
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     # Relationships
     bonus_statuses = relationship("ProfileProviderBonus", back_populates="profile", cascade="all, delete-orphan")
     provider_balances = relationship("ProfileProviderBalance", back_populates="profile", cascade="all, delete-orphan")
+    accounts = relationship("ProfileAccount", back_populates="profile", cascade="all, delete-orphan")
     bets = relationship("Bet", back_populates="profile")
 
 
@@ -747,6 +761,68 @@ class ProfileProviderBalance(Base):
     # Relationships
     profile = relationship("Profile", back_populates="provider_balances")
     provider = relationship("Provider")
+
+
+class Account(Base):
+    """One real account the user owns at a provider.
+
+    Sharp accounts (pinnacle/polymarket/kalshi/cloudbet) are SHARED: a single
+    row referenced by many profiles via `profile_accounts`. Spending a hedge
+    leg in any profile updates this one real `balance`, so every profile that
+    links it sees the change. Soft accounts are per-campaign (single-linked).
+
+    This is the balance source of truth going forward; `ProfileProviderBalance`
+    is retained read-only for the one-time migration backfill (see
+    `_migrate_provider_balances_to_accounts`) and is no longer written.
+    """
+
+    __tablename__ = "accounts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
+    label = Column(String, nullable=False)  # "rasmus", "alt2", "campaign-7"
+    kind = Column(String, nullable=False)  # "sharp" | "soft"
+    balance = Column(Float, default=0.0)
+    currency = Column(String, default="SEK")  # native currency for conversion
+
+    # Manual account opened date for pre-existing accounts (dormant-account
+    # handling — carried over from ProfileProviderBalance).
+    account_opened_at = Column(DateTime, nullable=True)
+
+    is_active = Column(Boolean, default=True, nullable=False)  # soft-delete flag
+
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("provider_id", "label", name="uq_account_provider_label"),
+        Index("ix_account_provider", "provider_id"),
+    )
+
+    # Relationships
+    provider = relationship("Provider")
+    profile_links = relationship("ProfileAccount", back_populates="account", cascade="all, delete-orphan")
+
+
+class ProfileAccount(Base):
+    """Explicit visibility link: a profile sees exactly the accounts linked here.
+
+    A fresh sharp account is linked only to the profile that created it, so it
+    does NOT leak into other profiles. A shared sharp account gets one link row
+    per profile that uses it.
+    """
+
+    __tablename__ = "profile_accounts"
+
+    profile_id = Column(Integer, ForeignKey("profiles.id"), primary_key=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), primary_key=True)
+    created_at = Column(DateTime, default=_utcnow)
+
+    __table_args__ = (UniqueConstraint("profile_id", "account_id", name="uq_profile_account"),)
+
+    # Relationships
+    account = relationship("Account", back_populates="profile_links")
+    profile = relationship("Profile", back_populates="accounts")
 
 
 class ProfileProviderLimit(Base):
