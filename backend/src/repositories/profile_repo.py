@@ -8,9 +8,9 @@ from sqlalchemy.orm import Session
 from ..db.models import (
     BONUS_MIN_ODDS,
     Profile,
-    ProfileProviderBalance,
     ProfileProviderBonus,
 )
+from .account_repo import AccountRepo
 
 BONUS_WAGERING_DAYS = 60  # Days to complete wagering before bonus expires
 
@@ -25,6 +25,11 @@ class ProfileRepo:
 
     def __init__(self, db: Session):
         self.db = db
+        # Balances live in the Account layer (shared sharp pools + per-campaign
+        # soft accounts). These methods keep their (profile_id, provider_id)
+        # signatures but resolve through the link table, so existing callers and
+        # hot paths are untouched while sharp balances become genuinely shared.
+        self._accounts = AccountRepo(db)
 
     # ---- Profile ----
 
@@ -49,48 +54,82 @@ class ProfileRepo:
         profile = self.db.query(Profile).filter(Profile.id == profile_id).first()
         return profile or self.get_active()
 
-    # ---- Balance ----
+    # ---- Balance (resolved through the Account layer) ----
+
+    def _resolve_or_create_account(self, profile_id: int, provider_id: str):
+        """Return the account this profile uses for a provider, creating+linking
+        one if none exists yet.
+
+        Sharp providers resolve to the shared 'rasmus' pool (so a balance set in
+        any profile is visible in all that link it); other providers get a
+        per-profile soft account labeled from the profile name. This keeps the
+        legacy "set a balance and it just works" behaviour even before a profile
+        is explicitly provisioned (see AccountService).
+        """
+        acct = self._accounts.resolve(profile_id, provider_id)
+        if acct is not None:
+            return acct
+
+        from ..config import get_provider_currency
+        from ..constants import UNLIMITED_PROVIDERS
+
+        if provider_id in UNLIMITED_PROVIDERS:
+            label, kind = "rasmus", "sharp"
+        else:
+            prof = self.db.get(Profile, profile_id)
+            label = prof.name if prof and prof.name else f"p{profile_id}"
+            kind = "soft"
+        acct = self._accounts.get_or_create(provider_id, label, kind, get_provider_currency(provider_id))
+        self._accounts.link(profile_id, acct.id)
+        # Bridge legacy ProfileProviderBalance: if a pre-migration / direct PPB
+        # row holds this profile+provider's balance, seed the new account from it
+        # (only when the new account is still empty) so balances written via the
+        # old table surface through the Account layer transparently.
+        legacy = self._legacy_ppb_balance(profile_id, provider_id)
+        if legacy is not None and not acct.balance:
+            acct.balance = legacy
+        return acct
+
+    def _legacy_ppb_balance(self, profile_id: int, provider_id: str) -> float | None:
+        """Balance from the legacy ProfileProviderBalance table, or None if no row.
+
+        ProfileProviderBalance is retained read-only post-migration; some callers
+        (and main's bonusdeposit tests) still seed balance there directly. Used as
+        a fallback so the Account layer reflects those values.
+        """
+        from ..db.models import ProfileProviderBalance
+
+        row = (
+            self.db.query(ProfileProviderBalance)
+            .filter(
+                ProfileProviderBalance.profile_id == profile_id,
+                ProfileProviderBalance.provider_id == provider_id,
+            )
+            .first()
+        )
+        return row.balance if row is not None else None
 
     def get_balance(self, profile_id: int, provider_id: str) -> float:
         """Get balance for a specific profile and provider."""
-        record = (
-            self.db.query(ProfileProviderBalance)
-            .filter(ProfileProviderBalance.profile_id == profile_id, ProfileProviderBalance.provider_id == provider_id)
-            .first()
-        )
-        return record.balance if record else 0.0
+        acct = self._accounts.resolve(profile_id, provider_id)
+        if acct is not None:
+            return acct.balance or 0.0
+        # No account yet — fall back to the legacy balance table (read-only).
+        legacy = self._legacy_ppb_balance(profile_id, provider_id)
+        return legacy if legacy is not None else 0.0
 
     def set_balance(self, profile_id: int, provider_id: str, balance: float) -> None:
-        """Set balance for a specific profile and provider."""
-        record = (
-            self.db.query(ProfileProviderBalance)
-            .filter(ProfileProviderBalance.profile_id == profile_id, ProfileProviderBalance.provider_id == provider_id)
-            .first()
-        )
-
-        if record:
-            record.balance = balance
-            record.updated_at = datetime.now(UTC)
-        else:
-            record = ProfileProviderBalance(profile_id=profile_id, provider_id=provider_id, balance=balance)
-            self.db.add(record)
+        """Set balance for a specific profile and provider (shared if sharp)."""
+        acct = self._resolve_or_create_account(profile_id, provider_id)
+        acct.balance = balance
+        acct.updated_at = datetime.now(UTC)
 
     def adjust_balance(self, profile_id: int, provider_id: str, amount: float) -> float:
         """Adjust balance for a specific profile and provider. Returns new balance."""
-        record = (
-            self.db.query(ProfileProviderBalance)
-            .filter(ProfileProviderBalance.profile_id == profile_id, ProfileProviderBalance.provider_id == provider_id)
-            .first()
-        )
-
-        if record:
-            record.balance += amount
-            record.updated_at = datetime.now(UTC)
-            return record.balance
-        else:
-            record = ProfileProviderBalance(profile_id=profile_id, provider_id=provider_id, balance=amount)
-            self.db.add(record)
-            return amount
+        acct = self._resolve_or_create_account(profile_id, provider_id)
+        acct.balance = (acct.balance or 0.0) + amount
+        acct.updated_at = datetime.now(UTC)
+        return acct.balance
 
     def get_total_bankroll(self, profile_id: int) -> float:
         """Get total bankroll across ALL providers, in SEK (display/UI basis).
@@ -106,8 +145,8 @@ class ProfileRepo:
 
         from ..config import get_exchange_rate
 
-        records = self.db.query(ProfileProviderBalance).filter(ProfileProviderBalance.profile_id == profile_id).all()
-        total = sum(r.balance * get_exchange_rate(r.provider_id) for r in records)
+        accts = self._accounts.accounts_for_profile(profile_id)
+        total = sum((a.balance or 0.0) * get_exchange_rate(a.provider_id) for a in accts)
         _bankroll_cache[profile_id] = (now + _BANKROLL_CACHE_TTL, total)
         return total
 
@@ -128,44 +167,53 @@ class ProfileRepo:
         from ..config import get_exchange_rate
         from ..constants import UNLIMITED_PROVIDERS
 
-        records = (
-            self.db.query(ProfileProviderBalance)
-            .filter(
-                ProfileProviderBalance.profile_id == profile_id,
-                ProfileProviderBalance.provider_id.in_(UNLIMITED_PROVIDERS),
-            )
-            .all()
+        accts = self._accounts.accounts_for_profile(profile_id)
+        total = sum(
+            (a.balance or 0.0) * get_exchange_rate(a.provider_id) for a in accts if a.provider_id in UNLIMITED_PROVIDERS
         )
-        total = sum(r.balance * get_exchange_rate(r.provider_id) for r in records)
         _stake_bankroll_cache[profile_id] = (now + _BANKROLL_CACHE_TTL, total)
         return total
 
     def get_all_balances(self, profile_id: int) -> dict[str, float]:
         """Return dict of provider_id -> balance for all providers with balance > 0."""
-        records = (
-            self.db.query(ProfileProviderBalance)
-            .filter(
-                ProfileProviderBalance.profile_id == profile_id,
-                ProfileProviderBalance.balance > 0,
-            )
-            .all()
-        )
-        return {r.provider_id: r.balance for r in records}
+        return {
+            a.provider_id: a.balance for a in self._accounts.accounts_for_profile(profile_id) if (a.balance or 0.0) > 0
+        }
 
     def get_all_registered_providers(self, profile_id: int) -> set[str]:
         """Return set of all provider_ids registered in the profile (including balance=0)."""
-        records = (
-            self.db.query(ProfileProviderBalance.provider_id)
-            .filter(
-                ProfileProviderBalance.profile_id == profile_id,
-            )
-            .all()
-        )
-        return {r[0] for r in records}
+        return {a.provider_id for a in self._accounts.accounts_for_profile(profile_id)}
 
     def get_provider_balance(self, profile_id: int, provider_id: str) -> float:
         """Get balance for a single provider. Alias for get_balance()."""
         return self.get_balance(profile_id, provider_id)
+
+    def get_account_dates(self, profile_id: int) -> dict[str, str | None]:
+        """provider_id -> account_opened_at ISO string (or None) for a profile."""
+        return {
+            a.provider_id: (a.account_opened_at.isoformat() if a.account_opened_at else None)
+            for a in self._accounts.accounts_for_profile(profile_id)
+        }
+
+    def set_account_opened_at(self, profile_id: int, provider_id: str, dt: datetime) -> None:
+        """Set the dormant-account opened date for a profile+provider account."""
+        acct = self._resolve_or_create_account(profile_id, provider_id)
+        acct.account_opened_at = dt
+        acct.updated_at = datetime.now(UTC)
+
+    def get_account_opened_at(self, profile_id: int, provider_id: str) -> datetime | None:
+        """Get the dormant-account opened date for a profile+provider, or None."""
+        acct = self._accounts.resolve(profile_id, provider_id)
+        return acct.account_opened_at if acct else None
+
+    def clear_account_opened_at(self, profile_id: int, provider_id: str) -> bool:
+        """Clear the dormant-account opened date. Returns False if no account exists."""
+        acct = self._accounts.resolve(profile_id, provider_id)
+        if acct is None:
+            return False
+        acct.account_opened_at = None
+        acct.updated_at = datetime.now(UTC)
+        return True
 
     def get_avg_daily_wager(self, profile_id: int, lookback_days: int = 14) -> dict:
         """
@@ -201,29 +249,18 @@ class ProfileRepo:
         }
 
     def copy_balances(self, from_profile_id: int, to_profile_id: int) -> int:
-        """Copy all balances from one profile to another. Returns count copied."""
-        source_balances = (
-            self.db.query(ProfileProviderBalance).filter(ProfileProviderBalance.profile_id == from_profile_id).all()
-        )
+        """Link the source profile's accounts to the target profile. Returns count linked.
 
+        In the Account layer "copying balances" means sharing the same account
+        rows: the target sees the source's accounts (shared sharp pool included).
+        Proper edge/bonus + use-shared-vs-fresh provisioning is owned by
+        AccountService; this remains for the legacy profile-create call site.
+        """
         count = 0
-        for source in source_balances:
-            existing = (
-                self.db.query(ProfileProviderBalance)
-                .filter(
-                    ProfileProviderBalance.profile_id == to_profile_id,
-                    ProfileProviderBalance.provider_id == source.provider_id,
-                )
-                .first()
-            )
-
-            if not existing:
-                new_balance = ProfileProviderBalance(
-                    profile_id=to_profile_id, provider_id=source.provider_id, balance=source.balance
-                )
-                self.db.add(new_balance)
+        for acct in self._accounts.accounts_for_profile(from_profile_id):
+            if self._accounts.resolve(to_profile_id, acct.provider_id) is None:
+                self._accounts.link(to_profile_id, acct.id)
                 count += 1
-
         return count
 
     # ---- Bonus ----

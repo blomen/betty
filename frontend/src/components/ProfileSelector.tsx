@@ -7,6 +7,10 @@ export function ProfileSelector() {
   const [newName, setNewName] = useState('');
   const [newStyle, setNewStyle] = useState<'personal' | 'bonus_extraction'>('personal');
   const [createError, setCreateError] = useState<string | null>(null);
+  // New-profile options (multi-profile sharp accounts).
+  const [kind, setKind] = useState<'edge' | 'bonus'>('bonus');
+  const [sharpMode, setSharpMode] = useState<'shared' | 'fresh'>('shared');
+  const [freshLabel, setFreshLabel] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
 
   const closeAndReset = () => {
@@ -14,6 +18,9 @@ export function ProfileSelector() {
     activate.reset();
     create.reset();
     setCreateError(null);
+    setKind('bonus');
+    setSharpMode('shared');
+    setFreshLabel('');
   };
 
   const handleToggle = () => {
@@ -51,10 +58,18 @@ export function ProfileSelector() {
     const name = newName.trim();
     if (!name) return;
     setCreateError(null);
+    const useShared = sharpMode === 'shared';
     try {
-      await create.mutateAsync({ name, style: newStyle });
+      await create.mutateAsync({
+        name,
+        style: newStyle,
+        kind,
+        use_shared_sharp: useShared,
+        fresh_sharp_label: useShared ? null : freshLabel.trim() || name,
+      });
       setNewName('');
       setNewStyle('personal');
+      setFreshLabel('');
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : 'Failed to create');
     }
@@ -130,7 +145,7 @@ export function ProfileSelector() {
 
           <form
             onSubmit={handleCreate}
-            className="flex items-center gap-1 p-2 border-t border-border"
+            className="flex flex-col gap-2 p-2 border-t border-border"
           >
             <input
               type="text"
@@ -140,7 +155,7 @@ export function ProfileSelector() {
                 setCreateError(null);
               }}
               placeholder="New profile name"
-              className="flex-1 px-2 py-1 bg-panel2 border border-border text-text text-xs"
+              className="px-2 py-1 bg-panel2 border border-border text-text text-xs"
             />
             <select
               value={newStyle}
@@ -150,6 +165,55 @@ export function ProfileSelector() {
               <option value="personal">Personal</option>
               <option value="bonus_extraction">Bonus</option>
             </select>
+
+            {/* Purpose — drives Rule-B ROI bucketing */}
+            <div className="flex items-center gap-1">
+              <span className="text-muted2 text-[10px] w-12">Purpose</span>
+              {(['edge', 'bonus'] as const).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setKind(k)}
+                  className={`px-2 py-0.5 text-[10px] border ${
+                    kind === k
+                      ? 'border-tabBankroll text-tabBankroll bg-tabBankroll/10'
+                      : 'border-border text-muted2'
+                  }`}
+                >
+                  {k === 'edge' ? 'Edge' : 'Bonus campaign'}
+                </button>
+              ))}
+            </div>
+
+            {/* Sharp accounts — reuse the shared pool or spin up fresh ones */}
+            <div className="flex items-center gap-1">
+              <span className="text-muted2 text-[10px] w-12">Sharp</span>
+              {(['shared', 'fresh'] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setSharpMode(m)}
+                  className={`px-2 py-0.5 text-[10px] border ${
+                    sharpMode === m
+                      ? 'border-tabBankroll text-tabBankroll bg-tabBankroll/10'
+                      : 'border-border text-muted2'
+                  }`}
+                >
+                  {m === 'shared' ? 'Use mine' : 'Fresh'}
+                </button>
+              ))}
+            </div>
+
+            {sharpMode === 'fresh' && (
+              <input
+                type="text"
+                value={freshLabel}
+                onChange={(e) => setFreshLabel(e.target.value)}
+                placeholder="Fresh sharp label (e.g. alt2)"
+                className="px-2 py-1 bg-panel2 border border-border text-text text-xs"
+              />
+            )}
+
             <button
               type="submit"
               disabled={!newName.trim() || create.isPending}

@@ -1180,12 +1180,9 @@ class OpportunityService:
         try:
             profile = self.profile_repo.get_active()
             if profile:
-                from ..db.models import ProfileProviderBalance
+                from ..repositories.account_repo import AccountRepo
 
-                rows = (
-                    self.db.query(ProfileProviderBalance).filter(ProfileProviderBalance.profile_id == profile.id).all()
-                )
-                balance_map = {r.provider_id: r.balance or 0.0 for r in rows}
+                balance_map = AccountRepo(self.db).balances_map(profile.id)
         except Exception:
             pass
 
