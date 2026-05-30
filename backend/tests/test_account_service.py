@@ -156,8 +156,14 @@ def test_soft_deleted_account_reactivated_on_reuse(session):
     betinia_id = ar.resolve(camp.id, "betinia").id
     s.add(
         Bet(
-            profile_id=camp.id, provider_id="betinia", account_id=betinia_id, odds=2.0, stake=10,
-            currency="SEK", result="won", payout=20.0,
+            profile_id=camp.id,
+            provider_id="betinia",
+            account_id=betinia_id,
+            odds=2.0,
+            stake=10,
+            currency="SEK",
+            result="won",
+            payout=20.0,
         )
     )
     s.flush()
@@ -165,6 +171,14 @@ def test_soft_deleted_account_reactivated_on_reuse(session):
     s.flush()
     assert s.get(Account, betinia_id).is_active is False  # soft-deleted (had bets)
 
+    # Mirror the real delete route: the profile row itself is removed (the bet's
+    # account_id is SET NULL by the FK; here we clear it so the profile can go).
+    s.query(Bet).filter(Bet.profile_id == camp.id).update({Bet.profile_id: None})
+    s.delete(camp)
+    s.flush()
+
+    # A new profile reusing the same name (a fresh campaign) reactivates the
+    # soft-deleted account rather than being stranded with no usable account.
     camp2 = Profile(name="camp", kind="bonus")
     s.add(camp2)
     s.flush()
