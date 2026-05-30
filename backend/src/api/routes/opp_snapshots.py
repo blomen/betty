@@ -135,9 +135,41 @@ def get_stats(
         for row in blend_base
     ]
 
+    # ---- Shading CLV breakdown (odds_bucket x shading_risk) ----
+    # Only completed, classified rows (all three columns non-NULL).
+    shading_rows = (
+        db.query(
+            OppSnapshot.odds_bucket,
+            OppSnapshot.shading_risk,
+            func.count().label("n"),
+            func.avg(OppSnapshot.pinnacle_clv_pct).label("mean_clv"),
+        )
+        .filter(
+            OppSnapshot.clv_computed_at.isnot(None),
+            OppSnapshot.first_detected_at > cutoff,
+            OppSnapshot.shading_risk.isnot(None),
+            OppSnapshot.odds_bucket.isnot(None),
+            OppSnapshot.pinnacle_clv_pct.isnot(None),
+        )
+        .group_by(OppSnapshot.odds_bucket, OppSnapshot.shading_risk)
+        .having(func.count() >= 3)
+        .order_by(OppSnapshot.odds_bucket, OppSnapshot.shading_risk)
+        .all()
+    )
+    shading_clv_breakdown = [
+        {
+            "odds_bucket": row.odds_bucket,
+            "shading_risk": row.shading_risk,
+            "n": int(row.n),
+            "mean_pinnacle_clv_pct": round(float(row.mean_clv), 2) if row.mean_clv is not None else None,
+        }
+        for row in shading_rows
+    ]
+
     return {
         "summary": summary,
         "history": history,
         "breakdown": breakdown,
         "sport_blend_comparison": sport_blend_comparison,
+        "shading_clv_breakdown": shading_clv_breakdown,
     }

@@ -964,6 +964,10 @@ class OppSnapshot(Base):
     blended_closing_fair = Column(Float, nullable=True)
     blended_clv_pct = Column(Float, nullable=True)
 
+    # ---- Shading-aware diagnostic (shadow). Frozen at detection time. ----
+    shading_risk = Column(String, nullable=True)  # "low" | "elevated" | "high" | None
+    odds_bucket = Column(String, nullable=True)  # "<1.5" | "1.5-2.5" | "2.5-4.0" | "4.0+"
+
     event = relationship("Event")
 
 
@@ -1940,6 +1944,10 @@ def _run_pg_migrations(engine) -> None:
         # this, the SQLite ALTER + Alembic 006 don't reach prod (container runs
         # uvicorn directly; create_all never ALTERs the existing profiles table).
         ("profiles", "style", "VARCHAR NOT NULL DEFAULT 'personal'"),
+        # 2026-05-30 — shading-aware diagnostic columns on opp_snapshots.
+        # Frozen at detection time; diagnostic only, no effect on edge/stake.
+        ("opp_snapshots", "shading_risk", "VARCHAR"),
+        ("opp_snapshots", "odds_bucket", "VARCHAR"),
     ]
 
     # Tables dropped during the 2026-05-25 strip-trading work. Idempotent —
