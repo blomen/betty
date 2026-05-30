@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import type { ReactNode } from 'react'
 import { api } from '../hooks/useApi'
-import type { BonusChipProgress, ProviderBonusConfig } from './bonusChipState'
+import { resolveBonusChipState, type BonusChipProgress, type ProviderBonusConfig } from './bonusChipState'
 import { useMirrorStream } from '../hooks/useMirrorStream'
 import { useMirrorState } from '../hooks/useMirrorState'
 import { useSharpRefresh } from '../hooks/useSharpRefresh'
@@ -562,6 +562,140 @@ function ValueBetRow({
       <td className="px-2 py-1 text-right font-mono text-green-400">{fmtEv(b)}</td>
       <td className="px-2 py-1 text-right font-mono text-zinc-500">{fmtTtk(b)}</td>
     </tr>
+  )
+}
+
+// Inline freebet-lifecycle chip for the Sports tab. Renders one of six states
+// (see resolveBonusChipState) and fires the existing bonus-transition /
+// claim-bonus endpoints. Shared by BOTH cluster render sites so the logic
+// can't drift (CLAUDE.md flags "two divergent renders" as a recurring bug).
+function BonusChip(props: {
+  pid: string
+  balanceNative: number
+  isDrained: boolean
+  pendingCount: number
+  progress: BonusChipProgress | null
+  config: ProviderBonusConfig | null
+  currency: string
+  onChanged: () => void
+}) {
+  const { pid, balanceNative, isDrained, pendingCount, progress, config, currency, onChanged } = props
+  const state = resolveBonusChipState({ balanceNative, isDrained, pendingCount, progress, config, triggerCurrency: currency })
+  const [busy, setBusy] = useState(false)
+
+  if (state.kind === 'none') return null
+
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true)
+    try {
+      await fn()
+      onChanged()
+    } catch (err) {
+      console.warn(`[bonus-chip] ${pid} action failed`, err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const pidLabel = pid.toUpperCase()
+  const btn = 'px-1.5 py-0.5 text-[9px] uppercase tracking-wider rounded border cursor-pointer disabled:opacity-50'
+  const claimBtn = (
+    <button
+      disabled={busy}
+      onClick={(e) => { e.stopPropagation(); run(() => api.claimBonus(pid)) }}
+      className={`${btn} bg-zinc-800 text-zinc-400 border-zinc-700 hover:bg-zinc-700 hover:text-zinc-200`}
+      title={`Mark ${pidLabel}'s bonus as claimed — hides this row. Reversible from Bankroll tab.`}
+    >
+      mark claimed
+    </button>
+  )
+
+  if (state.kind === 'deposit_hint') {
+    return (
+      <span className="flex items-center gap-1.5">
+        <span className="text-amber-400">deposit {state.amount.toFixed(0)} {state.currency.toLowerCase()}</span>
+        <button
+          disabled={busy}
+          onClick={(e) => { e.stopPropagation(); run(() => api.bonusTransition(pid, 'start_freebet')) }}
+          className={`${btn} bg-emerald-900/40 text-emerald-300 border-emerald-700/50 hover:bg-emerald-800/50`}
+          title={`Start freebet tracking for ${pidLabel} (after you deposit, then place one qualifying bet).`}
+        >
+          start tracking
+        </button>
+        {claimBtn}
+      </span>
+    )
+  }
+
+  if (state.kind === 'deposit_detected') {
+    return (
+      <span className="flex items-center gap-1.5">
+        <span className="text-emerald-400">✓ deposit detected</span>
+        <button
+          disabled={busy}
+          onClick={(e) => { e.stopPropagation(); run(() => api.bonusTransition(pid, 'start_freebet')) }}
+          className={`${btn} bg-emerald-900/40 text-emerald-300 border-emerald-700/50 hover:bg-emerald-800/50`}
+          title={`Start the ${state.amount.toFixed(0)} ${state.currency} freebet tracking for ${pidLabel}.`}
+        >
+          start freebet tracking
+        </button>
+        {claimBtn}
+      </span>
+    )
+  }
+
+  if (state.kind === 'wagering') {
+    return (
+      <span className="flex items-center gap-1.5">
+        <span className="text-zinc-400">
+          qualifying bet: {state.wagered.toFixed(0)}/{state.requirement.toFixed(0)} @ ≥{state.minOdds.toFixed(2)}
+        </span>
+        {/* Escape hatch: if the qualifying bet was placed BEFORE tracking
+            started, wagered stays 0. Replay settled bets to backfill. */}
+        <button
+          disabled={busy}
+          onClick={(e) => { e.stopPropagation(); run(() => api.backfillWagering()) }}
+          className={`${btn} bg-zinc-800 text-zinc-500 border-zinc-700 hover:text-zinc-300`}
+          title="Replay settled bets through wagering (use if you placed the qualifying bet before starting tracking)."
+        >
+          replay
+        </button>
+      </span>
+    )
+  }
+
+  if (state.kind === 'unlock_ready') {
+    return (
+      <span className="flex items-center gap-1.5">
+        <span className="text-emerald-400">✓ qualifying bet done</span>
+        <button
+          disabled={busy}
+          onClick={(e) => { e.stopPropagation(); run(() => api.bonusTransition(pid, 'trigger_settled')) }}
+          className={`${btn} bg-emerald-700/50 text-emerald-100 border-emerald-500/60 hover:bg-emerald-600/60 font-bold`}
+          title={`Unlock the ${state.amount.toFixed(0)} freebet for ${pidLabel}.`}
+        >
+          unlock freebet
+        </button>
+      </span>
+    )
+  }
+
+  // state.kind === 'freebet_ready'
+  // TODO(freebet-accounting): the placed freebet records as a normal stake=amount
+  // bet, but a freebet's stake is not at risk. Ensure the recorded bet is flagged
+  // is_bonus=true in the mirror recording path so stats/ROI don't over-count it.
+  return (
+    <span className="flex items-center gap-1.5">
+      <span className="text-yellow-300">🎁 {state.amount.toFixed(0)} freebet ready — place it, then:</span>
+      <button
+        disabled={busy}
+        onClick={(e) => { e.stopPropagation(); run(() => api.bonusTransition(pid, 'freebet_used')) }}
+        className={`${btn} bg-yellow-800/40 text-yellow-200 border-yellow-600/50 hover:bg-yellow-700/50`}
+        title={`Mark ${pidLabel}'s freebet as used (after placing it in the browser).`}
+      >
+        mark freebet used
+      </button>
+    </span>
   )
 }
 
