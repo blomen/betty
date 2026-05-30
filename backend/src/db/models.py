@@ -1890,6 +1890,20 @@ def _migrate_provider_balances_to_accounts(engine) -> None:
                 truth_row = next((b for b in ppbs if b.provider_id == prov and b.profile_id == truth_id), None)
                 src = truth_row or ppb
                 kind = "sharp"
+                # Sharp providers collapse to ONE shared account. If pre-migration
+                # per-profile copies of this sharp balance had drifted apart, only
+                # `src` survives — surface the discarded values rather than lose
+                # them silently (they reconcile to the live shared balance after).
+                distinct = {round(b.balance or 0.0, 2) for b in ppbs if b.provider_id == prov}
+                if len(distinct) > 1:
+                    logger.warning(
+                        "account migration: %s had divergent per-profile balances %s; "
+                        "collapsing to shared account at %.2f (from profile %s)",
+                        prov,
+                        sorted(distinct),
+                        src.balance or 0.0,
+                        src.profile_id,
+                    )
             else:
                 src = ppb
                 kind = "soft"

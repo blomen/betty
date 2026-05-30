@@ -112,3 +112,27 @@ def test_unlink(repo_and_profiles):
     repo.db.flush()
     assert repo.link_count(a.id) == 1
     assert repo.resolve(edge.id, "polymarket") is None
+
+
+def test_link_rejects_second_active_account_for_same_provider(repo_and_profiles):
+    """resolve() assumes ≤1 active account per (profile, provider); linking a
+    second active account for the same provider must raise, not silently corrupt
+    which account balance reads/writes route to."""
+    import pytest
+
+    repo, edge, _ = repo_and_profiles
+    a = repo.get_or_create(provider_id="polymarket", label="rasmus", kind="sharp", currency="USDC")
+    b = repo.get_or_create(provider_id="polymarket", label="alt2", kind="sharp", currency="USDC")
+    repo.link(edge.id, a.id)
+    repo.db.flush()
+    with pytest.raises(ValueError):
+        repo.link(edge.id, b.id)
+
+
+def test_link_same_account_twice_is_noop(repo_and_profiles):
+    repo, edge, _ = repo_and_profiles
+    a = repo.get_or_create(provider_id="polymarket", label="rasmus", kind="sharp", currency="USDC")
+    repo.link(edge.id, a.id)
+    repo.link(edge.id, a.id)  # idempotent — must not raise
+    repo.db.flush()
+    assert repo.link_count(a.id) == 1

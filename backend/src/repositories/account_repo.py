@@ -92,13 +92,34 @@ class AccountRepo:
     # ---- Links ----
 
     def link(self, profile_id: int, account_id: int) -> None:
+        """Link an account to a profile (idempotent on the same account).
+
+        Enforces the invariant `resolve()` relies on: at most one ACTIVE account
+        per (profile, provider). Re-linking the same account is a no-op; linking a
+        second active account for a provider the profile already has would make
+        resolution ambiguous, so it raises rather than silently corrupting which
+        account balance reads/writes route to. No legitimate flow triggers this
+        (callers link only when resolve() returned None).
+        """
         exists = (
             self.db.query(ProfileAccount)
             .filter(ProfileAccount.profile_id == profile_id, ProfileAccount.account_id == account_id)
             .first()
         )
-        if not exists:
-            self.db.add(ProfileAccount(profile_id=profile_id, account_id=account_id))
+        if exists:
+            return
+
+        target = self.get(account_id)
+        if target is not None and target.is_active:
+            other = self.resolve(profile_id, target.provider_id)
+            if other is not None and other.id != account_id:
+                raise ValueError(
+                    f"Profile {profile_id} already has an active account for {target.provider_id} "
+                    f"(account {other.id}, label '{other.label}'); refusing to link a second "
+                    f"(account {account_id}, label '{target.label}')."
+                )
+
+        self.db.add(ProfileAccount(profile_id=profile_id, account_id=account_id))
 
     def unlink(self, profile_id: int, account_id: int) -> None:
         self.db.query(ProfileAccount).filter(
