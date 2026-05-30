@@ -647,6 +647,7 @@ class Profile(Base):
     is_active = Column(Boolean, default=False)  # Currently selected profile
     chrome_port = Column(Integer, nullable=True)  # CDP port (default: 9221 + id)
     color = Column(String, nullable=True)  # Hex color for Chrome border (auto-assigned)
+    style = Column(String, nullable=False, default="personal")  # "personal" | "bonus_extraction"
 
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
@@ -1631,6 +1632,16 @@ def _run_migrations(engine):
         except sqlite3.OperationalError:
             try:
                 cursor.execute("ALTER TABLE profiles ADD COLUMN chrome_port INTEGER")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
+
+        # Add style to profiles (Stats per-profile account styles)
+        try:
+            cursor.execute("SELECT style FROM profiles LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE profiles ADD COLUMN style TEXT NOT NULL DEFAULT 'personal'")
                 raw.commit()
             except sqlite3.OperationalError:
                 pass
