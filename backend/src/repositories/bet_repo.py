@@ -115,7 +115,23 @@ class BetRepo:
         return query.order_by(Bet.placed_at.desc()).limit(limit).all()
 
     def create(self, **kwargs) -> Bet:
-        """Create a new bet record."""
+        """Create a new bet record.
+
+        If account_id isn't supplied, resolve it from (profile_id, provider_id)
+        via the Account layer so every bet is attributed to a real account
+        (shared sharp pool or per-campaign soft account). Resolve-only: if the
+        profile has no linked account for the provider yet, account_id stays
+        NULL — ROI bucketing keys on profile.kind, not account_id.
+        """
+        if not kwargs.get("account_id"):
+            profile_id = kwargs.get("profile_id")
+            provider_id = kwargs.get("provider_id")
+            if profile_id is not None and provider_id:
+                from .account_repo import AccountRepo
+
+                acct = AccountRepo(self.db).resolve(profile_id, provider_id)
+                if acct is not None:
+                    kwargs["account_id"] = acct.id
         bet = Bet(**kwargs)
         self.db.add(bet)
         return bet
