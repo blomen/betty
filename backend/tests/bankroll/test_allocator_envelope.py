@@ -27,7 +27,7 @@ def _stub_batch(builder_mock, capital_actions=None, balances=None):
 
 
 def test_allocate_returns_envelope_keys(engine):
-    with patch("backend.src.bankroll.allocator.BatchBuilder") as bb:
+    with patch("src.bankroll.allocator.BatchBuilder") as bb:
         _stub_batch(bb)
         result = engine.allocate(1000.0)
     assert set(result.keys()) == {
@@ -42,7 +42,7 @@ def test_allocate_returns_envelope_keys(engine):
 
 
 def test_allocate_none_budget_is_unbounded(engine):
-    with patch("backend.src.bankroll.allocator.BatchBuilder") as bb:
+    with patch("src.bankroll.allocator.BatchBuilder") as bb:
         _stub_batch(
             bb,
             capital_actions=[
@@ -65,7 +65,7 @@ def test_allocate_none_budget_is_unbounded(engine):
 
 
 def test_allocate_withdrawals_expand_budget(engine):
-    with patch("backend.src.bankroll.allocator.BatchBuilder") as bb:
+    with patch("src.bankroll.allocator.BatchBuilder") as bb:
         _stub_batch(
             bb,
             capital_actions=[
@@ -90,7 +90,7 @@ def test_allocate_withdrawals_expand_budget(engine):
 
 
 def test_allocate_partial_tier_3_ranks_by_ev(engine):
-    with patch("backend.src.bankroll.allocator.BatchBuilder") as bb:
+    with patch("src.bankroll.allocator.BatchBuilder") as bb:
         _stub_batch(
             bb,
             capital_actions=[
@@ -122,7 +122,7 @@ def test_allocate_partial_tier_3_ranks_by_ev(engine):
 
 
 def test_allocate_surplus_becomes_keep_liquid(engine):
-    with patch("backend.src.bankroll.allocator.BatchBuilder") as bb:
+    with patch("src.bankroll.allocator.BatchBuilder") as bb:
         _stub_batch(
             bb,
             capital_actions=[
@@ -142,7 +142,7 @@ def test_allocate_surplus_becomes_keep_liquid(engine):
 
 
 def test_allocate_nothing_to_do(engine):
-    with patch("backend.src.bankroll.allocator.BatchBuilder") as bb:
+    with patch("src.bankroll.allocator.BatchBuilder") as bb:
         _stub_batch(bb)
         result = engine.allocate(1000.0)
     assert result["deposits"] == []
@@ -152,7 +152,7 @@ def test_allocate_nothing_to_do(engine):
 
 
 def test_withdrawal_threshold_ignores_dust(engine):
-    with patch("backend.src.bankroll.allocator.BatchBuilder") as bb:
+    with patch("src.bankroll.allocator.BatchBuilder") as bb:
         _stub_batch(
             bb,
             capital_actions=[
