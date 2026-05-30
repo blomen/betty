@@ -1934,6 +1934,12 @@ def _run_pg_migrations(engine) -> None:
         ("opp_snapshots", "blend_sources", "JSON"),
         ("opp_snapshots", "blended_closing_fair", "DOUBLE PRECISION"),
         ("opp_snapshots", "blended_clv_pct", "DOUBLE PRECISION"),
+        # 2026-05-30 — Stats per-profile account styles. "personal" vs
+        # "bonus_extraction" drives the adaptive Stats layout. Default 'personal'
+        # so existing prod profiles keep the standard performance view. Without
+        # this, the SQLite ALTER + Alembic 006 don't reach prod (container runs
+        # uvicorn directly; create_all never ALTERs the existing profiles table).
+        ("profiles", "style", "VARCHAR NOT NULL DEFAULT 'personal'"),
     ]
 
     # Tables dropped during the 2026-05-25 strip-trading work. Idempotent —
