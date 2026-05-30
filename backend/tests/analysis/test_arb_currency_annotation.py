@@ -35,6 +35,7 @@ def test_arb_leg_has_currency_field():
         bid=None,
         ask=None,
         max_stake=None,
+        depth_usd=None,
     )
     odds_pinnacle_away = SimpleNamespace(
         provider_id="pinnacle",
@@ -47,6 +48,7 @@ def test_arb_leg_has_currency_field():
         bid=None,
         ask=None,
         max_stake=None,
+        depth_usd=None,
     )
     # cloudbet quotes both outcomes so outcome-count matches pinnacle (2 vs 2),
     # avoiding the market-type-mismatch filter. Odds beat pinnacle devigged fair
@@ -62,6 +64,7 @@ def test_arb_leg_has_currency_field():
         bid=None,
         ask=None,
         max_stake=None,
+        depth_usd=None,
     )
     odds_cloudbet_away = SimpleNamespace(
         provider_id="cloudbet",
@@ -74,6 +77,7 @@ def test_arb_leg_has_currency_field():
         bid=None,
         ask=None,
         max_stake=None,
+        depth_usd=None,
     )
     event = SimpleNamespace(
         id="evt:test",

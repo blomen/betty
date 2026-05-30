@@ -35,12 +35,12 @@ SHADING_HIGH_PP: float = 4.0
 class ShadingSignal:
     """Read-only shading-risk label for one outcome of a value bet."""
 
-    risk: str                     # "low" | "elevated" | "high"
-    favorite_side: bool           # is this outcome the market favorite?
-    fav_prob: float               # the outcome's devigged fair probability
-    divergence_pp: float | None   # consensus_lean divergence (the spine)
-    flb_contrib: bool             # favorite-longshot flag fired (2-way only)
-    reason: str                   # human-readable "why"
+    risk: str  # "low" | "elevated" | "high"
+    favorite_side: bool  # is this outcome the market favorite?
+    fav_prob: float  # the outcome's devigged fair probability
+    divergence_pp: float | None  # consensus_lean divergence (the spine)
+    flb_contrib: bool  # favorite-longshot flag fired (2-way only)
+    reason: str  # human-readable "why"
 
     def to_dict(self) -> dict:
         return {
