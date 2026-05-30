@@ -18,6 +18,9 @@ def test_run_settlement_calls_opp_clv_backfill(db_session):
             "src.services.bet_service.BetService.snapshot_closing_odds", return_value={"processed": 0, "updated": 0}
         ) as bet_mock,
         patch(
+            "src.services.bet_service.BetService.backfill_fair_odds", return_value={"processed": 0, "updated": 0}
+        ) as fair_mock,
+        patch(
             "src.services.opp_snapshot_service.OppSnapshotService.compute_closing_clv",
             return_value={"processed": 0, "updated": 0},
         ) as opp_mock,
@@ -25,10 +28,13 @@ def test_run_settlement_calls_opp_clv_backfill(db_session):
         result = sched._run_settlement()
 
     assert bet_mock.called, "bet CLV must still be invoked"
+    assert fair_mock.called, "fair-odds backfill must be invoked"
     assert opp_mock.called, "opp CLV backfill must be invoked"
-    # Both calls are commutative on the current data model (neither mutates Odds),
+    # All calls are commutative on the current data model (none mutates Odds),
     # so we only assert each fires exactly once per tick.
     assert bet_mock.call_count == 1
+    assert fair_mock.call_count == 1
     assert opp_mock.call_count == 1
     assert "bet_clv" in result
+    assert "bet_fair" in result
     assert "opp_clv" in result

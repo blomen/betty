@@ -33,4 +33,8 @@ export const profilesApi = {
       method: 'DELETE',
     });
   },
+
+  async getProfileBonusStatuses(profileId: number): Promise<Record<string, import('@/types').BonusProgressEntry>> {
+    return fetchJson(`/profiles/${profileId}/bonus-statuses`);
+  },
 };

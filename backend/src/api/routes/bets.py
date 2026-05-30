@@ -165,12 +165,13 @@ def list_bets(
     status: str | None = None,
     exclude_bonus: bool = False,
     limit: int = 50,
+    profile_id: int | None = None,
     db: Session = Depends(get_db),
 ):
     """Get bet history for active profile."""
     profile_repo = ProfileRepo(db)
     bet_repo = BetRepo(db)
-    profile = profile_repo.get_active()
+    profile = profile_repo.get(profile_id)
 
     bets = bet_repo.list_for_profile(profile.id, status=status, exclude_bonus=exclude_bonus, limit=limit)
     site_urls = load_provider_site_urls()
@@ -410,6 +411,7 @@ def correlate_arbs_endpoint(db: Session = Depends(get_db_writer)):
 def get_analytics(
     provider_id: str | None = None,
     days: int = 90,
+    profile_id: int | None = None,
     db: Session = Depends(get_db),
 ):
     """Per-sport + per-edge-bucket realized ROI vs displayed edge.
@@ -423,7 +425,7 @@ def get_analytics(
     from ...db.models import Bet
 
     profile_repo = ProfileRepo(db)
-    profile = profile_repo.get_active()
+    profile = profile_repo.get(profile_id)
     if not profile:
         raise HTTPException(404, "No active profile")
 
@@ -479,6 +481,7 @@ def get_analytics(
         edges = [e for e in edges if e is not None]
         implied = [1.0 / r.odds for r in rows if r.odds > 0]
         clvs = [r.clv_pct for r in rows if r.clv_pct is not None]
+        clv_pos = sum(1 for c in clvs if c >= 0)
         return {
             "n": n,
             "won": won,
@@ -491,6 +494,7 @@ def get_analytics(
             "profit": round(profit, 2),
             "roi_pct": round(100 * profit / staked, 2) if staked else None,
             "avg_clv_pct": round(sum(clvs) / len(clvs), 2) if clvs else None,
+            "clv_positive_pct": round(100 * clv_pos / len(clvs), 1) if clvs else None,
         }
 
     by_sport = {}
@@ -535,6 +539,16 @@ def get_analytics(
         base["confidence_multiplier"] = get_multiplier(base.get("avg_clv_pct"), base["n"])
         return base
 
+    _LANE = {"value": "Value", "arb": "Arb", "reverse": "Reverse", "boost": "Boost"}
+
+    by_strategy = {}
+    for b in bets:
+        by_strategy.setdefault(_LANE.get(b.bet_type or "", "Other"), []).append(b)
+
+    by_provider = {}
+    for b in bets:
+        by_provider.setdefault(b.provider_id, []).append(b)
+
     return {
         "provider_id": provider_id,
         "days": days,
@@ -545,6 +559,66 @@ def get_analytics(
         "by_sport_and_bucket": {k: summarize(v) for k, v in by_sport_x_edge.items()},
         "by_sport_and_market": {k: summarize_with_multiplier(v) for k, v in by_sport_x_market.items()},
         "bucket_confidence_enabled": bucket_conf_enabled(),
+        "by_strategy": {k: summarize(v) for k, v in by_strategy.items()},
+        "by_provider": {k: summarize(v) for k, v in by_provider.items()},
+    }
+
+
+@router.get("/equity-curve")
+def equity_curve(
+    days: int | None = None,
+    profile_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """Cumulative realized P/L (SEK) over a profile's settled, real-money bets.
+
+    Cheap: minimal columns, no per-bet odds/Pinnacle enrichment. Excludes bonus
+    bets so total_profit_sek matches BankrollService.get_stats (spec §8); the
+    end value reconciles to current bankroll so the chart matches the KPIs.
+    """
+    from datetime import datetime, timedelta
+
+    from ...config import get_exchange_rate
+    from ...repositories import BetRepo, ProfileRepo
+
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get(profile_id)
+    if not profile:
+        raise HTTPException(404, "No active profile")
+
+    cutoff = (datetime.now(UTC) - timedelta(days=days)) if days else None
+    rows = BetRepo(db).get_settled_for_curve(profile.id, cutoff)
+
+    def to_sek(amount, provider_id, currency):
+        return amount if (currency or "SEK") == "SEK" else amount * get_exchange_rate(provider_id)
+
+    def bet_profit(row):  # non-bonus realized P/L, mirrors get_stats real_rows
+        if row.result == "won":
+            return row.payout - row.stake
+        if row.result == "lost":
+            return -row.stake
+        return 0.0
+
+    points = []
+    cum = 0.0
+    staked = 0.0
+    for row in rows:
+        if row.is_bonus:
+            continue
+        cum += to_sek(bet_profit(row), row.provider_id, row.currency)
+        staked += to_sek(row.stake, row.provider_id, row.currency)
+        points.append(
+            {
+                "t": row.placed_at.isoformat() if row.placed_at else None,
+                "cum_profit_sek": round(cum, 2),
+            }
+        )
+
+    return {
+        "points": points,
+        "total_profit_sek": round(cum, 2),
+        "total_staked_sek": round(staked, 2),
+        "current_bankroll_sek": round(profile_repo.get_total_bankroll(profile.id), 2),
     }
 
 
