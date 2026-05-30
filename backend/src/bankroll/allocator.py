@@ -121,6 +121,7 @@ class AllocationEngine:
         # then supplement with any profile balance that is clearly idle (no active bonus,
         # no pending bets) that BatchBuilder missed.
         from ..db.models import Bet
+        from ..repositories.account_repo import AccountRepo
 
         withdrawals: list[dict] = []
         withdrawal_total_sek = 0.0

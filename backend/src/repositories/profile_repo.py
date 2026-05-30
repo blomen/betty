@@ -164,6 +164,20 @@ class ProfileRepo:
         acct.account_opened_at = dt
         acct.updated_at = datetime.now(UTC)
 
+    def get_account_opened_at(self, profile_id: int, provider_id: str) -> datetime | None:
+        """Get the dormant-account opened date for a profile+provider, or None."""
+        acct = self._accounts.resolve(profile_id, provider_id)
+        return acct.account_opened_at if acct else None
+
+    def clear_account_opened_at(self, profile_id: int, provider_id: str) -> bool:
+        """Clear the dormant-account opened date. Returns False if no account exists."""
+        acct = self._accounts.resolve(profile_id, provider_id)
+        if acct is None:
+            return False
+        acct.account_opened_at = None
+        acct.updated_at = datetime.now(UTC)
+        return True
+
     def get_avg_daily_wager(self, profile_id: int, lookback_days: int = 14) -> dict:
         """
         Average total stake per day over the lookback window.
