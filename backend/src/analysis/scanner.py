@@ -304,13 +304,12 @@ class OpportunityScanner:
             liq_reason = None
             liq_skip_reason = result.skip_reason
             if final_stake > 0:
+                exchange_rate = get_exchange_rate(vb.provider)
                 final_stake, was_liq_capped, liq_reason = liquidity_capped_stake(
-                    final_stake, vb.provider, vb.depth_usd, get_exchange_rate(vb.provider)
+                    final_stake, vb.provider, vb.depth_usd, exchange_rate
                 )
                 if was_liq_capped:
-                    floor_sek = provider_min_stake_sek(
-                        vb.provider, get_exchange_rate(vb.provider), stake_calculator.min_stake
-                    )
+                    floor_sek = provider_min_stake_sek(vb.provider, exchange_rate, stake_calculator.min_stake)
                     if final_stake < floor_sek:
                         final_stake = 0.0
                         liq_skip_reason = f"liquidity-capped stake below min ({floor_sek:.0f} kr): {liq_reason}"
