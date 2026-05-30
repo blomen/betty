@@ -9,7 +9,7 @@ import { ProviderName } from '@/components/ProviderName';
 import { TabIcon, TAB_COLORS } from '@/components/TabBar';
 import { BonusArbTracker } from '@/components/BonusArbTracker';
 import type { Bet } from '@/types';
-import type { OppSnapshotBreakdownRow, OppSnapshotHistoryPoint, OppSnapshotSummary, SportBlendComparisonRow } from '@/services/api/oppSnapshots';
+import type { OppSnapshotBreakdownRow, OppSnapshotHistoryPoint, OppSnapshotSummary, ShadingClvRow, SportBlendComparisonRow } from '@/services/api/oppSnapshots';
 
 // ── Helpers (outside component to avoid re-creation) ─────────────────
 
@@ -1179,6 +1179,7 @@ function ShadowCLVView() {
       <MultiLineCLVChart history={data.history} />
       <BreakdownTable rows={data.breakdown} />
       <SportBlendTable rows={data.sport_blend_comparison} />
+      <ShadingClvTable rows={data.shading_clv_breakdown ?? []} />
     </div>
   );
 }
@@ -1476,6 +1477,51 @@ function SportBlendTable({ rows }: { rows: SportBlendComparisonRow[] }) {
                   r.delta == null
                     ? <span className="text-muted2">-</span>
                     : <span className={r.delta > 0 ? 'text-success' : r.delta < 0 ? 'text-error' : 'text-muted'}>{fmt(r.delta)}</span>
+                }</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ShadingClvTable({ rows }: { rows: ShadingClvRow[] }) {
+  if (!rows.length) {
+    return (
+      <div className="text-muted text-xs p-3">
+        No shading risk data yet — accumulating shadow CLV.
+      </div>
+    );
+  }
+  const fmt = (v: number | null) =>
+    v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+  return (
+    <div className="mt-4">
+      <h3 className="text-[10px] text-muted uppercase tracking-wider font-semibold mb-1">
+        Shading risk vs CLV (per odds bucket)
+      </h3>
+      <div className="border border-border overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="bg-panel2 border-b border-border">
+            <tr>
+              <th className="px-2 py-1.5 text-[10px] uppercase tracking-wider text-left text-muted">Odds bucket</th>
+              <th className="px-2 py-1.5 text-[10px] uppercase tracking-wider text-left text-muted">Shading risk</th>
+              <th className="px-2 py-1.5 text-[10px] uppercase tracking-wider text-right text-muted">n</th>
+              <th className="px-2 py-1.5 text-[10px] uppercase tracking-wider text-right text-muted">Mean CLV %</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={`${r.odds_bucket}-${r.shading_risk}`} className="border-b border-border/40 hover:bg-panel2/50">
+                <td className="px-2 py-1 text-text">{r.odds_bucket}</td>
+                <td className="px-2 py-1 text-text">{r.shading_risk}</td>
+                <td className="px-2 py-1 text-right text-text tabular-nums">{r.n}</td>
+                <td className="px-2 py-1 text-right tabular-nums">{
+                  r.mean_pinnacle_clv_pct == null
+                    ? <span className="text-muted2">-</span>
+                    : <span className={r.mean_pinnacle_clv_pct >= 0 ? 'text-success' : 'text-error'}>{fmt(r.mean_pinnacle_clv_pct)}</span>
                 }</td>
               </tr>
             ))}

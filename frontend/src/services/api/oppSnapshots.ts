@@ -31,11 +31,19 @@ export interface SportBlendComparisonRow {
   delta: number | null;
 }
 
+export interface ShadingClvRow {
+  odds_bucket: string;
+  shading_risk: string;
+  n: number;
+  mean_pinnacle_clv_pct: number | null;
+}
+
 export interface OppSnapshotStats {
   summary: OppSnapshotSummary;
   history: OppSnapshotHistoryPoint[];
   breakdown: OppSnapshotBreakdownRow[];
   sport_blend_comparison: SportBlendComparisonRow[];
+  shading_clv_breakdown?: ShadingClvRow[];
 }
 
 export const oppSnapshotsApi = {
