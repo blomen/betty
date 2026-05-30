@@ -372,12 +372,13 @@ export function CLVChart({ bets, title = 'CLV Trend', recentWindow = 10 }: { bet
 
 // ── Sortable header ──────────────────────────────────────────────────
 
-function SortHeader({ label, sortKey, currentSort, onSort, align = 'left' }: {
+function SortHeader({ label, sortKey, currentSort, onSort, align = 'left', title }: {
   label: string;
   sortKey: SortKey;
   currentSort: { key: SortKey; dir: SortDir } | null;
   onSort: (key: SortKey) => void;
   align?: 'left' | 'right';
+  title?: string;
 }) {
   const active = currentSort?.key === sortKey;
   const dir = active ? currentSort.dir : null;
@@ -386,6 +387,7 @@ function SortHeader({ label, sortKey, currentSort, onSort, align = 'left' }: {
     <th
       className={`cursor-pointer select-none hover:text-text transition-colors ${align === 'right' ? 'text-right' : ''}`}
       onClick={() => onSort(sortKey)}
+      title={title}
     >
       <span className="inline-flex items-center gap-1">
         {align === 'right' && (
@@ -937,8 +939,8 @@ export function BetsPage() {
                 <SortHeader label="Date" sortKey="date" currentSort={sort} onSort={handleSort} />
                 <SortHeader label="Provider" sortKey="provider" currentSort={sort} onSort={handleSort} />
                 <SortHeader label="Entry" sortKey="odds" currentSort={sort} onSort={handleSort} align="right" />
-                <SortHeader label="Close" sortKey="close" currentSort={sort} onSort={handleSort} align="right" />
-                <SortHeader label="CLV" sortKey="clv" currentSort={sort} onSort={handleSort} align="right" />
+                <SortHeader label="Close" sortKey="close" currentSort={sort} onSort={handleSort} align="right" title="Closing line. For Pinnacle bets this is the de-vigged soft-book consensus (the sharp benchmark for reverse-value), NOT Pinnacle's own price — so it can swing far from your entry. For soft-book bets it's Pinnacle's closing line." />
+                <SortHeader label="CLV" sortKey="clv" currentSort={sort} onSort={handleSort} align="right" title="Closing Line Value = entry odds vs the Close. Pinnacle bets are benchmarked against the soft-book consensus (reverse-value), soft-book bets against Pinnacle. Positive = beat the close." />
                 <SortHeader label="Est Edge" sortKey="edge" currentSort={sort} onSort={handleSort} align="right" />
                 <SortHeader label="Stake" sortKey="stake" currentSort={sort} onSort={handleSort} align="right" />
                 <SortHeader label="Profit" sortKey="profit" currentSort={sort} onSort={handleSort} align="right" />
@@ -969,11 +971,23 @@ export function BetsPage() {
                       <td className="text-right text-text text-sm font-medium">{bet.odds.toFixed(2)}</td>
                       <td className="text-right">
                         {bet.closing_odds != null ? (
-                          <span className={`text-sm ${bet.closing_odds > bet.odds ? 'text-success' : bet.closing_odds < bet.odds ? 'text-error' : 'text-text'}`}>
+                          <span
+                            className={`text-sm ${bet.closing_odds > bet.odds ? 'text-success' : bet.closing_odds < bet.odds ? 'text-error' : 'text-text'}`}
+                            title={bet.provider === 'pinnacle'
+                              ? `Soft-book consensus close (de-vigged) — the reverse-value benchmark, not Pinnacle's own ${bet.odds.toFixed(2)} line`
+                              : `Pinnacle closing line vs your ${bet.odds.toFixed(2)} entry`}
+                          >
                             {bet.closing_odds.toFixed(2)}
                           </span>
                         ) : (
-                          <span className="text-sm text-muted">-</span>
+                          <span
+                            className="text-sm text-muted"
+                            title={bet.result === 'pending'
+                              ? "No close yet — captured once the event kicks off (Pinnacle-only events with no soft consensus fall back to Pinnacle's own line)"
+                              : 'No closing line was available for this market'}
+                          >
+                            -
+                          </span>
                         )}
                       </td>
                       <td className="text-right">
