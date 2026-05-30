@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_provider_currency
 from ..constants import UNLIMITED_PROVIDERS
-from ..db.models import Profile, ProfileAccount
+from ..db.models import Account, Profile, ProfileAccount
 from ..repositories.account_repo import AccountRepo
 
 
