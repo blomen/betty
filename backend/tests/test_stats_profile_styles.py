@@ -86,3 +86,60 @@ def test_get_stats_profile_id_matches_active_when_omitted(db_session):
     active_id = svc.profile_repo.get_active().id
     assert svc.get_stats()["profile_id"] == active_id
     assert svc.get_stats(active_id)["profile_id"] == active_id
+
+
+def test_analytics_by_strategy_lanes(client, db_session):
+    from src.repositories import ProfileRepo
+
+    pid = ProfileRepo(db_session).get_active().id
+    db_session.add_all(
+        [
+            Bet(
+                profile_id=pid,
+                provider_id="betsson",
+                market="1x2",
+                outcome="home",
+                odds=2.0,
+                stake=100.0,
+                currency="SEK",
+                bet_type="value",
+                result="won",
+                payout=200.0,
+                clv_pct=3.0,
+            ),
+            Bet(
+                profile_id=pid,
+                provider_id="betsson",
+                market="1x2",
+                outcome="home",
+                odds=2.0,
+                stake=100.0,
+                currency="SEK",
+                bet_type="value",
+                result="lost",
+                payout=0.0,
+                clv_pct=-1.0,
+            ),
+            Bet(
+                profile_id=pid,
+                provider_id="pinnacle",
+                market="1x2",
+                outcome="home",
+                odds=2.0,
+                stake=100.0,
+                currency="SEK",
+                bet_type="arb",
+                result="won",
+                payout=200.0,
+            ),
+        ]
+    )
+    db_session.commit()
+    r = client.get(f"/api/bets/analytics?days=3650&profile_id={pid}").json()
+    v = r["by_strategy"]["Value"]
+    for k in ("n", "win_pct", "staked", "profit", "roi_pct", "avg_clv_pct", "clv_positive_pct"):
+        assert k in v, f"missing key {k}"
+    assert v["n"] == 2
+    assert v["profit"] == 0.0
+    assert v["clv_positive_pct"] == 50.0
+    assert r["by_strategy"]["Arb"]["n"] == 1

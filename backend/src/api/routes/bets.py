@@ -481,6 +481,7 @@ def get_analytics(
         edges = [e for e in edges if e is not None]
         implied = [1.0 / r.odds for r in rows if r.odds > 0]
         clvs = [r.clv_pct for r in rows if r.clv_pct is not None]
+        clv_pos = sum(1 for c in clvs if c >= 0)
         return {
             "n": n,
             "won": won,
@@ -493,6 +494,7 @@ def get_analytics(
             "profit": round(profit, 2),
             "roi_pct": round(100 * profit / staked, 2) if staked else None,
             "avg_clv_pct": round(sum(clvs) / len(clvs), 2) if clvs else None,
+            "clv_positive_pct": round(100 * clv_pos / len(clvs), 1) if clvs else None,
         }
 
     by_sport = {}
@@ -537,6 +539,12 @@ def get_analytics(
         base["confidence_multiplier"] = get_multiplier(base.get("avg_clv_pct"), base["n"])
         return base
 
+    _LANE = {"value": "Value", "arb": "Arb", "reverse": "Reverse", "boost": "Boost"}
+
+    by_strategy = {}
+    for b in bets:
+        by_strategy.setdefault(_LANE.get(b.bet_type or "", "Other"), []).append(b)
+
     return {
         "provider_id": provider_id,
         "days": days,
@@ -547,6 +555,7 @@ def get_analytics(
         "by_sport_and_bucket": {k: summarize(v) for k, v in by_sport_x_edge.items()},
         "by_sport_and_market": {k: summarize_with_multiplier(v) for k, v in by_sport_x_market.items()},
         "bucket_confidence_enabled": bucket_conf_enabled(),
+        "by_strategy": {k: summarize(v) for k, v in by_strategy.items()},
     }
 
 
