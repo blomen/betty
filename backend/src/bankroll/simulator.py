@@ -376,24 +376,20 @@ def snapshot_current_state(db_session: Session, profile_id: int) -> SimState:
     from ..db.models import (
         Bet,
         Profile,
-        ProfileProviderBalance,
         ProfileProviderBonus,
         ProviderRiskProfile,
     )
+    from ..repositories.account_repo import AccountRepo
 
     # Load profile
     profile = db_session.query(Profile).filter_by(id=profile_id).first()
     if not profile:
         raise ValueError(f"Profile {profile_id} not found")
 
-    # Load provider balances
-    balances = (
-        db_session.query(ProfileProviderBalance)
-        .filter_by(
-            profile_id=profile_id,
-        )
-        .all()
-    )
+    # Load provider balances from the Account layer (shared sharp pools + soft
+    # accounts). Account rows expose .provider_id / .balance / .account_opened_at,
+    # matching the legacy ProfileProviderBalance shape the loop below consumes.
+    balances = AccountRepo(db_session).accounts_for_profile(profile_id)
 
     # Load bonus statuses
     bonuses = (

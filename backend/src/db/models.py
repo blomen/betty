@@ -43,7 +43,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 from sqlalchemy.pool import NullPool
 
 
@@ -315,6 +315,12 @@ class Bet(Base):
 
     # Profile association (for per-profile bet isolation)
     profile_id = Column(Integer, ForeignKey("profiles.id"), nullable=True)
+
+    # Which real account this bet was placed from (shared sharp pool or a
+    # per-campaign soft account). Source of truth for account attribution;
+    # provider_id is retained for all existing readers. SET NULL so a GC'd
+    # soft account doesn't orphan-delete bet history.
+    account_id = Column(Integer, ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True, index=True)
 
     # What you bet on
     event_id = Column(String, ForeignKey("events.id"))
@@ -649,12 +655,20 @@ class Profile(Base):
     color = Column(String, nullable=True)  # Hex color for Chrome border (auto-assigned)
     style = Column(String, nullable=False, default="personal")  # "personal" | "bonus_extraction"
 
+    # Purpose — drives ROI bucketing (Rule B). "edge" profiles hold the genuine
+    # edge volume that defines true ROI; "bonus" profiles are bonus-extraction
+    # campaigns whose bets (both the soft free-bet leg AND the real-money sharp
+    # hedge leg) are excluded from true ROI and summed into a separate bonus
+    # profit total. See docs/spec/2026-05-30-multi-profile-sharp-accounts-bonus-roi.md
+    kind = Column(String, default="edge", nullable=False)  # "edge" | "bonus"
+
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     # Relationships
     bonus_statuses = relationship("ProfileProviderBonus", back_populates="profile", cascade="all, delete-orphan")
     provider_balances = relationship("ProfileProviderBalance", back_populates="profile", cascade="all, delete-orphan")
+    accounts = relationship("ProfileAccount", back_populates="profile", cascade="all, delete-orphan")
     bets = relationship("Bet", back_populates="profile")
 
 
@@ -748,6 +762,68 @@ class ProfileProviderBalance(Base):
     # Relationships
     profile = relationship("Profile", back_populates="provider_balances")
     provider = relationship("Provider")
+
+
+class Account(Base):
+    """One real account the user owns at a provider.
+
+    Sharp accounts (pinnacle/polymarket/kalshi/cloudbet) are SHARED: a single
+    row referenced by many profiles via `profile_accounts`. Spending a hedge
+    leg in any profile updates this one real `balance`, so every profile that
+    links it sees the change. Soft accounts are per-campaign (single-linked).
+
+    This is the balance source of truth going forward; `ProfileProviderBalance`
+    is retained read-only for the one-time migration backfill (see
+    `_migrate_provider_balances_to_accounts`) and is no longer written.
+    """
+
+    __tablename__ = "accounts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
+    label = Column(String, nullable=False)  # "rasmus", "alt2", "campaign-7"
+    kind = Column(String, nullable=False)  # "sharp" | "soft"
+    balance = Column(Float, default=0.0)
+    currency = Column(String, default="SEK")  # native currency for conversion
+
+    # Manual account opened date for pre-existing accounts (dormant-account
+    # handling — carried over from ProfileProviderBalance).
+    account_opened_at = Column(DateTime, nullable=True)
+
+    is_active = Column(Boolean, default=True, nullable=False)  # soft-delete flag
+
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("provider_id", "label", name="uq_account_provider_label"),
+        Index("ix_account_provider", "provider_id"),
+    )
+
+    # Relationships
+    provider = relationship("Provider")
+    profile_links = relationship("ProfileAccount", back_populates="account", cascade="all, delete-orphan")
+
+
+class ProfileAccount(Base):
+    """Explicit visibility link: a profile sees exactly the accounts linked here.
+
+    A fresh sharp account is linked only to the profile that created it, so it
+    does NOT leak into other profiles. A shared sharp account gets one link row
+    per profile that uses it.
+    """
+
+    __tablename__ = "profile_accounts"
+
+    profile_id = Column(Integer, ForeignKey("profiles.id"), primary_key=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), primary_key=True)
+    created_at = Column(DateTime, default=_utcnow)
+
+    __table_args__ = (UniqueConstraint("profile_id", "account_id", name="uq_profile_account"),)
+
+    # Relationships
+    account = relationship("Account", back_populates="profile_links")
+    profile = relationship("Profile", back_populates="accounts")
 
 
 class ProfileProviderLimit(Base):
@@ -1445,6 +1521,10 @@ def get_engine():
             _run_pg_migrations(_engine)
         else:
             _run_migrations(_engine)
+        # One-time, idempotent backfill of the Account layer from the legacy
+        # per-profile balance table. Runs after columns are ensured on both
+        # backends; no-ops once accounts/links/bets are populated.
+        _migrate_provider_balances_to_accounts(_engine)
     return _engine
 
 
@@ -1757,6 +1837,134 @@ def _run_migrations(engine):
                 except sqlite3.OperationalError:
                     pass
 
+        # 2026-05-30 — Account layer. profiles.kind (edge/bonus ROI bucketing)
+        # + bets.account_id (real-account attribution). New tables
+        # accounts/profile_accounts are created by create_all; the data backfill
+        # runs in _migrate_provider_balances_to_accounts after this function.
+        try:
+            cursor.execute("SELECT kind FROM profiles LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE profiles ADD COLUMN kind VARCHAR NOT NULL DEFAULT 'edge'")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
+        try:
+            cursor.execute("SELECT account_id FROM bets LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE bets ADD COLUMN account_id INTEGER")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
+
+
+def _migrate_provider_balances_to_accounts(engine) -> None:
+    """One-time, idempotent backfill: ProfileProviderBalance -> Account layer.
+
+    Sharp providers (UNLIMITED_PROVIDERS) collapse to ONE shared account each
+    (balance from the active, else lowest-id, profile), linked to every profile
+    that held a balance row. Other providers become per-profile soft accounts
+    labeled from the profile name. Finally backfills bets.account_id for any
+    bet whose (profile_id, provider_id) resolves to a linked account.
+
+    ProfileProviderBalance is left intact as a read-only fallback — this
+    function never writes to it. Safe to run on every startup: once accounts
+    and links exist (and bets carry account_id), all loops no-op.
+    """
+    from ..config import get_provider_currency
+    from ..constants import UNLIMITED_PROVIDERS
+
+    with Session(engine) as session:
+        ppbs = session.query(ProfileProviderBalance).all()
+        if not ppbs:
+            return
+
+        # Defensive: a freshly-added kind column may be NULL on old rows.
+        session.query(Profile).filter(Profile.kind.is_(None)).update({Profile.kind: "edge"}, synchronize_session=False)
+
+        # Truth profile for shared sharp balances: active first, else lowest id.
+        truth = (
+            session.query(Profile).filter(Profile.is_active.is_(True)).order_by(Profile.id).first()
+            or session.query(Profile).order_by(Profile.id).first()
+        )
+        truth_id = truth.id if truth else None
+
+        name_by_pid: dict[int, str] = {}
+
+        def _label(profile_id: int) -> str:
+            if profile_id not in name_by_pid:
+                p = session.get(Profile, profile_id)
+                name_by_pid[profile_id] = p.name if p and p.name else f"p{profile_id}"
+            return name_by_pid[profile_id]
+
+        def _label_for(ppb) -> str:
+            return "rasmus" if ppb.provider_id in UNLIMITED_PROVIDERS else _label(ppb.profile_id)
+
+        # 1) Ensure an Account exists for every (provider, label).
+        for ppb in ppbs:
+            prov = ppb.provider_id
+            label = _label_for(ppb)
+            acct = session.query(Account).filter_by(provider_id=prov, label=label).first()
+            if acct is not None:
+                continue
+            if prov in UNLIMITED_PROVIDERS:
+                truth_row = next((b for b in ppbs if b.provider_id == prov and b.profile_id == truth_id), None)
+                src = truth_row or ppb
+                kind = "sharp"
+                # Sharp providers collapse to ONE shared account. If pre-migration
+                # per-profile copies of this sharp balance had drifted apart, only
+                # `src` survives — surface the discarded values rather than lose
+                # them silently (they reconcile to the live shared balance after).
+                distinct = {round(b.balance or 0.0, 2) for b in ppbs if b.provider_id == prov}
+                if len(distinct) > 1:
+                    logger.warning(
+                        "account migration: %s had divergent per-profile balances %s; "
+                        "collapsing to shared account at %.2f (from profile %s)",
+                        prov,
+                        sorted(distinct),
+                        src.balance or 0.0,
+                        src.profile_id,
+                    )
+            else:
+                src = ppb
+                kind = "soft"
+            session.add(
+                Account(
+                    provider_id=prov,
+                    label=label,
+                    kind=kind,
+                    balance=src.balance or 0.0,
+                    currency=get_provider_currency(prov),
+                    account_opened_at=src.account_opened_at,
+                    is_active=True,
+                )
+            )
+        session.flush()
+
+        # 2) Ensure a ProfileAccount link exists for every balance row.
+        for ppb in ppbs:
+            acct = session.query(Account).filter_by(provider_id=ppb.provider_id, label=_label_for(ppb)).first()
+            if acct is None:
+                continue
+            link = session.query(ProfileAccount).filter_by(profile_id=ppb.profile_id, account_id=acct.id).first()
+            if link is None:
+                session.add(ProfileAccount(profile_id=ppb.profile_id, account_id=acct.id))
+        session.flush()
+
+        # 3) Backfill bets.account_id where resolvable and currently NULL.
+        resolver: dict[tuple[int, str], int] = {}
+        for link in session.query(ProfileAccount).all():
+            acct = session.get(Account, link.account_id)
+            if acct:
+                resolver[(link.profile_id, acct.provider_id)] = acct.id
+        for bet in session.query(Bet).filter(Bet.account_id.is_(None), Bet.profile_id.isnot(None)).all():
+            aid = resolver.get((bet.profile_id, bet.provider_id))
+            if aid:
+                bet.account_id = aid
+
+        session.commit()
+
 
 class MlModelRegistry(Base):
     """
@@ -1948,6 +2156,13 @@ def _run_pg_migrations(engine) -> None:
         # Frozen at detection time; diagnostic only, no effect on edge/stake.
         ("opp_snapshots", "shading_risk", "VARCHAR"),
         ("opp_snapshots", "odds_bucket", "VARCHAR"),
+        # 2026-05-30 — Account layer. profiles.kind drives Rule-B ROI bucketing;
+        # bets.account_id attributes a bet to a real account. New tables
+        # (accounts, profile_accounts) are created by create_all. The data
+        # backfill from profile_provider_balances runs in
+        # _migrate_provider_balances_to_accounts after this function.
+        ("profiles", "kind", "VARCHAR NOT NULL DEFAULT 'edge'"),
+        ("bets", "account_id", "INTEGER"),
     ]
 
     # Tables dropped during the 2026-05-25 strip-trading work. Idempotent —
@@ -2078,6 +2293,32 @@ def _run_pg_migrations(engine) -> None:
         except Exception:
             sp.rollback()
             logger.warning("pg migration: bets.provider_bet_id index failed", exc_info=True)
+
+        # 2026-05-30 — Account layer. bets.account_id is added via the `additions`
+        # list above as a bare INTEGER (ADD COLUMN can't carry the FK). Add the FK
+        # (ON DELETE SET NULL, matching the ORM model) + lookup index here so
+        # existing Postgres DBs match a fresh create_all. Guarded: re-running is a
+        # no-op once the constraint/index exist (or accounts isn't present yet).
+        sp = conn.begin_nested()
+        try:
+            conn.execute(
+                text(
+                    "ALTER TABLE bets ADD CONSTRAINT fk_bets_account_id "
+                    "FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE SET NULL"
+                )
+            )
+            sp.commit()
+        except Exception:
+            sp.rollback()  # already exists, or accounts table not yet created
+            logger.warning("pg migration: bets.account_id FK add skipped", exc_info=True)
+
+        sp = conn.begin_nested()
+        try:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_bet_account_id ON bets(account_id)"))
+            sp.commit()
+        except Exception:
+            sp.rollback()
+            logger.warning("pg migration: bets.account_id index failed", exc_info=True)
 
         # 2026-05-26 — opportunities upsert index rebuilt to include scope so
         # F5/1H/Q1 opportunities can coexist with the ft row on the same
