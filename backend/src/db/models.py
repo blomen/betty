@@ -964,8 +964,8 @@ class OppSnapshot(Base):
     blended_clv_pct = Column(Float, nullable=True)
 
     # ---- Shading-aware diagnostic (shadow). Frozen at detection time. ----
-    shading_risk = Column(String, nullable=True)   # "low" | "elevated" | "high" | None
-    odds_bucket = Column(String, nullable=True)    # "<1.5" | "1.5-2.5" | "2.5-4.0" | "4.0+"
+    shading_risk = Column(String, nullable=True)  # "low" | "elevated" | "high" | None
+    odds_bucket = Column(String, nullable=True)  # "<1.5" | "1.5-2.5" | "2.5-4.0" | "4.0+"
 
     event = relationship("Event")
 
