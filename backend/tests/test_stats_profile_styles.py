@@ -182,3 +182,91 @@ def test_analytics_by_provider_currency_correct(client, db_session):
     r = client.get(f"/api/bets/analytics?days=3650&profile_id={pid}").json()
     assert r["by_provider"]["betsson"]["profit"] == 100.0
     assert r["by_provider"]["polymarket"]["profit"] > 100.0  # +10 USDC ~105 SEK
+
+
+def test_equity_curve_cumulative_and_baseline(client, db_session):
+    from datetime import UTC, datetime, timedelta
+
+    from src.db.models import Bet
+    from src.repositories import ProfileRepo
+
+    pid = ProfileRepo(db_session).get_active().id
+    t0 = datetime.now(UTC) - timedelta(days=2)
+    db_session.add_all(
+        [
+            Bet(
+                profile_id=pid,
+                provider_id="betsson",
+                market="1x2",
+                outcome="home",
+                odds=2.0,
+                stake=100.0,
+                currency="SEK",
+                bet_type="value",
+                result="won",
+                payout=200.0,
+                placed_at=t0,
+            ),
+            Bet(
+                profile_id=pid,
+                provider_id="betsson",
+                market="1x2",
+                outcome="home",
+                odds=2.0,
+                stake=100.0,
+                currency="SEK",
+                bet_type="value",
+                result="lost",
+                payout=0.0,
+                placed_at=t0 + timedelta(hours=1),
+            ),
+        ]
+    )
+    db_session.commit()
+    r = client.get(f"/api/bets/equity-curve?days=3650&profile_id={pid}").json()
+    assert r["total_profit_sek"] == 0.0
+    assert [round(p["cum_profit_sek"]) for p in r["points"]] == [100, 0]
+    assert "current_bankroll_sek" in r
+    assert "total_staked_sek" in r
+
+
+def test_equity_curve_total_matches_get_stats_with_bonus(client, db_session):
+    """A winning bonus bet must NOT inflate the curve vs the KPI Net Profit."""
+    from src.db.models import Bet
+    from src.repositories import ProfileRepo
+    from src.services import BankrollService
+
+    pid = ProfileRepo(db_session).get_active().id
+    db_session.add_all(
+        [
+            Bet(
+                profile_id=pid,
+                provider_id="betsson",
+                market="1x2",
+                outcome="home",
+                odds=2.0,
+                stake=100.0,
+                currency="SEK",
+                bet_type="value",
+                result="won",
+                payout=200.0,
+            ),
+            Bet(
+                profile_id=pid,
+                provider_id="betsson",
+                market="1x2",
+                outcome="home",
+                odds=3.0,
+                stake=50.0,
+                currency="SEK",
+                bet_type="value",
+                is_bonus=True,
+                result="won",
+                payout=150.0,
+            ),
+        ]
+    )
+    db_session.commit()
+    curve = client.get(f"/api/bets/equity-curve?profile_id={pid}").json()
+    stats_profit = BankrollService(db_session).get_stats(pid)["total_profit"]
+    assert curve["total_profit_sek"] == stats_profit  # both exclude the bonus bet

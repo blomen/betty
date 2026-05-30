@@ -564,6 +564,64 @@ def get_analytics(
     }
 
 
+@router.get("/equity-curve")
+def equity_curve(
+    days: int | None = None,
+    profile_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """Cumulative realized P/L (SEK) over a profile's settled, real-money bets.
+
+    Cheap: minimal columns, no per-bet odds/Pinnacle enrichment. Excludes bonus
+    bets so total_profit_sek matches BankrollService.get_stats (spec §8); the
+    end value reconciles to current bankroll so the chart matches the KPIs.
+    """
+    from datetime import datetime, timedelta
+
+    from ...config import get_exchange_rate
+    from ...repositories import BetRepo, ProfileRepo
+
+    profile_repo = ProfileRepo(db)
+    profile = profile_repo.get(profile_id)
+    if not profile:
+        raise HTTPException(404, "No active profile")
+
+    cutoff = (datetime.now(UTC) - timedelta(days=days)) if days else None
+    rows = BetRepo(db).get_settled_for_curve(profile.id, cutoff)
+
+    def to_sek(amount, provider_id, currency):
+        return amount if (currency or "SEK") == "SEK" else amount * get_exchange_rate(provider_id)
+
+    def bet_profit(row):  # non-bonus realized P/L, mirrors get_stats real_rows
+        if row.result == "won":
+            return row.payout - row.stake
+        if row.result == "lost":
+            return -row.stake
+        return 0.0
+
+    points = []
+    cum = 0.0
+    staked = 0.0
+    for row in rows:
+        if row.is_bonus:
+            continue
+        cum += to_sek(bet_profit(row), row.provider_id, row.currency)
+        staked += to_sek(row.stake, row.provider_id, row.currency)
+        points.append(
+            {
+                "t": row.placed_at.isoformat() if row.placed_at else None,
+                "cum_profit_sek": round(cum, 2),
+            }
+        )
+
+    return {
+        "points": points,
+        "total_profit_sek": round(cum, 2),
+        "total_staked_sek": round(staked, 2),
+        "current_bankroll_sek": round(profile_repo.get_total_bankroll(profile.id), 2),
+    }
+
+
 @router.post("/close-started")
 def close_started_bets(service: BetService = Depends(_get_service)):
     """
