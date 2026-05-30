@@ -101,7 +101,13 @@ export function useSteamAlert(
   const fundedSig = [...funded].sort().join(',');
   useEffect(() => {
     const fresh = selectNewSteamAlerts(bets, seen.current, funded, edgeFloor);
-    setActiveKeys(currentActionableSteamKeys(bets, funded, edgeFloor));
+    setActiveKeys((prev) => {
+      const next = currentActionableSteamKeys(bets, funded, edgeFloor);
+      // Keep the previous reference when contents are unchanged so consumers
+      // don't re-render on every poll cycle (bets is a fresh array each poll).
+      if (prev.size === next.size && [...next].every((k) => prev.has(k))) return prev;
+      return next;
+    });
     if (fresh.length > 0) {
       for (const k of fresh) seen.current.add(k);
       playBeep();
