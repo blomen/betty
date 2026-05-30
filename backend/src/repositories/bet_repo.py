@@ -1,6 +1,6 @@
 """Bet repository - bet data access."""
 
-from sqlalchemy import case, func
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from ..db.models import Bet
@@ -48,12 +48,15 @@ class BetRepo:
         returns at most ~288 rows regardless of bet history depth, vs the
         prior approach which loaded every settled bet (thousands+).
         """
+        from ..db.models import Profile
+
         return (
             self.db.query(
                 Bet.provider_id.label("provider_id"),
                 Bet.currency.label("currency"),
                 Bet.result.label("result"),
                 Bet.is_bonus.label("is_bonus"),
+                Profile.kind.label("kind"),
                 func.count(Bet.id).label("cnt"),
                 func.coalesce(func.sum(Bet.stake), 0.0).label("sum_stake"),
                 func.coalesce(func.sum(Bet.payout), 0.0).label("sum_payout"),
@@ -61,9 +64,45 @@ class BetRepo:
                 func.coalesce(func.sum(Bet.clv_pct), 0.0).label("clv_sum"),
                 func.coalesce(func.sum(case((Bet.clv_pct > 0, 1), else_=0)), 0).label("clv_positive_count"),
             )
+            .join(Profile, Profile.id == Bet.profile_id)
             .filter(
                 Bet.result != "pending",
                 Bet.profile_id == profile_id,
+            )
+            .group_by(Bet.provider_id, Bet.currency, Bet.result, Bet.is_bonus, Profile.kind)
+            .all()
+        )
+
+    def get_bonus_profit_aggregates(self) -> list:
+        """Settled bonus-extraction profit across ALL profiles, grouped for SEK conversion.
+
+        Rule B: a bonus-extraction campaign's profit (the soft free-bet leg AND
+        the real-money sharp hedge leg) is tracked separately from true ROI. A bet
+        counts here when EITHER:
+          - it's under a kind='bonus' profile (both legs), OR
+          - it's flagged is_bonus on any profile (a stray free-bet placed on an
+            edge profile — is_bonus predates the profile-kind model).
+        These two sets exactly complement the ROI aggregate (which counts only
+        `not is_bonus AND kind='edge'` rows), so every settled bet lands in
+        exactly one bucket — never double-counted, never dropped. Grouped by
+        (provider_id, currency, result, is_bonus) so the caller can convert to
+        SEK per provider and apply the same Bet.profit semantics.
+        """
+        from ..db.models import Profile
+
+        return (
+            self.db.query(
+                Bet.provider_id.label("provider_id"),
+                Bet.currency.label("currency"),
+                Bet.result.label("result"),
+                Bet.is_bonus.label("is_bonus"),
+                func.coalesce(func.sum(Bet.stake), 0.0).label("sum_stake"),
+                func.coalesce(func.sum(Bet.payout), 0.0).label("sum_payout"),
+            )
+            .join(Profile, Profile.id == Bet.profile_id)
+            .filter(
+                Bet.result != "pending",
+                or_(Profile.kind == "bonus", Bet.is_bonus.is_(True)),
             )
             .group_by(Bet.provider_id, Bet.currency, Bet.result, Bet.is_bonus)
             .all()
@@ -115,7 +154,30 @@ class BetRepo:
         return query.order_by(Bet.placed_at.desc()).limit(limit).all()
 
     def create(self, **kwargs) -> Bet:
-        """Create a new bet record."""
+        """Create a new bet record.
+
+        If account_id isn't supplied, resolve it from (profile_id, provider_id)
+        via the Account layer so every bet is attributed to a real account
+        (shared sharp pool or per-campaign soft account). Resolve-only: if the
+        profile has no linked account for the provider yet, account_id stays
+        NULL — ROI bucketing keys on profile.kind, not account_id.
+        """
+        if not kwargs.get("account_id"):
+            profile_id = kwargs.get("profile_id")
+            provider_id = kwargs.get("provider_id")
+            if profile_id is not None and provider_id:
+                from .account_repo import AccountRepo
+
+                # account_id is attribution, not a correctness gate (ROI buckets
+                # on profile.kind). Never let a resolution hiccup drop a bet —
+                # CLAUDE.md: recorders must not silently lose bets. On error,
+                # leave account_id NULL and record the bet anyway.
+                try:
+                    acct = AccountRepo(self.db).resolve(profile_id, provider_id)
+                    if acct is not None:
+                        kwargs["account_id"] = acct.id
+                except Exception:
+                    pass
         bet = Bet(**kwargs)
         self.db.add(bet)
         return bet

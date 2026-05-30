@@ -695,6 +695,17 @@ export function BetsPage() {
             {bankrollStats.total_deposited > 0 && (
               <span className="text-muted">Net deposited: <span className="text-text">{bankrollStats.net_deposited.toFixed(0)} kr</span></span>
             )}
+            {/* Bonus profit — harvested from bonus-extraction campaigns (both legs),
+                deliberately excluded from ROI/Profit above so near-0-EV hedge legs
+                don't dilute the edge metric (Rule B). */}
+            {bankrollStats.bonus_profit !== 0 && (
+              <span className="text-muted" title="Profit from bonus-extraction campaigns. Excluded from ROI.">
+                Bonus profit:{' '}
+                <span className="text-amber-400">
+                  {bankrollStats.bonus_profit >= 0 ? '+' : ''}{bankrollStats.bonus_profit.toFixed(0)} kr
+                </span>
+              </span>
+            )}
           </div>
         </div>
       )}

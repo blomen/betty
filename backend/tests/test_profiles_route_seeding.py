@@ -80,3 +80,44 @@ def test_seed_endpoint_is_idempotent(client):
         assert s.query(ProfileProviderBonus).filter_by(profile_id=pid).count() == 2
     finally:
         s.close()
+
+
+def test_create_bonus_profile_shares_edge_sharp_pool(client):
+    """End-to-end: an edge profile funds a sharp account; a bonus profile created
+    with use_shared_sharp links the SAME account (kind persisted, no copy)."""
+    from src.db.models import Account, Provider
+    from src.repositories.account_repo import AccountRepo
+    from src.repositories.profile_repo import ProfileRepo
+
+    c, SessionLocal = client
+
+    # First profile is the edge profile (auto-active). Fund a sharp account.
+    edge = c.post("/api/profiles", json={"name": "edge", "kind": "edge"}).json()["profile"]
+    assert edge["kind"] == "edge"
+    s = SessionLocal()
+    try:
+        s.add(Provider(id="polymarket", name="Poly", is_enabled=True))
+        s.commit()
+        ProfileRepo(s).set_balance(edge["id"], "polymarket", 76.29)
+        s.commit()
+    finally:
+        s.close()
+
+    # Bonus profile with shared sharp — should link the SAME polymarket account.
+    camp = c.post(
+        "/api/profiles",
+        json={"name": "camp", "kind": "bonus", "use_shared_sharp": True},
+    ).json()["profile"]
+    assert camp["kind"] == "bonus"
+
+    s = SessionLocal()
+    try:
+        ar = AccountRepo(s)
+        shared = ar.resolve(camp["id"], "polymarket")
+        assert shared is not None
+        assert shared.id == ar.resolve(edge["id"], "polymarket").id
+        assert shared.balance == 76.29  # shared, not a zeroed copy
+        # exactly one polymarket account exists (shared, not duplicated)
+        assert s.query(Account).filter_by(provider_id="polymarket").count() == 1
+    finally:
+        s.close()

@@ -8,7 +8,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..constants import PLATFORM_MAP
-from ..db.models import Bet, ProfileProviderBalance, ProfileProviderBonus, ProfileProviderLimit, RiskConfig
+from ..db.models import Bet, ProfileProviderBonus, ProfileProviderLimit, RiskConfig
 
 logger = logging.getLogger(__name__)
 
@@ -104,10 +104,11 @@ class ProviderAllocator:
             }
 
     def preload_balances(self) -> None:
-        """Single query: get all provider balances."""
-        rows = self.db.query(ProfileProviderBalance).filter(ProfileProviderBalance.profile_id == self.profile_id).all()
-        for row in rows:
-            self._balances[row.provider_id] = row.balance or 0.0
+        """Single pass: get all provider balances from the Account layer."""
+        from ..repositories.account_repo import AccountRepo
+
+        for pid, bal in AccountRepo(self.db).balances_map(self.profile_id).items():
+            self._balances[pid] = bal or 0.0
 
     def preload_limits(self) -> None:
         """Single query: get all provider limits (highest level per provider)."""

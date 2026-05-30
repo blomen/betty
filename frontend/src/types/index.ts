@@ -345,6 +345,9 @@ export interface Profile {
   is_active: boolean;
   color: string;
   created_at: string | null;
+  // "edge" = ongoing edge volume that defines true ROI; "bonus" = bonus-extraction
+  // campaign whose bets are excluded from true ROI (see bonus_profit on stats).
+  kind?: 'edge' | 'bonus';
 }
 
 export interface ProfileCreate {

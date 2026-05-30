@@ -11,8 +11,9 @@ from sqlalchemy.orm import Session
 
 from ...bankroll import calculate_stake as calc_stake
 from ...bankroll.stake_calculator import dynamic_min_stake
-from ...db.models import Profile, ProfileProviderBalance, Provider
+from ...db.models import Profile, Provider
 from ...repositories import ProfileRepo
+from ...services.account_service import AccountService
 from ...services.bonus_seed_service import seed_provider_bonuses
 from ..deps import get_db
 from ..schemas import ProfileCreate, ProfileUpdate
@@ -77,6 +78,7 @@ def profile_to_dict(profile: Profile, profile_repo: ProfileRepo) -> dict:
         "total_withdrawn": profile.total_withdrawn or 0.0,
         "is_active": profile.is_active,
         "color": profile.color or PROFILE_COLORS[0],
+        "kind": profile.kind or "edge",
         "created_at": profile.created_at.isoformat() if profile.created_at else None,
     }
 
@@ -132,11 +134,29 @@ def create_profile(data: ProfileCreate, db: Session = Depends(get_db)):
         min_edge_pct=data.min_edge_pct or 2.0,
         is_active=False,
         color=color,
+        kind=data.kind or "edge",
     )
     db.add(profile)
     db.commit()
 
     seed_provider_bonuses(profile.id, db)
+
+    # Provision accounts per the create-dialog choice: link the shared sharp pool
+    # or create fresh labeled sharp accounts, plus any per-campaign soft accounts.
+    # A fresh-label collision (e.g. reusing the shared pool's label) is a 400 —
+    # roll back the just-created profile so create stays atomic.
+    try:
+        AccountService(db).provision(
+            profile,
+            use_shared_sharp=bool(data.use_shared_sharp),
+            fresh_sharp_label=data.fresh_sharp_label,
+            soft_providers=data.soft_providers,
+        )
+    except ValueError as e:
+        db.rollback()
+        db.delete(profile)
+        db.commit()
+        raise HTTPException(400, str(e))
     db.commit()
 
     return {
@@ -230,7 +250,11 @@ def delete_profile(profile_id: int, db: Session = Depends(get_db)):
     if profile.is_active:
         raise HTTPException(400, "Cannot delete active profile. Activate another profile first.")
 
-    # Delete DB record (cascades to bonuses + balances)
+    # GC accounts first: unlink this profile, drop bet-less orphans, soft-delete
+    # any that carry bet history; shared sharp accounts linked elsewhere survive.
+    AccountService(db).delete_profile_accounts(profile)
+
+    # Delete DB record (cascades to bonuses + the profile_accounts links)
     db.delete(profile)
     db.commit()
 
@@ -300,21 +324,9 @@ def set_account_opened_date(
     profile_repo = ProfileRepo(db)
     profile = profile_repo.get_active()
 
-    balance = (
-        db.query(ProfileProviderBalance)
-        .filter(ProfileProviderBalance.profile_id == profile.id, ProfileProviderBalance.provider_id == provider_id)
-        .first()
-    )
-
-    if balance:
-        balance.account_opened_at = opened_at
-        balance.updated_at = datetime.now(UTC)
-    else:
-        balance = ProfileProviderBalance(
-            profile_id=profile.id, provider_id=provider_id, balance=0.0, account_opened_at=opened_at
-        )
-        db.add(balance)
-
+    # Account layer: resolves/creates the profile's account for this provider and
+    # stamps the opened date (shared sharp pool / per-campaign soft account).
+    profile_repo.set_account_opened_at(profile.id, provider_id, opened_at)
     db.commit()
 
     age_days = (datetime.now(UTC) - opened_at).days
@@ -337,20 +349,15 @@ def get_account_opened_date(
     profile_repo = ProfileRepo(db)
     profile = profile_repo.get_active()
 
-    balance = (
-        db.query(ProfileProviderBalance)
-        .filter(ProfileProviderBalance.profile_id == profile.id, ProfileProviderBalance.provider_id == provider_id)
-        .first()
-    )
-
-    if not balance or not balance.account_opened_at:
+    opened_at = profile_repo.get_account_opened_at(profile.id, provider_id)
+    if not opened_at:
         return {"provider_id": provider_id, "account_opened_at": None, "account_age_days": None, "source": "none"}
 
-    age_days = (datetime.now(UTC) - balance.account_opened_at).days
+    age_days = (datetime.now(UTC) - opened_at).days
 
     return {
         "provider_id": provider_id,
-        "account_opened_at": balance.account_opened_at.isoformat(),
+        "account_opened_at": opened_at.isoformat(),
         "account_age_days": age_days,
         "source": "manual",
     }
@@ -365,17 +372,9 @@ def clear_account_opened_date(
     profile_repo = ProfileRepo(db)
     profile = profile_repo.get_active()
 
-    balance = (
-        db.query(ProfileProviderBalance)
-        .filter(ProfileProviderBalance.profile_id == profile.id, ProfileProviderBalance.provider_id == provider_id)
-        .first()
-    )
+    if not profile_repo.clear_account_opened_at(profile.id, provider_id):
+        raise HTTPException(404, f"No account for {provider_id}")
 
-    if not balance:
-        raise HTTPException(404, f"No balance record for {provider_id}")
-
-    balance.account_opened_at = None
-    balance.updated_at = datetime.now(UTC)
     db.commit()
 
     return {
