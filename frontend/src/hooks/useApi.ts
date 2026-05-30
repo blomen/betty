@@ -40,6 +40,17 @@ export const api = {
   // Bankroll
   getBankrollSummary: () => apiFetch<any>('/api/bankroll'),
   getBankrollStats: () => apiFetch<any>('/api/bankroll/stats'),
+  // Bonus / freebet lifecycle. /status and /bonuses already exist server-side;
+  // these are the missing shims for the Sports-tab BonusChip. bonus-transition
+  // advances freebet phases (start_freebet | trigger_settled | freebet_used);
+  // claim-bonus dismisses ("taken on another account").
+  getBankrollStatus: () => apiFetch<any>('/api/bankroll/status'),
+  getProviderBonuses: () => apiFetch<any>('/api/bankroll/bonuses'),
+  bonusTransition: (providerId: string, action: 'start_freebet' | 'trigger_settled' | 'freebet_used') =>
+    apiFetch<any>(`/api/bankroll/bonus-transition/${providerId}`, { method: 'POST', body: JSON.stringify({ action }) }),
+  claimBonus: (providerId: string) =>
+    apiFetch<any>(`/api/bankroll/claim-bonus/${providerId}`, { method: 'POST' }),
+  backfillWagering: () => apiFetch<any>('/api/bankroll/backfill-wagering', { method: 'POST' }),
   // Bets / Stats
   getOpportunities: () => apiFetch<any>('/api/opportunities'),
   // Mirror (local)
