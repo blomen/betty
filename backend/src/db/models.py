@@ -43,7 +43,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 from sqlalchemy.pool import NullPool
 
 
@@ -1509,6 +1509,10 @@ def get_engine():
             _run_pg_migrations(_engine)
         else:
             _run_migrations(_engine)
+        # One-time, idempotent backfill of the Account layer from the legacy
+        # per-profile balance table. Runs after columns are ensured on both
+        # backends; no-ops once accounts/links/bets are populated.
+        _migrate_provider_balances_to_accounts(_engine)
     return _engine
 
 
@@ -1811,6 +1815,120 @@ def _run_migrations(engine):
                 except sqlite3.OperationalError:
                     pass
 
+        # 2026-05-30 — Account layer. profiles.kind (edge/bonus ROI bucketing)
+        # + bets.account_id (real-account attribution). New tables
+        # accounts/profile_accounts are created by create_all; the data backfill
+        # runs in _migrate_provider_balances_to_accounts after this function.
+        try:
+            cursor.execute("SELECT kind FROM profiles LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE profiles ADD COLUMN kind VARCHAR NOT NULL DEFAULT 'edge'")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
+        try:
+            cursor.execute("SELECT account_id FROM bets LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                cursor.execute("ALTER TABLE bets ADD COLUMN account_id INTEGER")
+                raw.commit()
+            except sqlite3.OperationalError:
+                pass
+
+
+def _migrate_provider_balances_to_accounts(engine) -> None:
+    """One-time, idempotent backfill: ProfileProviderBalance -> Account layer.
+
+    Sharp providers (UNLIMITED_PROVIDERS) collapse to ONE shared account each
+    (balance from the active, else lowest-id, profile), linked to every profile
+    that held a balance row. Other providers become per-profile soft accounts
+    labeled from the profile name. Finally backfills bets.account_id for any
+    bet whose (profile_id, provider_id) resolves to a linked account.
+
+    ProfileProviderBalance is left intact as a read-only fallback — this
+    function never writes to it. Safe to run on every startup: once accounts
+    and links exist (and bets carry account_id), all loops no-op.
+    """
+    from ..config import get_provider_currency
+    from ..constants import UNLIMITED_PROVIDERS
+
+    with Session(engine) as session:
+        ppbs = session.query(ProfileProviderBalance).all()
+        if not ppbs:
+            return
+
+        # Defensive: a freshly-added kind column may be NULL on old rows.
+        session.query(Profile).filter(Profile.kind.is_(None)).update({Profile.kind: "edge"}, synchronize_session=False)
+
+        # Truth profile for shared sharp balances: active first, else lowest id.
+        truth = (
+            session.query(Profile).filter(Profile.is_active.is_(True)).order_by(Profile.id).first()
+            or session.query(Profile).order_by(Profile.id).first()
+        )
+        truth_id = truth.id if truth else None
+
+        name_by_pid: dict[int, str] = {}
+
+        def _label(profile_id: int) -> str:
+            if profile_id not in name_by_pid:
+                p = session.get(Profile, profile_id)
+                name_by_pid[profile_id] = p.name if p and p.name else f"p{profile_id}"
+            return name_by_pid[profile_id]
+
+        def _label_for(ppb) -> str:
+            return "rasmus" if ppb.provider_id in UNLIMITED_PROVIDERS else _label(ppb.profile_id)
+
+        # 1) Ensure an Account exists for every (provider, label).
+        for ppb in ppbs:
+            prov = ppb.provider_id
+            label = _label_for(ppb)
+            acct = session.query(Account).filter_by(provider_id=prov, label=label).first()
+            if acct is not None:
+                continue
+            if prov in UNLIMITED_PROVIDERS:
+                truth_row = next((b for b in ppbs if b.provider_id == prov and b.profile_id == truth_id), None)
+                src = truth_row or ppb
+                kind = "sharp"
+            else:
+                src = ppb
+                kind = "soft"
+            session.add(
+                Account(
+                    provider_id=prov,
+                    label=label,
+                    kind=kind,
+                    balance=src.balance or 0.0,
+                    currency=get_provider_currency(prov),
+                    account_opened_at=src.account_opened_at,
+                    is_active=True,
+                )
+            )
+        session.flush()
+
+        # 2) Ensure a ProfileAccount link exists for every balance row.
+        for ppb in ppbs:
+            acct = session.query(Account).filter_by(provider_id=ppb.provider_id, label=_label_for(ppb)).first()
+            if acct is None:
+                continue
+            link = session.query(ProfileAccount).filter_by(profile_id=ppb.profile_id, account_id=acct.id).first()
+            if link is None:
+                session.add(ProfileAccount(profile_id=ppb.profile_id, account_id=acct.id))
+        session.flush()
+
+        # 3) Backfill bets.account_id where resolvable and currently NULL.
+        resolver: dict[tuple[int, str], int] = {}
+        for link in session.query(ProfileAccount).all():
+            acct = session.get(Account, link.account_id)
+            if acct:
+                resolver[(link.profile_id, acct.provider_id)] = acct.id
+        for bet in session.query(Bet).filter(Bet.account_id.is_(None), Bet.profile_id.isnot(None)).all():
+            aid = resolver.get((bet.profile_id, bet.provider_id))
+            if aid:
+                bet.account_id = aid
+
+        session.commit()
+
 
 class MlModelRegistry(Base):
     """
@@ -1984,6 +2102,13 @@ def _run_pg_migrations(engine) -> None:
         # 2026-05-28 — Pinnacle per-line max risk stake (USD). Null on
         # non-Pinnacle rows and on any row predating this column.
         ("odds", "max_stake", "DOUBLE PRECISION"),
+        # 2026-05-30 — Account layer. profiles.kind drives Rule-B ROI bucketing;
+        # bets.account_id attributes a bet to a real account. New tables
+        # (accounts, profile_accounts) are created by create_all. The data
+        # backfill from profile_provider_balances runs in
+        # _migrate_provider_balances_to_accounts after this function.
+        ("profiles", "kind", "VARCHAR NOT NULL DEFAULT 'edge'"),
+        ("bets", "account_id", "INTEGER"),
     ]
 
     # Tables dropped during the 2026-05-25 strip-trading work. Idempotent —
