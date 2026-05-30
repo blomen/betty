@@ -48,12 +48,15 @@ class BetRepo:
         returns at most ~288 rows regardless of bet history depth, vs the
         prior approach which loaded every settled bet (thousands+).
         """
+        from ..db.models import Profile
+
         return (
             self.db.query(
                 Bet.provider_id.label("provider_id"),
                 Bet.currency.label("currency"),
                 Bet.result.label("result"),
                 Bet.is_bonus.label("is_bonus"),
+                Profile.kind.label("kind"),
                 func.count(Bet.id).label("cnt"),
                 func.coalesce(func.sum(Bet.stake), 0.0).label("sum_stake"),
                 func.coalesce(func.sum(Bet.payout), 0.0).label("sum_payout"),
@@ -61,9 +64,40 @@ class BetRepo:
                 func.coalesce(func.sum(Bet.clv_pct), 0.0).label("clv_sum"),
                 func.coalesce(func.sum(case((Bet.clv_pct > 0, 1), else_=0)), 0).label("clv_positive_count"),
             )
+            .join(Profile, Profile.id == Bet.profile_id)
             .filter(
                 Bet.result != "pending",
                 Bet.profile_id == profile_id,
+            )
+            .group_by(Bet.provider_id, Bet.currency, Bet.result, Bet.is_bonus, Profile.kind)
+            .all()
+        )
+
+    def get_bonus_profit_aggregates(self) -> list:
+        """Settled bets across ALL bonus-kind profiles, grouped for SEK conversion.
+
+        Rule B: a bonus-extraction campaign's profit (both the soft free-bet leg
+        and the real-money sharp hedge leg) is tracked separately from true ROI.
+        Every bet placed under a profile with kind='bonus' counts here and is
+        excluded from the ROI aggregate above. Grouped by (provider_id, currency,
+        result, is_bonus) so the caller can convert to SEK per provider and apply
+        the same Bet.profit semantics.
+        """
+        from ..db.models import Profile
+
+        return (
+            self.db.query(
+                Bet.provider_id.label("provider_id"),
+                Bet.currency.label("currency"),
+                Bet.result.label("result"),
+                Bet.is_bonus.label("is_bonus"),
+                func.coalesce(func.sum(Bet.stake), 0.0).label("sum_stake"),
+                func.coalesce(func.sum(Bet.payout), 0.0).label("sum_payout"),
+            )
+            .join(Profile, Profile.id == Bet.profile_id)
+            .filter(
+                Bet.result != "pending",
+                Profile.kind == "bonus",
             )
             .group_by(Bet.provider_id, Bet.currency, Bet.result, Bet.is_bonus)
             .all()

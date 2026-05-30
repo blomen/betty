@@ -137,9 +137,13 @@ class BankrollService:
         total_withdrawn = profile.total_withdrawn or 0.0
         net_deposited = total_deposited - total_withdrawn
 
-        # Only count real-money bets for profit/ROI — bonus capital is already
-        # reflected in the bankroll total, so we don't double-count it as profit.
-        real_rows = [r for r in rows if not r.is_bonus]
+        # Rule B: true ROI counts only genuine edge bets. Exclude bonus capital
+        # (is_bonus) AND every bet placed under a bonus-campaign profile — both
+        # the soft free-bet leg and its real-money sharp hedge leg. The hedge leg
+        # is real money but not an edge bet (EV ≈ −vig, full-win-or-loss variance);
+        # counting it would inject noise and destroy the ROI metric. Its locked
+        # gain is tracked separately as bonus_profit below.
+        real_rows = [r for r in rows if not r.is_bonus and r.kind == "edge"]
 
         bet_profit = sum(to_sek(row_profit(r), r.provider_id, r.currency) for r in real_rows)
         total_staked = sum(to_sek(r.sum_stake, r.provider_id, r.currency) for r in real_rows)
@@ -156,6 +160,13 @@ class BankrollService:
         avg_clv = round(clv_sum_total / clv_count, 2) if clv_count > 0 else 0
         clv_positive_pct = round(clv_pos_count / clv_count * 100, 1) if clv_count > 0 else 0
 
+        # Bonus profit — Rule B: profit harvested from bonus-extraction campaigns
+        # (every bet under a kind='bonus' profile, both legs), across ALL profiles
+        # so the user sees total harvested regardless of which profile is active.
+        # Kept entirely out of the ROI numbers above.
+        bonus_rows = self.bet_repo.get_bonus_profit_aggregates()
+        bonus_profit = sum(to_sek(row_profit(r), r.provider_id, r.currency) for r in bonus_rows)
+
         return {
             "profile_id": profile.id,
             "profile_name": profile.name,
@@ -170,7 +181,7 @@ class BankrollService:
             "total_profit": round(bet_profit, 2),
             "bet_profit": round(bet_profit, 2),
             "freebet_profit": 0,
-            "bonus_profit": 0,
+            "bonus_profit": round(bonus_profit, 2),
             "roi_pct": round(bet_profit / total_staked * 100, 2) if total_staked > 0 else 0,
             "win_rate": round(win_count / regular_count * 100, 2) if regular_count > 0 else 0,
             "avg_clv": avg_clv,
