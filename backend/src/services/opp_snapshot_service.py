@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from sqlalchemy.orm import Session
 
 from ..analysis.devig import _devig_market_for_outcome
+from ..analysis.patterns import _odds_range
 from ..analysis.sharp_blend import blended_fair_from_rows
 from ..db.models import Event, Opportunity, OppSnapshot
 
@@ -84,6 +85,11 @@ class OppSnapshotService:
         blend_n_sources = blend.n_sources if blend else None
         blend_sources = blend.sources if blend else None
 
+        # Shading-aware diagnostic: freeze risk label + odds bucket at detection.
+        shading_ann = (opp.annotations or {}).get("shading") if isinstance(opp.annotations, dict) else None
+        shading_risk = shading_ann.get("risk") if isinstance(shading_ann, dict) else None
+        odds_bucket = _odds_range(opp.odds1) if opp.odds1 is not None else None
+
         snap = OppSnapshot(
             event_id=opp.event_id,
             type=opp.type,
@@ -105,6 +111,8 @@ class OppSnapshotService:
             blended_fair1_at_detection=blended_fair1,
             blend_n_sources_at_detection=blend_n_sources,
             blend_sources=blend_sources,
+            shading_risk=shading_risk,
+            odds_bucket=odds_bucket,
         )
         self.db.add(snap)
         self.db.flush()  # populate PK so caller has it

@@ -2884,6 +2884,7 @@ export default function PlayPage() {
     const steam = ann.steam_signal as { direction?: 'up' | 'down'; provider_count?: number } | null | undefined
     const kn = ann.key_number as { on_key?: boolean; straddles_key?: boolean; nearest_key?: number } | null | undefined
     const cl = ann.consensus_lean as { divergence_pp?: number; n_soft_books?: number } | null | undefined
+    const shading = ann.shading as { risk?: string; reason?: string } | null | undefined
     return (
       <span className="inline-flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wider">
         {lean === 'sharp_value' && (
@@ -2919,6 +2920,18 @@ export default function PlayPage() {
             className="px-1 py-0.5 rounded border bg-amber-900/30 border-amber-600/40 text-amber-300"
             title={`NFL key number ${kn.nearest_key} — ${kn.on_key ? 'point sits exactly on a key' : 'half-point straddle of a key (high-leverage)'}.`}
           >key {kn.nearest_key}</span>
+        )}
+        {shading?.risk === 'elevated' && (
+          <span
+            className="px-1 py-0.5 rounded border bg-amber-900/30 border-amber-600/40 text-amber-300"
+            title={shading.reason ?? 'Elevated shading risk.'}
+          >shade•el</span>
+        )}
+        {shading?.risk === 'high' && (
+          <span
+            className="px-1 py-0.5 rounded border bg-red-900/30 border-red-600/40 text-red-300"
+            title={shading.reason ?? 'High shading risk.'}
+          >shade•hi</span>
         )}
       </span>
     )
