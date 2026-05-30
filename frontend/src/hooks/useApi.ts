@@ -51,6 +51,10 @@ export const api = {
   claimBonus: (providerId: string) =>
     apiFetch<any>(`/api/bankroll/claim-bonus/${providerId}`, { method: 'POST' }),
   backfillWagering: () => apiFetch<any>('/api/bankroll/backfill-wagering', { method: 'POST' }),
+  // Bonusdeposit start: records the deposit + arms the two-phase/single-phase
+  // wagering machine (adds the deposit to the tracked balance server-side).
+  depositWithBonus: (providerId: string, amount: number) =>
+    apiFetch<any>(`/api/bankroll/deposit/${providerId}`, { method: 'POST', body: JSON.stringify({ amount }) }),
   // Bets / Stats
   getOpportunities: () => apiFetch<any>('/api/opportunities'),
   // Mirror (local)
